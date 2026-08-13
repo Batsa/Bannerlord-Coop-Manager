@@ -1,0 +1,27 @@
+Bannerlord Coop Manager - Quick Start
+=====================================
+
+1. Extract this ZIP completely to a normal writable folder.
+2. Keep all extracted files together.
+3. Run "BCS Tool.exe".
+
+No installer, .NET runtime, SDK, or source build is required.
+
+BCSTool.RuntimeBootstrap.dll must remain beside BCS Tool.exe. It is required
+when the manager starts a modded dedicated-server profile.
+
+This ZIP does not include Mount & Blade II: Bannerlord, Bannerlord Coop,
+Empires of Europe 1700 (EOE), or the dedicated-server package. Install those
+separately before configuring the manager.
+
+This preview executable is not digitally signed. Windows may display an
+"Unknown publisher" or SmartScreen warning. Before running it, compare the
+ZIP's SHA-256 hash with the .sha256 file published beside the ZIP on GitHub.
+
+Full setup, supported versions, EOE preparation, client bridge installation,
+save import steps, current progress, and known limitations are in README.md.
+
+Project and releases:
+https://github.com/Batsa/Bannerlord-Coop-Manager
+
+License: GNU GPL version 3 only (GPL-3.0-only). See LICENSE and NOTICE.md.

@@ -4,15 +4,16 @@ Bannerlord Coop Manager is a Windows desktop manager for a Bannerlord Coop
 dedicated server. The current executable and user interface retain the upstream
 name **BCS Tool**.
 
-This repository is an **unreleased development snapshot**. It extends BCS Tool
+This repository publishes a **preview Windows build**. It extends BCS Tool
 with dedicated-server module management, reversible Coop compatibility
 preparation, client bridge packaging, client-save import, persistent server
 logging, and an exact, fingerprint-pinned compatibility path for **Empires of
 Europe 1700 (EOE)**.
 
-> Current application version: `0.2.1`
+> Current application version: `0.3.0-beta.1`
 >
 > Current generated bridge runtime: `0.6.58`
+>
 > Upstream base: [`AppleDeath318/BCSTool@f7bc05c`](https://github.com/AppleDeath318/BCSTool/commit/f7bc05c672dad169663f9c8b245e5b01b5422742)
 
 ## Status at a glance
@@ -76,18 +77,29 @@ is never redistributed by this project.
 
 Bannerlord Coop and EOE are not bundled with this repository.
 
-## Install the development build
+## Download, extract, and run
 
-The target repository does not yet have a packaged release. Build from source
-using the instructions under [Building from source](#building-from-source).
-Keep these two files together when copying the published application:
+No installer, .NET SDK, or source build is required.
 
-```text
-BCS Tool.exe
-BCSTool.RuntimeBootstrap.dll
-```
+1. Open [GitHub Releases](https://github.com/Batsa/Bannerlord-Coop-Manager/releases).
+2. Under the newest release's **Assets**, download the file named like
+   `Bannerlord-Coop-Manager-v0.3.0-beta.1-win-x64.zip`. Do not download the
+   automatically generated **Source code** archives.
+3. Right-click the downloaded ZIP and select **Extract All**. Extract it to a
+   normal writable folder, such as `Documents\Bannerlord Coop Manager`.
+4. Open the extracted folder and run `BCS Tool.exe`.
 
-The bootstrap DLL is required when BCS Tool starts a managed module profile.
+Keep every extracted file together. In particular,
+`BCSTool.RuntimeBootstrap.dll` must remain beside `BCS Tool.exe`; it is used
+when the manager starts a modded dedicated-server profile.
+
+The preview executable is self-contained for Windows x64 but is not digitally
+signed. Windows may therefore show an **Unknown publisher** or SmartScreen
+warning. Verify the ZIP against its adjacent `.sha256` release asset before
+running it. `START-HERE.txt` inside the ZIP repeats these instructions.
+
+The ZIP contains only Bannerlord Coop Manager. Bannerlord, Bannerlord Coop,
+EOE, and the dedicated-server package must already be installed separately.
 
 ## Initial server setup
 
@@ -351,11 +363,14 @@ Publish output:
 ```text
 BCSTool\publish\BCS Tool.exe
 BCSTool\publish\BCSTool.RuntimeBootstrap.dll
+BCSTool\publish\START-HERE.txt
+BCSTool\publish\README.md
+BCSTool\publish\LICENSE
+BCSTool\publish\NOTICE.md
 ```
 
 The executable is self-contained for Windows x64. Keep the bootstrap DLL next
-to it. Tagged GitHub release ZIPs also include `LICENSE`, `NOTICE.md`, and
-`README.md`.
+to it. The other files provide install guidance, licensing, and attribution.
 
 ### Rebuild the bridge payloads
 

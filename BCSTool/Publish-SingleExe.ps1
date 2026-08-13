@@ -25,6 +25,7 @@ $ErrorActionPreference = "Stop"
 
 $Project = Join-Path $PSScriptRoot "BCSTool.csproj"
 $PublishDirectory = Join-Path $PSScriptRoot "publish"
+$RepositoryRoot = Split-Path $PSScriptRoot -Parent
 
 if (Test-Path $PublishDirectory) {
     Remove-Item $PublishDirectory -Recurse -Force
@@ -51,11 +52,28 @@ if (-not (Test-Path -LiteralPath $RuntimeBootstrap -PathType Leaf)) {
     throw "Publish did not produce the required runtime bootstrap: $RuntimeBootstrap"
 }
 
+$CompanionFiles = @(
+    "START-HERE.txt",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
+)
+foreach ($Name in $CompanionFiles) {
+    $Source = Join-Path $RepositoryRoot $Name
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw "Publish companion file is missing: $Source"
+    }
+    Copy-Item -LiteralPath $Source -Destination $PublishDirectory
+}
+
 Write-Host ""
 Write-Host "Publish complete:"
 Write-Host "  $PublishDirectory"
 Write-Host "  $Executable"
 Write-Host "  $RuntimeBootstrap"
+foreach ($Name in $CompanionFiles) {
+    Write-Host "  $(Join-Path $PublishDirectory $Name)"
+}
 Write-Host ""
 Write-Host "BCS Tool settings are stored in:"
 Write-Host "  HKEY_CURRENT_USER\Software\BCSServerTool"

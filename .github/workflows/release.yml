@@ -65,6 +65,12 @@ jobs:
         run: |
           $exe = ".\BCSTool\publish\BCS Tool.exe"
           $bootstrap = ".\BCSTool\publish\BCSTool.RuntimeBootstrap.dll"
+          $companions = @(
+            ".\BCSTool\publish\START-HERE.txt",
+            ".\BCSTool\publish\README.md",
+            ".\BCSTool\publish\LICENSE",
+            ".\BCSTool\publish\NOTICE.md"
+          )
 
           if (-not (Test-Path $exe)) {
             throw "Expected release executable was not produced: $exe"
@@ -72,16 +78,22 @@ jobs:
           if (-not (Test-Path $bootstrap)) {
             throw "Expected runtime bootstrap was not produced: $bootstrap"
           }
+          foreach ($companion in $companions) {
+            if (-not (Test-Path $companion)) {
+              throw "Expected release companion file was not produced: $companion"
+            }
+          }
 
           Write-Host "Release files:"
-          Get-Item $exe, $bootstrap | Format-Table Name, Length, LastWriteTime
+          $releaseFiles = @($exe, $bootstrap) + $companions
+          Get-Item -LiteralPath $releaseFiles | Format-Table Name, Length, LastWriteTime
 
       - name: Package complete application
         shell: pwsh
         run: |
           $archive = ".\BCSTool\publish\Bannerlord-Coop-Manager-${{ github.ref_name }}-win-x64.zip"
           Compress-Archive `
-            -LiteralPath ".\BCSTool\publish\BCS Tool.exe", ".\BCSTool\publish\BCSTool.RuntimeBootstrap.dll", ".\LICENSE", ".\NOTICE.md", ".\README.md" `
+            -LiteralPath ".\BCSTool\publish\BCS Tool.exe", ".\BCSTool\publish\BCSTool.RuntimeBootstrap.dll", ".\BCSTool\publish\START-HERE.txt", ".\BCSTool\publish\README.md", ".\BCSTool\publish\LICENSE", ".\BCSTool\publish\NOTICE.md" `
             -DestinationPath $archive `
             -CompressionLevel Optimal
 
@@ -105,10 +117,34 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $tag = "${{ github.ref_name }}"
           $archive = ".\BCSTool\publish\Bannerlord-Coop-Manager-${{ github.ref_name }}-win-x64.zip"
-          gh release create "${{ github.ref_name }}" `
-            $archive `
-            "$archive.sha256" `
-            --verify-tag `
-            --generate-notes `
-            --title "Bannerlord Coop Manager ${{ github.ref_name }}"
+          $notes = @"
+          ## Install
+
+          1. Download **$([IO.Path]::GetFileName($archive))** below.
+          2. Extract the ZIP completely.
+          3. Run **BCS Tool.exe** from the extracted folder.
+
+          No .NET or source build is required. Keep BCSTool.RuntimeBootstrap.dll
+          beside the executable. The ZIP contains the manager only; Bannerlord, Coop,
+          EOE, and the dedicated-server package remain separate prerequisites. This is
+          a preview EOE compatibility build; see the included README for setup, current
+          progress, and known limitations. The executable is not digitally signed, so
+          verify the adjacent SHA-256 file before running it.
+          "@
+          $arguments = @(
+            "release", "create", $tag,
+            $archive, "$archive.sha256",
+            "--verify-tag",
+            "--title", "Bannerlord Coop Manager $tag",
+            "--notes", $notes
+          )
+          if ($tag.Contains("-")) {
+            $arguments += "--prerelease"
+            $arguments += "--latest=false"
+          }
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
