@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using BCSTool.Models;
+using BCSTool.Services;
 using BCSTool.ViewModels;
 
 namespace BCSTool;
@@ -27,6 +28,13 @@ public partial class ModManagerWindow : Window
         _viewModel = viewModel;
         DataContext = viewModel;
         _viewModel.CompatibilityReportReady += ShowCompatibilityReport;
+        _viewModel.BridgeInstallationCompleted += CompleteBridgeInstallation;
+    }
+
+    private void CompleteBridgeInstallation(BridgeInstallationResult result)
+    {
+        _allowClose = true;
+        DialogResult = true;
     }
 
     private void ShowCompatibilityReport(CoopCompatibilityReport report)
@@ -46,7 +54,11 @@ public partial class ModManagerWindow : Window
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
         if (_allowClose || !_viewModel.IsDirty)
+        {
+            _viewModel.CompatibilityReportReady -= ShowCompatibilityReport;
+            _viewModel.BridgeInstallationCompleted -= CompleteBridgeInstallation;
             return;
+        }
 
         var answer = MessageBox.Show(
             "Discard unsaved module selections and load-order changes?",
@@ -60,6 +72,8 @@ public partial class ModManagerWindow : Window
         }
 
         _allowClose = true;
+        _viewModel.CompatibilityReportReady -= ShowCompatibilityReport;
+        _viewModel.BridgeInstallationCompleted -= CompleteBridgeInstallation;
     }
 
     private void ModuleList_PreviewMouseLeftButtonDown(

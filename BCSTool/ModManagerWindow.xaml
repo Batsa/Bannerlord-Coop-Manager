@@ -126,25 +126,41 @@
             </ListBox>
 
             <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
-                <Button Content="↑ Move Up" Command="{Binding MoveUpCommand}"
-                        MinWidth="115" Margin="0,0,0,8"/>
-                <Button Content="↓ Move Down" Command="{Binding MoveDownCommand}"
-                        MinWidth="115" Margin="0,0,0,12"/>
-                <Button Content="Analyze for Coop" Command="{Binding AnalyzeCommand}"
-                        MinWidth="135" Margin="0,0,0,8"
-                        ToolTip="Read-only static inspection; does not execute or modify the selected module"/>
-                <Button Content="Install/Update Bridge" Command="{Binding InstallOrUpdateBridgeCommand}"
-                        MinWidth="135" Margin="0,0,0,8"
-                        ToolTip="Install or repair the known EOE bridge recipe and matching client ZIP"/>
-                <Button Content="Revert Bridge Install" Command="{Binding RevertBridgeInstallationCommand}"
-                        MinWidth="135" Margin="0,0,0,8"
-                        ToolTip="Restore exact files from the latest bridge installation backup"/>
-                <Button Content="Delete Module" Command="{Binding DeleteCommand}"
-                        MinWidth="135" Foreground="#B71C1C"
-                        ToolTip="Send the selected non-core module folder to the Windows Recycle Bin"/>
-                <TextBlock Margin="2,12,2,0" MaxWidth="125"
-                           Foreground="Gray" FontSize="11" TextWrapping="Wrap"
-                           Text="Analyze is read-only. Install/Update Bridge recognizes EOE, installs its backed-up server projections and creates the matching client ZIP. Drag rows to reorder or drop module folders to import. Blue line shows insertion point. Red rows need attention."/>
+                <Border Margin="0,0,0,14" Padding="10" CornerRadius="4"
+                        BorderBrush="#2B579A" BorderThickness="1" Background="#EEF4FF">
+                    <StackPanel MaxWidth="165">
+                        <TextBlock Text="Overhaul setup" FontWeight="SemiBold"
+                                   Foreground="#17365D"/>
+                        <TextBlock Margin="0,5,0,8" TextWrapping="Wrap"
+                                   Text="1. Drop the overhaul folder onto the module list.&#x0a;2. Click the button below."/>
+                        <Button Content="Prepare / Install Bridge"
+                                Command="{Binding InstallOrUpdateBridgeCommand}"
+                                MinWidth="165" FontWeight="SemiBold"
+                                ToolTip="Validate and install the selected known bridge recipe, enable its modules, set load order, repair server files, and create the client ZIP"/>
+                    </StackPanel>
+                </Border>
+                <Expander Header="Advanced (optional)" Foreground="Gray">
+                    <StackPanel Margin="0,8,0,0">
+                        <Button Content="↑ Move Up" Command="{Binding MoveUpCommand}"
+                                MinWidth="135" Margin="0,0,0,8"/>
+                        <Button Content="↓ Move Down" Command="{Binding MoveDownCommand}"
+                                MinWidth="135" Margin="0,0,0,12"/>
+                        <Button Content="Analyze for Coop" Command="{Binding AnalyzeCommand}"
+                                MinWidth="135" Margin="0,0,0,8"
+                                ToolTip="Read-only static inspection; does not execute or modify the selected module"/>
+                        <Button Content="Save Manual Load Order" Command="{Binding SaveCommand}"
+                                MinWidth="150" Margin="0,0,0,8"/>
+                        <Button Content="Revert Bridge Install" Command="{Binding RevertBridgeInstallationCommand}"
+                                MinWidth="135" Margin="0,0,0,8"
+                                ToolTip="Restore exact files from the latest bridge installation backup"/>
+                        <Button Content="Delete Module" Command="{Binding DeleteCommand}"
+                                MinWidth="135" Foreground="#B71C1C"
+                                ToolTip="Send the selected non-core module folder to the Windows Recycle Bin"/>
+                        <TextBlock Margin="2,10,2,0" MaxWidth="150"
+                                   Foreground="Gray" FontSize="11" TextWrapping="Wrap"
+                                   Text="Not required for a supported overhaul recipe."/>
+                    </StackPanel>
+                </Expander>
             </StackPanel>
         </Grid>
 
@@ -155,14 +171,8 @@
         </GroupBox>
 
         <Grid Grid.Row="3">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
             <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap"
-                       VerticalAlignment="Center" Margin="0,0,12,0"/>
-            <Button Grid.Column="1" Content="Save Load Order" Command="{Binding SaveCommand}"
-                    MinWidth="150"/>
+                       VerticalAlignment="Center"/>
         </Grid>
     </Grid>
 </Window>

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using BCSTool.Infrastructure;
@@ -142,6 +143,11 @@ public sealed class ModManagerViewModel : BindableBase
     /// completed read-only report after background analysis finishes.
     /// </summary>
     public event Action<CoopCompatibilityReport>? CompatibilityReportReady;
+    public event Action<BridgeInstallationResult>? BridgeInstallationCompleted;
+
+    public BridgeInstallationResult? LastBridgeInstallationResult { get; private set; }
+
+    internal bool CanPrepareSelectedBridge => CanInstallOrUpdateBridge();
 
     public Task InitializeAsync() => RescanAsync();
 
@@ -149,46 +155,47 @@ public sealed class ModManagerViewModel : BindableBase
     {
         if (IsBusy)
             return;
-        if (IsDirty)
-        {
-            MessageBox.Show(
-                "Save the current module selections and load order before importing folders.",
-                "Unsaved Server Mod Changes",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-            return;
-        }
 
         try
         {
-            var candidates = _moduleImporter.Discover(droppedPaths);
-            var names = string.Join(Environment.NewLine, candidates.Select(candidate =>
-                $"• {candidate.FolderName}"));
-            var answer = MessageBox.Show(
-                $"Copy these module folders into the dedicated server?{Environment.NewLine}{Environment.NewLine}" +
-                names + Environment.NewLine + Environment.NewLine +
-                "Existing folders will not be overwritten. Imported modules start OFF.",
-                "Import Server Mods",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Question);
-            if (answer != MessageBoxResult.Yes)
-                return;
-
             IsBusy = true;
+            if (IsDirty)
+            {
+                Revalidate();
+                if (HasValidationErrors)
+                {
+                    throw new InvalidDataException(
+                        "The current advanced load-order changes are invalid. Fix or rescan them before importing a mod.");
+                }
+
+                StatusMessage = "Saving advanced module changes before import...";
+                await Task.Run(() => _moduleManager.Save(Modules.ToArray()));
+                IsDirty = false;
+            }
+
+            var candidates = _moduleImporter.Discover(droppedPaths);
             StatusMessage = "Validating and copying module folders...";
             var imported = await Task.Run(() => _moduleImporter.Import(candidates));
             var scanned = await Task.Run(_moduleManager.Load);
             ReplaceModules(scanned);
-            var importedEoe = imported.FirstOrDefault(
+            var importedRecipe = imported.FirstOrDefault(
                 _bridgeInstallationService.IsKnownRecipe);
-            if (importedEoe is not null)
+            if (importedRecipe is not null)
             {
                 SelectedModule = Modules.FirstOrDefault(module =>
-                    module.Id.Equals(importedEoe.Id, StringComparison.OrdinalIgnoreCase));
+                    module.Id.Equals(importedRecipe.Id, StringComparison.OrdinalIgnoreCase));
+                if (SelectedModule is not null)
+                {
+                    SelectedModule.PropertyChanged -= Module_PropertyChanged;
+                    SelectedModule.SetInitialEnabled(false);
+                    SelectedModule.PropertyChanged += Module_PropertyChanged;
+                    Revalidate();
+                }
             }
-            StatusMessage = importedEoe is null
+            var recipeName = _bridgeInstallationService.GetRecipeDisplayName(importedRecipe);
+            StatusMessage = importedRecipe is null
                 ? $"Imported {imported.Count} module folder(s). Enable the wanted modules, then save."
-                : "Imported Empires of Europe 1700 and selected it. Choose Install/Update Bridge.";
+                : $"Imported {recipeName ?? importedRecipe.Name}. Choose Prepare / Install Bridge; enabling and load order are automatic.";
         }
         catch (Exception exception)
         {
@@ -375,25 +382,12 @@ public sealed class ModManagerViewModel : BindableBase
         if (module is null || !CanInstallOrUpdateBridge())
             return;
 
+        BridgeInstallationResult? completed = null;
         IsBusy = true;
-        StatusMessage = $"Building the bridge installation for {module.Name}...";
+        StatusMessage = $"Preparing and installing the bridge for {module.Name}...";
         try
         {
             var snapshot = Modules.ToArray();
-            var answer = MessageBox.Show(
-                "Install or update the generated EOE Coop bridge, required EOE server projections, " +
-                "headless XML overlays, load order, and matching client ZIP?" +
-                Environment.NewLine + Environment.NewLine +
-                "Every changed file is backed up and the server will repair missing bridge-owned files before start.",
-                "Install/Update Bridge",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Warning);
-            if (answer != MessageBoxResult.Yes)
-            {
-                StatusMessage = "Bridge installation was cancelled; no files were changed.";
-                return;
-            }
-
             var result = await Task.Run(() =>
                 _bridgeInstallationService.InstallOrUpdate(
                     module,
@@ -406,31 +400,16 @@ public sealed class ModManagerViewModel : BindableBase
                       : $"Client package: {result.ClientPackagePath}. ") +
                   $"Backup: {result.BackupDirectory}"
                 : "Bridge installation is already current; no repair was needed.";
-            MessageBox.Show(
-                (result.ChangesApplied
-                    ? "Bridge installed/updated and backed up."
-                    : "Bridge installation is already current.") +
-                " This is not runtime compatibility proof." +
-                (result.ClientPackagePath is null
-                    ? string.Empty
-                    : Environment.NewLine + Environment.NewLine +
-                      "Install this exact bridge package on every client:" +
-                      Environment.NewLine + result.ClientPackagePath) +
-                (result.BackupDirectory is null
-                    ? string.Empty
-                    : Environment.NewLine + Environment.NewLine +
-                      "Reversible backup:" + Environment.NewLine + result.BackupDirectory),
-                "Bridge Installation",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
             ReplaceModules(await Task.Run(_moduleManager.Load));
+            LastBridgeInstallationResult = result;
+            completed = result;
         }
         catch (Exception exception)
         {
             StatusMessage = exception.Message;
             MessageBox.Show(
                 exception.Message,
-                "Could Not Install/Update Bridge",
+                "Could Not Prepare / Install Bridge",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
@@ -439,6 +418,9 @@ public sealed class ModManagerViewModel : BindableBase
             IsBusy = false;
             RefreshBridgeInstallationState();
         }
+
+        if (completed is not null)
+            BridgeInstallationCompleted?.Invoke(completed);
     }
 
     private async Task RevertLatestBridgeInstallationAsync()
@@ -567,7 +549,6 @@ public sealed class ModManagerViewModel : BindableBase
 
     private bool CanInstallOrUpdateBridge() =>
         !IsBusy &&
-        !IsDirty &&
         _bridgeInstallationService.IsKnownRecipe(SelectedModule) &&
         SelectedModule is { IsServerCompatible: true } module &&
         !string.IsNullOrWhiteSpace(module.Path);
@@ -611,11 +592,17 @@ public sealed class ModManagerViewModel : BindableBase
 
         foreach (var module in modules)
         {
+            module.SetBridgeManaged(_bridgeInstallationService.IsKnownRecipe(module));
             module.PropertyChanged += Module_PropertyChanged;
             Modules.Add(module);
         }
 
-        SelectedModule = Modules.FirstOrDefault();
+        var knownRecipes = Modules
+            .Where(_bridgeInstallationService.IsKnownRecipe)
+            .ToArray();
+        SelectedModule = knownRecipes.Length == 1
+            ? knownRecipes[0]
+            : Modules.FirstOrDefault();
         IsDirty = false;
         Revalidate();
         RefreshBridgeInstallationState();

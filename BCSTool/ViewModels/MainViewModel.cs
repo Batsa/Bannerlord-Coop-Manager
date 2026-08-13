@@ -968,6 +968,18 @@ public sealed class MainViewModel : BindableBase, IDisposable
                 _lifetimeCts.Token);
     }
 
+    public void ReportBridgeInstallation(BridgeInstallationResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+
+        StatusMessage = result.ChangesApplied
+            ? "Bridge preparation complete. Select/import the campaign save, then press Start."
+            : "Bridge installation is current. Select/import the campaign save, then press Start.";
+        AddToolMessage(StatusMessage);
+        if (!string.IsNullOrWhiteSpace(result.ClientPackagePath))
+            AddToolMessage("Matching client bridge ZIP: " + result.ClientPackagePath);
+    }
+
 
     /// <summary>
     /// Sends one complete command selected by the server-cheat UI. Only a

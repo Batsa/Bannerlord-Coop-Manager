@@ -291,7 +291,7 @@ public sealed class CoopCompatibilityAnalyzer
                     CompatibilityFindingSeverity.Information,
                     "Dependencies",
                     $"Client-only dependency '{dependencyId}' will not be enabled on the dedicated server.",
-                    "Install/Update Bridge removes this dependency from the server-side manifest only.",
+                    "Prepare / Install Bridge removes this dependency from the server-side manifest only.",
                     "Keep the dependency installed on clients; review the bridge installation preview before applying.");
                 continue;
             }

@@ -11,10 +11,18 @@ namespace BCSTool.Services;
 /// </summary>
 public sealed class BridgeInstallationService
 {
-    private const string Europe1700ModuleId = "Europe1700";
-    private const string Europe1700RuleId = "europe-1700-1.4.7.1-server-v55";
     private const string BackupManifestFileName = "bcs-compatibility-backup.json";
     private const long MaximumBackupManifestBytes = 4 * 1024 * 1024;
+
+    private static readonly BridgeRecipeDefinition[] KnownRecipes =
+    [
+        new(
+            "europe-1700",
+            "Empires of Europe 1700",
+            "Europe1700",
+            ["Europe1700"],
+            ["europe-1700-1.4.7.1-server-v55"])
+    ];
 
     private readonly ModuleScanner _moduleScanner;
     private readonly CoopCompatibilityPatcher _compatibilityPatcher;
@@ -47,7 +55,10 @@ public sealed class BridgeInstallationService
 
     public bool IsKnownRecipe(BannerlordModule? module) =>
         module is { IsInstalled: true } &&
-        module.Id.Equals(Europe1700ModuleId, StringComparison.OrdinalIgnoreCase);
+        FindRecipeByRootModule(module.Id) is not null;
+
+    public string? GetRecipeDisplayName(BannerlordModule? module) =>
+        module is null ? null : FindRecipeByRootModule(module.Id)?.DisplayName;
 
     public BridgeInstallationResult InstallOrUpdate(
         BannerlordModule module,
@@ -96,8 +107,8 @@ public sealed class BridgeInstallationService
     }
 
     /// <summary>
-    /// Repairs bridge-owned files before process creation when EOE is active.
-    /// Disabled or absent EOE installations are intentionally ignored.
+    /// Repairs bridge-owned files before process creation when a supported
+    /// overhaul recipe is active. Disabled or absent recipes are ignored.
     /// </summary>
     public BridgeInstallationResult RepairForStart(string serverExecutablePath)
     {
@@ -109,13 +120,19 @@ public sealed class BridgeInstallationService
                              "Dedicated-server executable has no parent directory.");
         var moduleManager = new ModuleManager(canonicalExecutable, _moduleScanner);
         var modules = moduleManager.Load();
-        var europe1700 = modules.FirstOrDefault(module =>
-            module.Enabled &&
-            module.Id.Equals(Europe1700ModuleId, StringComparison.OrdinalIgnoreCase));
-        if (europe1700 is null)
+        var activeRecipes = modules
+            .Where(module => module.Enabled && IsKnownRecipe(module))
+            .ToArray();
+        if (activeRecipes.Length == 0)
             return BridgeInstallationResult.NotRequired;
+        if (activeRecipes.Length > 1)
+        {
+            throw new InvalidDataException(
+                "Only one bridge-managed overhaul can be active at a time: " +
+                string.Join(", ", activeRecipes.Select(module => module.Id)));
+        }
 
-        return _installOrUpdate(europe1700, modules, serverRoot);
+        return _installOrUpdate(activeRecipes[0], modules, serverRoot);
     }
 
     public string? FindLatestInstallationBackup(string serverRoot)
@@ -144,7 +161,7 @@ public sealed class BridgeInstallationService
 
             var manifestPath = Path.Combine(planDirectory, BackupManifestFileName);
             if (!File.Exists(manifestPath) ||
-                !ReadBackupScope(manifestPath, canonicalServerRoot).IsEurope1700Bridge)
+                !ReadBackupScope(manifestPath, canonicalServerRoot).IsKnownBridge)
             {
                 continue;
             }
@@ -166,10 +183,10 @@ public sealed class BridgeInstallationService
 
         var canonicalManifest = Path.GetFullPath(manifestPath);
         var scope = ReadBackupScope(canonicalManifest, expectedServerRoot: null);
-        if (!scope.IsEurope1700Bridge)
+        if (!scope.IsKnownBridge)
         {
             throw new InvalidDataException(
-                "The selected backup is not an Empires of Europe 1700 bridge installation.");
+                "The selected backup is not a recognized bridge installation.");
         }
 
         return _compatibilityPatcher.Revert(canonicalManifest);
@@ -266,16 +283,19 @@ public sealed class BridgeInstallationService
 
         var distinctModuleIds = moduleIds
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var isEurope1700Bridge =
-            schema == 1 &&
-            ruleId.Equals(Europe1700RuleId, StringComparison.Ordinal) &&
-            moduleIds.Length == 2 &&
-            distinctModuleIds.Count == 2 &&
-            distinctModuleIds.Contains(Europe1700ModuleId) &&
+        var matchingRecipe = schema == 1
+            ? KnownRecipes.SingleOrDefault(recipe =>
+                recipe.RuleIds.Contains(ruleId, StringComparer.Ordinal))
+            : null;
+        var isKnownBridge =
+            matchingRecipe is not null &&
+            moduleIds.Length == distinctModuleIds.Count &&
+            distinctModuleIds.Count == matchingRecipe.PreparedModuleIds.Count + 1 &&
+            matchingRecipe.PreparedModuleIds.All(distinctModuleIds.Contains) &&
             distinctModuleIds.Count(id => id.StartsWith(
                 CoopBridgePackageBuilder.BridgeIdPrefix,
                 StringComparison.OrdinalIgnoreCase)) == 1;
-        return new BackupScope(isEurope1700Bridge);
+        return new BackupScope(isKnownBridge);
     }
 
     private static void EnsureNoDuplicateProperties(JsonElement root)
@@ -341,7 +361,18 @@ public sealed class BridgeInstallationService
         return File.Exists(existing) ? existing : null;
     }
 
-    private sealed record BackupScope(bool IsEurope1700Bridge);
+    private static BridgeRecipeDefinition? FindRecipeByRootModule(string moduleId) =>
+        KnownRecipes.SingleOrDefault(recipe =>
+            recipe.RootModuleId.Equals(moduleId, StringComparison.OrdinalIgnoreCase));
+
+    private sealed record BridgeRecipeDefinition(
+        string Id,
+        string DisplayName,
+        string RootModuleId,
+        IReadOnlyList<string> PreparedModuleIds,
+        IReadOnlyList<string> RuleIds);
+
+    private sealed record BackupScope(bool IsKnownBridge);
 }
 
 public sealed record BridgeInstallationResult(

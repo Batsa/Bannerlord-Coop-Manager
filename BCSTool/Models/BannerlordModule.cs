@@ -8,6 +8,7 @@ namespace BCSTool.Models;
 public sealed class BannerlordModule : BindableBase
 {
     private bool _enabled;
+    private bool _isBridgeManaged;
     private IReadOnlyList<string> _validationMessages = Array.Empty<string>();
 
     public required string Name { get; init; }
@@ -22,12 +23,15 @@ public sealed class BannerlordModule : BindableBase
     public required IReadOnlyList<string> MustLoadBefore { get; init; }
     public required IReadOnlyList<string> IncompatibleModules { get; init; }
 
-    public bool CanToggle => IsServerCompatible && !IsRequired;
+    public bool IsBridgeManaged => _isBridgeManaged;
+    public bool CanToggle => IsServerCompatible && !IsRequired && !IsBridgeManaged;
     public string ToggleHelpText =>
         IsRequired
             ? "Required by the Bannerlord Coop dedicated server and cannot be disabled."
             : !IsServerCompatible
                 ? "This official module is not compatible with the dedicated server."
+                : IsBridgeManaged
+                    ? "This overhaul is enabled and ordered automatically by Prepare / Install Bridge."
                 : "Enable or disable this dedicated-server module.";
 
     public bool Enabled
@@ -46,7 +50,9 @@ public sealed class BannerlordModule : BindableBase
         !IsInstalled
             ? "Missing"
             : IsRequired
-                ? "REQUIRED"
+            ? "REQUIRED"
+            : IsBridgeManaged
+                ? (Enabled ? "BRIDGE MANAGED" : "NEEDS BRIDGE")
             : Enabled
                 ? "ON"
                 : "OFF";
@@ -71,6 +77,18 @@ public sealed class BannerlordModule : BindableBase
     {
         _enabled = IsRequired || (IsServerCompatible && enabled);
         OnPropertyChanged(nameof(Enabled));
+        OnPropertyChanged(nameof(StateText));
+    }
+
+    internal void SetBridgeManaged(bool bridgeManaged)
+    {
+        if (_isBridgeManaged == bridgeManaged)
+            return;
+
+        _isBridgeManaged = bridgeManaged;
+        OnPropertyChanged(nameof(IsBridgeManaged));
+        OnPropertyChanged(nameof(CanToggle));
+        OnPropertyChanged(nameof(ToggleHelpText));
         OnPropertyChanged(nameof(StateText));
     }
 

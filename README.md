@@ -10,7 +10,7 @@ client bridge packaging, client-save import, persistent server
 logging, and a version-scoped compatibility path for **Empires of Europe 1700
 (EOE)**.
 
-> Current application version: `0.3.0-beta.4`
+> Current application version: `0.3.0-beta.5`
 >
 > Current generated bridge runtime: `0.6.60`
 >
@@ -56,7 +56,7 @@ These are supported compatibility versions, not floating minimum versions. The
 bridge installation validates versions, required files, paths, assembly identities,
 and required method signatures. It does not reject compatible files merely
 because their bytes or hashes differ. A game or Workshop update requires a new
-**Install/Update Bridge → reinstall client ZIP** cycle.
+**Prepare / Install Bridge → reinstall client ZIP** cycle.
 
 The current EOE server profile does **not** require separate Harmony, ButterLib,
 UIExtenderEx, or Mod Configuration Menu modules. Coop supplies the Harmony
@@ -84,7 +84,7 @@ No installer, .NET SDK, or source build is required.
 
 1. Open [GitHub Releases](https://github.com/Batsa/Bannerlord-Coop-Manager/releases).
 2. Under the newest release's **Assets**, download the file named like
-   `Bannerlord-Coop-Manager-v0.3.0-beta.4-win-x64.zip`. Do not download the
+   `Bannerlord-Coop-Manager-v0.3.0-beta.5-win-x64.zip`. Do not download the
    automatically generated **Source code** archives.
 3. Right-click the downloaded ZIP and select **Extract All**. Extract it to a
    normal writable folder, such as `Documents\Bannerlord Coop Manager`.
@@ -127,27 +127,37 @@ Coop configuration paths:
 BCS Tool preserves the existing JSON-with-comments layout where supported and
 creates a sibling `.bak` before replacing a configuration file.
 
-## Install or update the EOE bridge
+## Prepare a supported overhaul mod
 
-Bridge installation is deliberately validated, reversible, and narrower
-than ordinary mod conversion.
+For the mod-list portion of setup, the complete supported workflow is exactly:
 
 1. Stop the server completely.
 2. Open **Server Mods**.
-3. If EOE is not present in the dedicated-server module directory, drag its
-   module folder—the folder containing `SubModule.xml`—onto the module list.
-4. Select EOE and click **Analyze for Coop** if you want the read-only report.
-5. Click **Install/Update Bridge**.
-6. Confirm the single backed-up install/update operation. It enables EOE and
-   writes the required load order as part of the same action.
-7. Record the generated bridge ID and client ZIP path shown by the tool.
+3. Drag the supported overhaul's module folder—the folder containing
+   `SubModule.xml`—onto the module list.
+4. Click **Prepare / Install Bridge**.
 
-There is no separate Prepare step. The same bridge operation owns EOE DLL
+The drop itself is consent to import the server copy. The button is
+consent to perform the backed-up bridge operation. There are no routine
+confirmation dialogs and no required Analyze, checkbox, reorder, or Save Load
+Order step. On success the Server Mods window closes, the main status reports
+readiness, the BCS Tool Console records the matching client ZIP path, and the
+next server action can be **Start** after the campaign save is selected/imported.
+
+The same bridge operation owns EOE DLL
 projections under `Europe1700\bin\Win64_Shipping_Server`, the
 `conf_clans_resource_adder.xml` projection beside `ClansResourceAdder.dll`,
 headless XML overlays, the server load-order profile, the generated bridge
 module, and its matching client ZIP. Start runs the same recipe as a preflight
 and repairs missing bridge-owned projections before launching Bannerlord.
+Existing module folders are never silently replaced. For a clean or freshly
+created server Modules directory, the supported overhaul setup remains exactly
+the two actions above.
+
+The UI is recipe-driven. EOE is the first built-in, tested recipe; a future
+overhaul receives the same two-action lifecycle only after a specific bridge
+recipe has been supplied and registered. Static generic analysis is not treated
+as a compatibility recipe.
 
 The resulting enabled order is:
 
@@ -222,7 +232,9 @@ Europe1700
 BCS.CoopBridge.<identity>
 ```
 
-If EOE, Coop, or the game updates, rerun **Install/Update Bridge** and distribute the newly
+If an installed EOE copy is replaced or updated outside BCS Tool, click
+**Prepare / Install Bridge** again. If Coop or the game updates, click the same
+button and distribute the newly
 generated ZIP. BCS Tool does not download or silently update Workshop mods.
 The ZIP contains the bridge runtimes, manifest, configuration, GPL notice, and
 attribution. Server-only transformed EOE XML/XSLT overlays stay on the server

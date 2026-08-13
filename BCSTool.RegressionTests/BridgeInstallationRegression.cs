@@ -1,5 +1,6 @@
 using BCSTool.Models;
 using BCSTool.Services;
+using BCSTool.ViewModels;
 using System.Text.Json;
 
 internal static class BridgeInstallationRegression
@@ -16,12 +17,85 @@ internal static class BridgeInstallationRegression
         Assert(service.IsKnownRecipe(eoe),
             "Europe1700 did not activate the known bridge recipe.");
         Assert(!service.IsKnownRecipe(unrelated),
-            "An unrelated module activated the EOE bridge recipe.");
+            "An unrelated module activated a known bridge recipe.");
+        Assert(service.GetRecipeDisplayName(eoe) == "Empires of Europe 1700",
+            "Known recipe did not expose its user-facing name.");
 
         VerifyNoInstalledRecipeIsNoOp(service);
+        VerifyDroppedRecipeNeedsNoManualEnableOrSave(scanner, service);
         VerifyEnabledRecipeDispatchesRepair(scanner);
         VerifyDisabledRecipeIsNoOp(scanner);
         VerifyBackupsAreScopedToEurope1700(service);
+    }
+
+    private static void VerifyDroppedRecipeNeedsNoManualEnableOrSave(
+        ModuleScanner scanner,
+        BridgeInstallationService service)
+    {
+        var root = TemporaryRoot();
+        var sourceRoot = TemporaryRoot();
+        try
+        {
+            var executable = Path.Combine(root, "BannerlordCoopServer.exe");
+            var modulesDirectory = Path.Combine(root, "engine", "Modules");
+            Directory.CreateDirectory(modulesDirectory);
+            File.WriteAllBytes(executable, [1]);
+            var source = Path.Combine(sourceRoot, "Europe1700");
+            WriteModule(source, "v1.4.7.1");
+
+            var manager = new ModuleManager(executable, scanner);
+            var importer = new ModuleImporter(modulesDirectory, scanner);
+            var viewModel = new ModManagerViewModel(
+                manager,
+                importer,
+                new ModuleRemovalService(manager, new RejectingRecycler()),
+                new DependencyValidator(),
+                new CoopCompatibilityAnalyzer(),
+                service);
+
+            viewModel.InitializeAsync().GetAwaiter().GetResult();
+            viewModel.ImportFoldersAsync([source]).GetAwaiter().GetResult();
+
+            var selected = viewModel.SelectedModule;
+            Assert(selected?.Id == "Europe1700",
+                "Dropped bridge recipe was not selected automatically.");
+            if (selected is null)
+                throw new InvalidOperationException("Dropped bridge recipe selection was null.");
+            Assert(selected.IsBridgeManaged && !selected.CanToggle &&
+                   selected.StateText == "NEEDS BRIDGE",
+                "Dropped bridge recipe still exposed a misleading manual OFF toggle.");
+            Assert(!viewModel.IsDirty && viewModel.CanPrepareSelectedBridge,
+                "Dropped bridge recipe required Analyze, enable, reorder, or Save before preparation.");
+
+            var refusedOverwrite = false;
+            try
+            {
+                importer.Discover([source]);
+            }
+            catch (IOException)
+            {
+                refusedOverwrite = true;
+            }
+            Assert(refusedOverwrite,
+                "Re-dropping a module silently exposed the installed server copy to overwrite.");
+
+            var reopened = new ModManagerViewModel(
+                manager,
+                importer,
+                new ModuleRemovalService(manager, new RejectingRecycler()),
+                new DependencyValidator(),
+                new CoopCompatibilityAnalyzer(),
+                service);
+            reopened.InitializeAsync().GetAwaiter().GetResult();
+            Assert(reopened.SelectedModule?.Id == "Europe1700" &&
+                   reopened.CanPrepareSelectedBridge,
+                "Reopening the mod list required manually selecting the installed bridge recipe.");
+        }
+        finally
+        {
+            DeleteTemporaryRoot(root);
+            DeleteTemporaryRoot(sourceRoot);
+        }
     }
 
     private static void VerifyNoInstalledRecipeIsNoOp(
@@ -146,7 +220,7 @@ internal static class BridgeInstallationRegression
             catch (InvalidDataException exception)
             {
                 rejected = exception.Message.Contains(
-                    "not an Empires of Europe 1700 bridge installation",
+                    "not a recognized bridge installation",
                     StringComparison.Ordinal);
             }
 
@@ -212,6 +286,20 @@ internal static class BridgeInstallationRegression
         return executable;
     }
 
+    private static void WriteModule(string moduleRoot, string version)
+    {
+        Directory.CreateDirectory(moduleRoot);
+        File.WriteAllText(
+            Path.Combine(moduleRoot, "SubModule.xml"),
+            "<Module>" +
+            "<Name value=\"Empires of Europe 1700\" />" +
+            "<Id value=\"Europe1700\" />" +
+            $"<Version value=\"{version}\" />" +
+            "<DependedModules />" +
+            "<SubModules />" +
+            "</Module>");
+    }
+
     private static string TemporaryRoot() => Path.Combine(
         Path.GetTempPath(),
         "bcs-bridge-lifecycle-regression-" + Guid.NewGuid().ToString("N"));
@@ -241,5 +329,11 @@ internal static class BridgeInstallationRegression
     {
         if (!condition)
             throw new InvalidOperationException(message);
+    }
+
+    private sealed class RejectingRecycler : IModuleDirectoryRecycler
+    {
+        public void Recycle(string directoryPath) =>
+            throw new InvalidOperationException("Recycler must not run in bridge-flow regression.");
     }
 }

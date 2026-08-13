@@ -419,7 +419,8 @@ public partial class MainWindow : Window
                     Owner = this
                 };
 
-            window.ShowDialog();
+            if (window.ShowDialog() == true && viewModel.LastBridgeInstallationResult is { } result)
+                _viewModel.ReportBridgeInstallation(result);
         }
         catch (Exception exception)
         {
