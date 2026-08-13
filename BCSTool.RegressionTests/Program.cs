@@ -493,6 +493,7 @@ Run("EOE headless action projection uses native server animations", TestEurope17
 Run("EOE headless action types repair the bomb reload ID", TestEurope1700HeadlessActionTypeProjection);
 Run("EOE malformed trebuchet prefab receives exact syntax repair", TestEurope1700TrebuchetPrefabRepair);
 Run("EOE dedicated-server schema repairs are exact and fail closed", TestEurope1700SchemaRepairs);
+Run("EOE optional server DLLs follow active manifest declarations", TestEurope1700OptionalServerDllSelection);
 Run("compatibility rules accept only verified Coop releases", TestSupportedReleasedCoopVersions);
 Run("campaign save discovery uses live client saves and hides backups", TestCampaignSaveDiscovery);
 Run("client campaign imports never overwrite server saves", TestClientSaveImport);
@@ -1063,6 +1064,63 @@ void TestEurope1700TrebuchetPrefabRepair()
     document.LoadXml(text);
     Assert(document.SelectNodes("/prefabs/variable")?.Count == 4,
         "EOE repaired trebuchet prefab did not remain structurally intact.");
+}
+
+void TestEurope1700OptionalServerDllSelection()
+{
+    const string customBattle = "EOE.CustomBattlePatch.dll";
+    const string rfBattleAi = "RF_BattleAI.dll";
+    var required = new[]
+    {
+        "XMLMeleePatch.dll",
+        "BattleArtilleryReworked.dll",
+        "Europe1700.dll",
+        "Bannerlord.EOEPatches.dll",
+        "ClansResourceAdder.dll",
+        "CustomizableClanTier.dll"
+    };
+
+    Verify(string.Empty, required, "absent optional declarations");
+    Verify(
+        $"<!--{SubModule(customBattle)}{SubModule(rfBattleAi)}-->",
+        required,
+        "commented optional declarations");
+    Verify(
+        SubModule(rfBattleAi),
+        [.. required, rfBattleAi],
+        "RF battle AI declaration");
+    Verify(
+        SubModule(customBattle),
+        [.. required, customBattle],
+        "custom battle declaration");
+    Verify(
+        SubModule(customBattle) + SubModule(rfBattleAi),
+        [.. required, customBattle, rfBattleAi],
+        "both optional declarations");
+
+    return;
+
+    static string SubModule(string dllName) =>
+        $$"""
+          <SubModule>
+            <Name value="{{Path.GetFileNameWithoutExtension(dllName)}}" />
+            <DLLName value="{{dllName}}" />
+            <SubModuleClassType value="Optional.SubModule" />
+            <Tags>
+              <Tag key="DedicatedServerType" value="none" />
+              <Tag key="IsNoRenderModeElement" value="false" />
+            </Tags>
+          </SubModule>
+        """;
+
+    void Verify(string optionalXml, string[] expected, string scenario)
+    {
+        var manifest = new XmlDocument { XmlResolver = null };
+        manifest.LoadXml($"<Module><SubModules>{optionalXml}</SubModules></Module>");
+        var actual = CoopCompatibilityPatcher.SelectEurope1700ServerDlls(manifest);
+        Assert(actual.SequenceEqual(expected, StringComparer.OrdinalIgnoreCase),
+            $"EOE {scenario} selected [{string.Join(", ", actual)}], expected [{string.Join(", ", expected)}].");
+    }
 }
 
 void TestEurope1700SchemaRepairs()

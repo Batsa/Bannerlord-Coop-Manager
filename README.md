@@ -10,7 +10,7 @@ client bridge packaging, client-save import, persistent server
 logging, and a version-scoped compatibility path for **Empires of Europe 1700
 (EOE)**.
 
-> Current application version: `0.3.0-beta.2`
+> Current application version: `0.3.0-beta.3`
 >
 > Current generated bridge runtime: `0.6.60`
 >
@@ -84,7 +84,7 @@ No installer, .NET SDK, or source build is required.
 
 1. Open [GitHub Releases](https://github.com/Batsa/Bannerlord-Coop-Manager/releases).
 2. Under the newest release's **Assets**, download the file named like
-   `Bannerlord-Coop-Manager-v0.3.0-beta.2-win-x64.zip`. Do not download the
+   `Bannerlord-Coop-Manager-v0.3.0-beta.3-win-x64.zip`. Do not download the
    automatically generated **Source code** archives.
 3. Right-click the downloaded ZIP and select **Extract All**. Extract it to a
    normal writable folder, such as `Documents\Bannerlord Coop Manager`.
@@ -177,6 +177,11 @@ The Steam Workshop EOE source and protected Coop files are untouched. The
 imported dedicated-server EOE copy receives backed-up manifest/headless-file
 transformations; bridge-owned overlays and projections are recorded in the backup manifest.
 **Revert Bridge Install** restores the latest recorded installation.
+
+`RF_BattleAI.dll` and `EOE.CustomBattlePatch.dll` are optional. Bridge install
+projects either DLL only while its submodule is actively declared in EOE's
+`SubModule.xml`. Commenting out, removing, or disabling that declaration keeps
+the DLL out of the server projection even when a loose copy remains on disk.
 
 ### What the EOE bridge installation currently addresses
 
@@ -355,7 +360,7 @@ dotnet build .\BCSTool.sln -c Release --no-restore
 dotnet run --project .\BCSTool.RegressionTests\BCSTool.RegressionTests.csproj -c Release --no-build
 ```
 
-The regression runner currently contains 50 named checks and finishes with:
+The regression runner currently contains 51 named checks and finishes with:
 
 ```text
 All BCS Tool regression checks passed.

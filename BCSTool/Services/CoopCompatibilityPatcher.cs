@@ -98,7 +98,7 @@ public sealed class CoopCompatibilityPatcher
         "CustomizableClanTier.dll"
     ];
 
-    private static readonly string[] Europe1700ServerDlls =
+    private static readonly string[] Europe1700RequiredServerDlls =
     [
         "XMLMeleePatch.dll",
         "BattleArtilleryReworked.dll",
@@ -106,6 +106,12 @@ public sealed class CoopCompatibilityPatcher
         "Bannerlord.EOEPatches.dll",
         "ClansResourceAdder.dll",
         "CustomizableClanTier.dll"
+    ];
+
+    private static readonly string[] Europe1700OptionalServerDlls =
+    [
+        "EOE.CustomBattlePatch.dll",
+        "RF_BattleAI.dll"
     ];
 
     private static readonly BridgeAuthorityRule[] Europe1700AuthorityRules =
@@ -884,6 +890,8 @@ public sealed class CoopCompatibilityPatcher
     {
         EnsureDirectChild(module.Path, modulesRoot, "Empires of Europe 1700 module");
         selectedIds.Add(module.Id);
+        var manifest = LoadManifest(Path.Combine(module.Path, "SubModule.xml"));
+        var serverDlls = SelectEurope1700ServerDlls(manifest);
         if (!module.Version.Equals("v1.4.7.1", StringComparison.OrdinalIgnoreCase))
         {
             blockers.Add(
@@ -1014,9 +1022,10 @@ public sealed class CoopCompatibilityPatcher
         AddManifestTransformation(
             module,
             addCoopOrdering: false,
-            enableDllNames: Europe1700ServerDlls,
-            proposed);
-        AddClientDllProjection(module, proposed, Europe1700ServerDlls);
+            enableDllNames: serverDlls,
+            proposed,
+            sourceManifest: manifest);
+        AddClientDllProjection(module, proposed, serverDlls);
         AddEurope1700HeadlessCollisionTransformation(module, proposed);
         AddEurope1700HeadlessActionSetTransformation(module, proposed);
         AddEurope1700HeadlessActionTypesTransformation(module, proposed);
@@ -1035,9 +1044,18 @@ public sealed class CoopCompatibilityPatcher
                 "conf_clans_resource_adder.xml"),
             clansResourceConfigBytes!,
             "Project ClansResourceAdder configuration into the server bin");
+        var enabledOptionalDlls = Europe1700OptionalServerDlls
+            .Where(dll => serverDlls.Contains(dll, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+        var disabledOptionalDlls = Europe1700OptionalServerDlls
+            .Where(dll => !serverDlls.Contains(dll, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
         warnings.Add(
-            "Loose EOE.CustomBattlePatch/RF_BattleAI files and the declared BannerColorPersistence submodule " +
-            "remain disabled on the dedicated server because they are not current headless Coop campaign modules.");
+            "EOE optional server submodules enabled from active SubModule.xml declarations: " +
+            (enabledOptionalDlls.Length == 0 ? "none" : string.Join(", ", enabledOptionalDlls)) + ". " +
+            "Commented-out or removed optional declarations remain disabled even when a loose DLL exists: " +
+            (disabledOptionalDlls.Length == 0 ? "none" : string.Join(", ", disabledOptionalDlls)) + ". " +
+            "The declared BannerColorPersistence submodule remains disabled on the dedicated server.");
         warnings.Add(
             "The bridge suppresses ClansResourceAdder daily mutations on clients and allows them only on the " +
             "authoritative Coop server. It also suppresses EOEPatches' music/UI startup hook on the headless server " +
@@ -1697,10 +1715,11 @@ public sealed class CoopCompatibilityPatcher
         bool addCoopOrdering,
         IReadOnlyCollection<string> enableDllNames,
         ICollection<PendingChange> proposed,
-        bool suppressSubModules = false)
+        bool suppressSubModules = false,
+        XmlDocument? sourceManifest = null)
     {
         var manifestPath = Path.Combine(module.Path, "SubModule.xml");
-        var document = LoadManifest(manifestPath);
+        var document = sourceManifest ?? LoadManifest(manifestPath);
         var root = document.DocumentElement!;
 
         foreach (XmlElement dependency in root.SelectNodes("./DependedModules/DependedModule")!)
@@ -2433,6 +2452,16 @@ public sealed class CoopCompatibilityPatcher
             }
         }
         return names;
+    }
+
+    internal static IReadOnlyList<string> SelectEurope1700ServerDlls(XmlDocument manifest)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        var declaredDlls = DeclaredDllNames(manifest)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return Europe1700RequiredServerDlls
+            .Concat(Europe1700OptionalServerDlls.Where(declaredDlls.Contains))
+            .ToArray();
     }
 
     private static string? FindDeclaredDll(string modulePath, string dllName)
