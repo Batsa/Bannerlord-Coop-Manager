@@ -1,0 +1,2840 @@
+using System.IO;
+using System.Reflection;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Xml;
+using BCSTool.Models;
+
+namespace BCSTool.Services;
+
+/// <summary>
+/// Creates and applies conservative, version-pinned dedicated-server
+/// transformations. It never modifies client modules or protected Coop files.
+/// </summary>
+public sealed class CoopCompatibilityPatcher
+{
+    private const string RealmOfThronesCoreHash =
+        "DF180D15E32CBFF6E214B21AC44175C52A9C1E37FD604470519A8E9F18A43971";
+    private const string Europe1700CollisionInfoHash =
+        "312BA930B7F69055D4281349F265360AB8C2EA816BF72B1AC75BE5BBD5EB8C2B";
+    private const string Europe1700HeadlessCollisionInfoHash =
+        "2BC170CAC45816B6677A4534B4E468D6675EB793178937AFCA07044DF7D09C9B";
+    private const string Europe1700ActionSetHash =
+        "07D348E56FD150C116CF3F519A844F2A143AB66016452E5DE1B8927AB8D238AE";
+    private const string Europe1700HeadlessActionSetHash =
+        "F3F67856257312DFC350A363425DAF1855A706FF8B7EC2B946C6A4FC495F3705";
+    private const string Europe1700ActionTypesHash =
+        "99078F94188AF2C73B5AC0A1784ECEBA3B187458178C472CA3F83B1204F96622";
+    private const string Europe1700HeadlessActionTypesHash =
+        "AFB7131B7B352422F75089BB3F5FEB34CB5942C350F2CFD89536C6B523E7349D";
+    private const string Europe1700TrebuchetPrefabHash =
+        "477F82C489404ACC519EDD348287A5918B37F3F6B997D5DA67521ABF51B20326";
+    private const string Europe1700HeadlessTrebuchetPrefabHash =
+        "AF7142933FEC082EAAA348CB1F65809A1D253269BD75BF63F7486092ABDBACC3";
+    private const string Europe1700StoryModePreReleaseHash =
+        "6149BAFFE6FAC3C53360006D2C7C601970515FC4587CB380373E0896E8BBE778";
+    private const string Europe1700StoryModePublicReleaseHash =
+        "CC205186BCA26EA04197C543F06BFD14EC7CA8A94B559A3A2753921C4BB27EF0";
+    private const string Europe1700ClansResourceConfigHash =
+        "635C85B86F25357820FB12321E4556730B5E5DBA47C4FD1377B193F443741416";
+    private const string Europe1700DistanceCacheHash =
+        "000C4AC651BA625539E47A0DDD34B850D8233BE15A57FA6E03378C56FE671EE9";
+    private const string Europe1700MainMapSceneHash =
+        "87052201579167AB4346EA63D16B5FAB5E1E1CF41382806035F707902BF6D58C";
+    private const string Europe1700DedicatedServerCoreHash =
+        "CEDA1C7D700260BC39D43A628F7A6AC0FD68316E63805931718213F54FEB9210";
+    private const string Europe1700ServerSandBoxHash =
+        "BFE8D098A425A71C7FE43F80560F07E1DA75C4F14EF5577CF5F7BB5D0E3C1776";
+    private const string RealmOfThronesRule = "realm-of-thrones-8.1.7-server-v2";
+    private const string Europe1700Rule = "europe-1700-1.4.7.1-server-v55";
+    private const string ContentOnlyRule = "content-only-server-v1";
+    private const string GenericExecutableRule = "generic-executable-bridge-v1";
+    private const long MaximumManifestCharacters = 4 * 1024 * 1024;
+
+    private static readonly UTF8Encoding Utf8NoBom = new(false, true);
+
+    private static readonly HashSet<string> SupportedReleasedCoopVersions =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "v0.1.1",
+            "v0.1.2"
+        };
+
+    private static readonly HashSet<string> Europe1700StoryModeHashes =
+        new(StringComparer.Ordinal)
+        {
+            Europe1700StoryModePreReleaseHash,
+            Europe1700StoryModePublicReleaseHash
+        };
+
+    private static readonly HashSet<string> ProtectedModuleIds =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Coop",
+            "Native",
+            "SandBoxCore",
+            "Sandbox",
+            "DedicatedServer.Windows"
+        };
+
+    private static readonly HashSet<string> ClientOnlyOfficialDependencies =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "StoryMode",
+            "CustomBattle",
+            "BirthAndDeath"
+        };
+
+    private static readonly string[] RealmOfThronesModuleIds =
+        ["ROT-Core", "ROT-Content", "ROT-Dragon", "ROT_Map"];
+
+    private static readonly string[] GameRuntimeFingerprintFiles =
+    [
+        "TaleWorlds.CampaignSystem.dll",
+        "TaleWorlds.Core.dll",
+        "TaleWorlds.Library.dll",
+        "TaleWorlds.Localization.dll",
+        "TaleWorlds.ModuleManager.dll",
+        "TaleWorlds.MountAndBlade.dll",
+        "TaleWorlds.ObjectSystem.dll"
+    ];
+
+    private static readonly HashSet<string> SupportedGameVersionCompatibilityPairs =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "v1.4.7|v1.4.8"
+        };
+
+    private static readonly HashSet<string> FrameworkModuleIds =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Bannerlord.Harmony",
+            "Bannerlord.ButterLib",
+            "Bannerlord.UIExtenderEx",
+            "Bannerlord.MBOptionScreen"
+        };
+
+    private static readonly HashSet<string> CoreRuntimeModuleIds =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Native",
+            "SandBoxCore",
+            "Sandbox"
+        };
+
+    private static readonly IReadOnlyDictionary<string, string> Europe1700AssemblyHashes =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["EOE.CustomBattlePatch.dll"] = "C6C8D5A422496FA0B3AC29E00BA8026786F18BF8D4AC88521E6044D3E7E4EBE6",
+            ["RF_BattleAI.dll"] = "6BE1630A901418E4F2F2BAA5533CBC2336C987A2FF7F6939E2C041863521C074",
+            ["XMLMeleePatch.dll"] = "5F06A86EBCB4A3444495B2CD4BA0A05CAE73E7B2AE6D7C329C26F7D8496B6FD5",
+            ["BattleArtilleryReworked.dll"] = "513AACED244E2521AF191D353E3A09E7C797AD86E698107928552974F1A37DBA",
+            ["Europe1700.dll"] = "7FAA1415EA01D2F2A38CBB811B163F4A3C07727E618EC1FDD187E93701203861",
+            ["Bannerlord.EOEPatches.dll"] = "71BDD49B9459E9FF1A4C975EB3717A3E8491A566C15322F9F1FC93EF53AEB456",
+            ["BannerColorPersistence.dll"] = "CF443CAC7E7E21704B8DE07E9BB6A2FE12D3A44BD68E7B4E23C27A891EA500D3",
+            ["ClansResourceAdder.dll"] = "339D5C2FF7D1E01823B063135E41F31B79B8EDC0B9ECFD75AB1CD648AB78F93A",
+            ["CustomizableClanTier.dll"] = "2C6392730CEBAB850CAAF92DE7DBE0E9E3CB3F7E599C78F4A9AA851A1673670D"
+        };
+
+    private static readonly string[] Europe1700ServerDlls =
+    [
+        "RF_BattleAI.dll",
+        "XMLMeleePatch.dll",
+        "BattleArtilleryReworked.dll",
+        "Europe1700.dll",
+        "Bannerlord.EOEPatches.dll",
+        "ClansResourceAdder.dll",
+        "CustomizableClanTier.dll"
+    ];
+
+    private static readonly BridgeAuthorityRule[] Europe1700AuthorityRules =
+    [
+        new(
+            "Europe1700",
+            "ClansResourceAdder.dll",
+            "ClansResourceAdder.ResourcesAdderEvents",
+            "AddResources",
+            0,
+            BridgeInvocationScope.ServerOnly),
+        new(
+            "Europe1700",
+            "Bannerlord.EOEPatches.dll",
+            "Bannerlord.EOEPatches.SubModule",
+            "OnBeforeInitialModuleScreenSetAsRoot",
+            0,
+            BridgeInvocationScope.ClientOnly)
+    ];
+
+    private static readonly BridgeContentExclusion[] Europe1700ContentExclusions =
+    [
+        new("Europe1700", "ModuleData/collision_infos.xml"),
+        new("Europe1700", "ModuleData/action_sets.xml"),
+        new("Europe1700", "ModuleData/action_types.xml"),
+        new("Europe1700", "Prefabs/props_siege_trebuchets.xml"),
+        new(
+            "Europe1700",
+            "bin/Win64_Shipping_Server/conf_clans_resource_adder.xml"),
+        new("Europe1700", "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_western_npcs.xml"),
+        new("Europe1700", "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_muslim_npcs.xml"),
+        new("Europe1700", "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_turkic_npcs.xml"),
+        new("Europe1700", "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_northern_npcs.xml"),
+        new("Europe1700", "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_eastern_npcs.xml"),
+        new("Europe1700", "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_lords_aserai.xml"),
+        new("Europe1700", "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_lords_italian.xml"),
+        new("Europe1700", "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_lords_khuzait.xml"),
+        new("Europe1700", "ModuleData/lords_main/lords_ottoman_extra.xml"),
+        new("Europe1700", "ModuleData/npccharacters/spnpccharacters_scottish.xml"),
+        new("Europe1700", "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets.xslt"),
+        new("Europe1700", "ModuleData/trooptrees/spnpccharacters.xslt"),
+        new("Europe1700", "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_baltic.xml"),
+        new("Europe1700", "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_battania.xml"),
+        new("Europe1700", "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_cossack.xml"),
+        new("Europe1700", "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_finnic.xml"),
+        new("Europe1700", "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_rus.xml"),
+        new("Europe1700", "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_scottish.xml"),
+        new("Europe1700", "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_sturgia.xml"),
+        new("Europe1700", "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_welsh.xml"),
+        new("Europe1700", "ModuleData/spworkshops.xml")
+    ];
+
+    private static readonly Europe1700SchemaRepair[] Europe1700SchemaRepairs =
+    [
+        new(
+            "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_western_npcs.xml",
+            Europe1700SchemaRepairKind.EquipmentElementCase,
+            461,
+            "9D83684D7FCABF9A7926D31AE406ADA00BD2C17284CA4646239D94904170718F",
+            "EC4AFE65C4A6A48BE334C5E8FC8B046CBE30201233FD89FA31210B002FDE42C3"),
+        new(
+            "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_muslim_npcs.xml",
+            Europe1700SchemaRepairKind.EquipmentElementCase,
+            412,
+            "FC72BD2FA17C45B1EEF8A063C7652B207D68232A4F0D968FF9080841E1C578A7",
+            "E71E140A5668755A084CD1FF611B0FAB30ABD3145B96FBF177015434B5A58585"),
+        new(
+            "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_turkic_npcs.xml",
+            Europe1700SchemaRepairKind.EquipmentElementCase,
+            444,
+            "B6549D40453D29E46FFBD8A22F11774E9AF9C9FCFB6764AC8573B25DA5503397",
+            "7C1A2A202ECDB1BF2484804A578B8342DF6DC21DC5AECE207172A5405202DAE9"),
+        new(
+            "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_northern_npcs.xml",
+            Europe1700SchemaRepairKind.EquipmentElementCase,
+            455,
+            "EFAA6B875CC61D044674A8B889770E57F1C89AB20280AEA8B71CD18238996B29",
+            "49C84E9DD4573BEA50AED840D3EF35D1C5620BC1370667B66AC5C5F7E734F178"),
+        new(
+            "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_eastern_npcs.xml",
+            Europe1700SchemaRepairKind.EquipmentElementCase,
+            383,
+            "81B47EBD1055DBC729107F3AB2FC00D10DE2C6E9573C0BC22456397347F99672",
+            "98906E13042162163CCF68A608EC0E907653927F5BD8A07C3383370A808D2978"),
+        new(
+            "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_lords_aserai.xml",
+            Europe1700SchemaRepairKind.EquipmentElementCase,
+            69,
+            "BC638DA98CD88ECE3C0248EDA0F1BA17B390E57024B71BE6D490E043EB3E9FFA",
+            "048AE0162521712268FCD330D59AD69BA1BBC1D94538468F6CE13BD488B825B6"),
+        new(
+            "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_lords_italian.xml",
+            Europe1700SchemaRepairKind.EquipmentElementCase,
+            11,
+            "1CD90EC72C221D3F647A52227281725884CDE2E6DF5E7F0D183A7944F2A5B3C4",
+            "56AA9A6D7D805070188145ABD9635058472BAD438B96B7562ACA3FF7156075F1"),
+        new(
+            "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_lords_khuzait.xml",
+            Europe1700SchemaRepairKind.EquipmentElementCase,
+            63,
+            "5BEB2A993AA1E3C9B39913127E98C6202A4538A414014ADA382E59F99248D007",
+            "AF431846B3D6C7C1CB7A6A12A4347A5F7E237835131C2D562D1BC817A6752C3C"),
+        new(
+            "ModuleData/lords_main/lords_ottoman_extra.xml",
+            Europe1700SchemaRepairKind.TraitsElementCase,
+            24,
+            "5707225DBB97EECF7C1FCA4163F56CA6EB3BF03AA1BD4735B3CA2B338AE57EE8",
+            "5661ADDF408A8A328E4A810FB7420CF33F14DFDEE1B1884F55E2A8FC0E11233F"),
+        new(
+            "ModuleData/npccharacters/spnpccharacters_scottish.xml",
+            Europe1700SchemaRepairKind.StrayElementTerminator,
+            1,
+            "99AFEE9A811600F6F15565AC032DD88308A17B2C3C4F33A06899A4DD4AD4E07C",
+            "44BD72C4B4DB2AD9106761C0BBB74066D69BB49060702AD11A6DDE92A0177E99"),
+        new(
+            "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets.xslt",
+            Europe1700SchemaRepairKind.MergedBearskinEquipmentXslt,
+            1,
+            "C4614A14B3E9D9ABFBA2FC6AE5ECFF85451FA8ED9CE29F5D24550649513B8744",
+            "3ADAA2C4245858CB51B336CE43F98202E6BF38D75757BEB2790915B9D7EA5349"),
+        new(
+            "ModuleData/trooptrees/spnpccharacters.xslt",
+            Europe1700SchemaRepairKind.MergedNpcCompatibilityXslt,
+            1,
+            "C7BCA70A3E4A01995F1EFE59DA8DA59FDA91A14C0188422574C6F1D81266FDA9",
+            "D882D4F8667CEEDA21DF5C9AA15B2E14C573CA2E349BA9D100C46A9D18504C1E"),
+        new(
+            "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_baltic.xml",
+            Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
+            1,
+            "2A1AEC92C47CF9F377ACD9193877C79E2B82065E769AC5D79AF3ECEAC93B2E27",
+            "4A7D088B24BD42FA0108AC6AA549BE7553DD747DE1E677CB268A5B6243ABB425"),
+        new(
+            "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_battania.xml",
+            Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
+            9,
+            "2DBAE07DD8D82E8C63FB3EE574A1091A8D62F0D47423697DF79A3359CE51F540",
+            "962E82C999A0B70E641C97E13958C8B5BA5ABD8EA7C9675CCA649C3B3DF40F0E"),
+        new(
+            "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_cossack.xml",
+            Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
+            1,
+            "79A965AD84DAFCC52055D8584F83D1F950B2E303BB81039280A0721AEA0E1ED9",
+            "7B67D3A8564E5E70FBFC76B1FF58741F0C9C5DD0E93825CECC176BFE2AF822CD"),
+        new(
+            "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_finnic.xml",
+            Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
+            1,
+            "901E59D91B18060FE5E3B8961CD20D1594A35621DD591EF8F2DE5B646C30C639",
+            "B79CCDD099C446E75AAD17D816C1F91A7A40DE7CCFBF90E611A5385D438E50FB"),
+        new(
+            "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_rus.xml",
+            Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
+            1,
+            "67B22F5F58B5B1F724A125DE4EFA166E46C1859919CF9E474845A7048109AE83",
+            "14C57892C6A4E5B4891CD53D9DDB9B9E6634F5BE2BE648AF66878234EEF923C0"),
+        new(
+            "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_scottish.xml",
+            Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
+            9,
+            "2738B3EC5BD3FACC253782E763EBAB898F512D4CF1213D3D7C965518426AD44A",
+            "7D7B3FB52B50C182D4DA1F673A35637867873D7661F8B3142F73C7677F5FF358"),
+        new(
+            "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_sturgia.xml",
+            Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
+            1,
+            "F098EC4B395CB4959371D13A930B1E9FFCB1D6F8303503377A1AFD1042624A01",
+            "2F006631CD8178A5A475F40C02556CC7731482DDC28E42DAA4B2C80C4FF39269"),
+        new(
+            "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_welsh.xml",
+            Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
+            9,
+            "22F22B148F40B70D264C5A05D4D20FDEED95114BDA78B3ABB27EB29D9CE2B146",
+            "56A463721DD2CD04900588543F0A8B2E9AA3F6FC773016EB6A04522C823FD08E"),
+        new(
+            "ModuleData/spworkshops.xml",
+            Europe1700SchemaRepairKind.WorkshopRangedOutputCategory,
+            5,
+            "A997ADC9F61FFFF35E2CB535C8A141C4696765AEA78684527508747CD979A62C",
+            "4E30BEA00743D223B9446C8B5B054B5FA689CD02901353CD3BC0D0386A71AEC1")
+    ];
+
+    private static readonly BridgeServerFileRedirect[] Europe1700ServerFileRedirects =
+    [
+        new(
+            "Europe1700",
+            "ModuleData/DistanceCaches/settlements_distance_cache_Default.bin",
+            Europe1700DistanceCacheHash)
+    ];
+
+    private static readonly BridgeServerMapTerrainSize[] Europe1700ServerMapTerrainSizes =
+    [
+        new(
+            "Europe1700",
+            "SceneObj/Main_map/scene.xscene",
+            Europe1700MainMapSceneHash,
+            1696f,
+            1696f,
+            "DedicatedServer.Core",
+            Europe1700DedicatedServerCoreHash,
+            "SandBox",
+            Europe1700ServerSandBoxHash)
+    ];
+
+    private static readonly IReadOnlyDictionary<string, Europe1700AnimationProjection>
+        Europe1700AnimationProjections =
+            new Dictionary<string, Europe1700AnimationProjection>(StringComparer.Ordinal)
+            {
+                ["act_ready_musket_cla"] = new("1_cla_ready_musket", "ready_crossbow"),
+                ["act_release_musket_cla"] = new("1_cla_release_musket", "release_crossbow"),
+                ["act_ready_continue_musket_cla"] = new("1_cla_ready_continue_musket", "ready_continue_crossbow"),
+                ["act_reload_musket_cla"] = new("reznov_anim_reload_musket", "reload_crossbow"),
+                ["act_reload_musket_continue_cla"] = new("reznov_anim_reload_musket_continue", "reload_crossbow_continue"),
+                ["act_ready_cannon_cla"] = new("2_cla_ready_cannon", "ready_crossbow"),
+                ["act_release_cannon_cla"] = new("2_cla_release_cannon", "release_crossbow"),
+                ["act_ready_continue_cannon_cla"] = new("2_cla_ready_continue_cannon", "ready_continue_crossbow"),
+                ["act_reload_cannon_cla"] = new("2_cla_reload_cannon", "reload_crossbow"),
+                ["act_reload_cannon_continue_cla"] = new("2_cla_reload_cannon_continue", "reload_crossbow_continue"),
+                ["act_reload_cannon_horseback_cla"] = new("2_cla_reload_cannon_horseback", "reload_crossbow_horseback"),
+                ["act_reload_cannon_continue_horseback_cla"] = new("2_cla_reload_cannon_continue_horseback", "reload_crossbow_continue_horseback"),
+                ["act_ready_pistol_cla"] = new("3_cla_ready_pistol", "ready_crossbow"),
+                ["act_release_pistol_cla"] = new("3_cla_release_pistol", "release_crossbow"),
+                ["act_ready_continue_pistol_cla"] = new("3_cla_ready_continue_pistol", "ready_continue_crossbow"),
+                ["act_reload_musket_fast_cla"] = new("1b_cla_reload_musket_fast", "reload_crossbow_fast"),
+                ["act_reload_musket_continue_fast_cla"] = new("1b_cla_reload_musket_continue_fast", "reload_crossbow_fast_continue"),
+                ["act_release_revolver_cla"] = new("7_cla_release_revolver", "release_crossbow"),
+                ["act_release_rifle_cla"] = new("5_cla_release_rifle", "release_crossbow"),
+                ["act_release_bolt_rifle_cla"] = new("6_cla_release_bolt_rifle", "release_crossbow"),
+                ["act_reload_rifle_cla"] = new("5_cla_reload_rifle", "reload_crossbow"),
+                ["act_reload_bolt_rifle_continue_cla"] = new("6_cla_reload_bolt_rifle_continue", "reload_crossbow_continue"),
+                ["cla_act_reload_bomb"] = new("cla_reload_bomb", "reload_crossbow_continue"),
+                ["cla_act_cla_spear_idle_1"] = new("cla_spear_idle_1", "troop_stand_spear_1")
+            };
+
+    private readonly Dictionary<string, PendingPlan> _pendingPlans =
+        new(StringComparer.Ordinal);
+    private readonly CoopBridgePackageBuilder _bridgePackageBuilder = new();
+
+    public CoopPreparationPlan CreatePlan(
+        BannerlordModule selected,
+        IReadOnlyList<BannerlordModule> installedModules,
+        string serverRoot)
+    {
+        ArgumentNullException.ThrowIfNull(selected);
+        ArgumentNullException.ThrowIfNull(installedModules);
+
+        var canonicalServerRoot = Path.GetFullPath(serverRoot);
+        var modulesRoot = Path.Combine(canonicalServerRoot, "engine", "Modules");
+        EnsureDirectChild(selected.Path, modulesRoot, "Selected module");
+
+        var byId = installedModules
+            .Where(module => module.IsInstalled)
+            .ToDictionary(module => module.Id, StringComparer.OrdinalIgnoreCase);
+        var blockers = new List<string>();
+        var warnings = new List<string>();
+        var proposed = new List<PendingChange>();
+        var selectedIds = new List<string>();
+        string ruleId;
+
+        if (ProtectedModuleIds.Contains(selected.Id))
+        {
+            blockers.Add($"Protected module '{selected.Id}' cannot be transformed.");
+            ruleId = "none";
+            selectedIds.Add(selected.Id);
+        }
+        else if (IsRealmOfThronesModule(selected.Id))
+        {
+            ruleId = RealmOfThronesRule;
+            BuildRealmOfThronesPlan(
+                byId,
+                modulesRoot,
+                blockers,
+                warnings,
+                proposed,
+                selectedIds);
+            if (blockers.Count == 0)
+            {
+                AddBridgePackage(
+                    installedModules,
+                    selectedIds,
+                    canonicalServerRoot,
+                    proposed,
+                    selectedIds,
+                    warnings);
+            }
+        }
+        else if (selected.Id.Equals("Europe1700", StringComparison.OrdinalIgnoreCase))
+        {
+            ruleId = Europe1700Rule;
+            BuildEurope1700Plan(
+                selected,
+                byId,
+                modulesRoot,
+                blockers,
+                warnings,
+                proposed,
+                selectedIds);
+            if (blockers.Count == 0)
+            {
+                AddBridgePackage(
+                    installedModules,
+                    selectedIds,
+                    canonicalServerRoot,
+                    proposed,
+                    selectedIds,
+                    warnings,
+                    Europe1700AuthorityRules,
+                    Europe1700ContentExclusions,
+                    Europe1700ServerFileRedirects,
+                    CreateEurope1700SchemaOverlays(selected),
+                    CreateEurope1700ClientAssemblyResolves(),
+                    Europe1700ServerMapTerrainSizes);
+            }
+        }
+        else
+        {
+            var family = BuildGenericDependencyFamily(
+                selected,
+                byId,
+                modulesRoot,
+                blockers,
+                selectedIds);
+            var hasExecutableCode = false;
+            foreach (var module in family)
+            {
+                var manifest = LoadManifest(Path.Combine(module.Path, "SubModule.xml"));
+                var declaredDlls = DeclaredDllNames(manifest).ToArray();
+                hasExecutableCode |= declaredDlls.Length > 0;
+                AddManifestTransformation(
+                    module,
+                    addCoopOrdering: !IsEarlyFramework(module),
+                    enableDllNames: declaredDlls,
+                    proposed,
+                    suppressSubModules: IsEarlyFramework(module));
+                if (declaredDlls.Length > 0)
+                    AddClientDllProjection(module, proposed);
+            }
+
+            ruleId = hasExecutableCode ? GenericExecutableRule : ContentOnlyRule;
+            var authorityRules = DiscoverMcmSettingsFallbackRules(family);
+            if (blockers.Count == 0)
+            {
+                AddBridgePackage(
+                    installedModules,
+                    selectedIds,
+                    canonicalServerRoot,
+                    proposed,
+                    selectedIds,
+                    warnings,
+                    authorityRules);
+            }
+
+            if (authorityRules.Count > 0)
+            {
+                warnings.Add(
+                    $"BCS generated {authorityRules.Count} fingerprint-bound server settings fallback rule(s) " +
+                    "for MCM-backed module lifecycle methods.");
+            }
+
+            warnings.Add(hasExecutableCode
+                ? "BCS generated a generic, fingerprint-pinned Coop bridge and server projection. " +
+                  "It does not invent synchronization for private mod state; authority adapters are still " +
+                  "required when runtime tests expose custom state divergence."
+                : "Content XML and a parity-pinned bridge package will be loaded by the server, but a real " +
+                  "client join and campaign round-trip are still required before calling the module compatible.");
+        }
+
+        var planId = DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" +
+                     Guid.NewGuid().ToString("N")[..8];
+        var publicPlan = new CoopPreparationPlan
+        {
+            PlanId = planId,
+            CreatedUtc = DateTimeOffset.UtcNow,
+            ServerRoot = canonicalServerRoot,
+            RuleId = ruleId,
+            ModuleIds = selectedIds.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            Blockers = blockers.Distinct(StringComparer.Ordinal).ToArray(),
+            Warnings = warnings.Distinct(StringComparer.Ordinal).ToArray(),
+            Changes = proposed.Select(change => change.PublicChange).ToArray()
+        };
+
+        _pendingPlans[planId] = new PendingPlan(publicPlan, proposed);
+        return publicPlan;
+    }
+
+    /// <summary>
+    /// Removes Windows internet-zone metadata from managed assemblies in the
+    /// enabled prepared module set. Unblocking an alternate data stream must
+    /// never alter assembly bytes, so every file is hashed before and after.
+    /// </summary>
+    public int UnblockPreparedModuleAssemblies(
+        string serverRoot,
+        IReadOnlyCollection<string> enabledModuleIds)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(serverRoot);
+        ArgumentNullException.ThrowIfNull(enabledModuleIds);
+
+        var canonicalServerRoot = Path.GetFullPath(serverRoot);
+        var modulesRoot = Path.Combine(canonicalServerRoot, "engine", "Modules");
+        if (!Directory.Exists(modulesRoot))
+            throw new DirectoryNotFoundException($"Dedicated-server Modules directory was not found: {modulesRoot}");
+
+        var installedModules = new ModuleScanner()
+            .Scan(modulesRoot)
+            .ToDictionary(module => module.Id, StringComparer.OrdinalIgnoreCase);
+
+        var unblocked = 0;
+        foreach (var moduleId in enabledModuleIds.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(moduleId))
+                throw new InvalidDataException("Enabled module ID cannot be empty while unblocking assemblies.");
+
+            if (!installedModules.TryGetValue(moduleId, out var installedModule))
+                throw new DirectoryNotFoundException($"Enabled module was not found: {moduleId}");
+
+            // Workshop imports retain their numeric folder name. Resolve the
+            // canonical path from SubModule.xml instead of assuming folder == ID.
+            var moduleRoot = Path.GetFullPath(installedModule.Path);
+            EnsureDirectChild(moduleRoot, modulesRoot, $"Enabled module {moduleId}");
+            if (!Directory.Exists(moduleRoot))
+                throw new DirectoryNotFoundException($"Enabled module was not found: {moduleRoot}");
+            if ((File.GetAttributes(moduleRoot) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException($"Linked enabled module is not safe to unblock: {moduleRoot}");
+
+            foreach (var assemblyPath in Directory.EnumerateFiles(
+                         moduleRoot,
+                         "*.dll",
+                         SearchOption.AllDirectories))
+            {
+                if ((File.GetAttributes(assemblyPath) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException($"Linked assembly is not safe to unblock: {assemblyPath}");
+
+                var zoneIdentifier = assemblyPath + ":Zone.Identifier";
+                if (!File.Exists(zoneIdentifier))
+                    continue;
+
+                var before = HashFile(assemblyPath);
+                File.Delete(zoneIdentifier);
+                if (File.Exists(zoneIdentifier))
+                    throw new IOException($"Windows did not remove the blocked-file marker: {assemblyPath}");
+                var after = HashFile(assemblyPath);
+                if (!after.Equals(before, StringComparison.Ordinal))
+                    throw new IOException($"Assembly bytes changed while unblocking: {assemblyPath}");
+                unblocked++;
+            }
+        }
+
+        return unblocked;
+    }
+
+    public CoopPreparationResult Apply(CoopPreparationPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (!_pendingPlans.TryGetValue(plan.PlanId, out var pending) ||
+            !ReferenceEquals(plan, pending.PublicPlan))
+        {
+            throw new InvalidOperationException(
+                "This compatibility plan is stale or was created by another BCS Tool session. Analyze again.");
+        }
+
+        if (!plan.CanApply)
+            throw new InvalidOperationException("The compatibility plan has blockers or no file changes.");
+
+        var backupDirectory = Path.Combine(
+            plan.ServerRoot,
+            "bcs-compatibility-backups",
+            plan.PlanId);
+        if (Directory.Exists(backupDirectory))
+            throw new IOException($"Compatibility backup already exists: {backupDirectory}");
+
+        foreach (var change in pending.Changes)
+            VerifyUnchanged(change);
+
+        Directory.CreateDirectory(backupDirectory);
+        var applied = new List<PendingChange>();
+        try
+        {
+            foreach (var change in pending.Changes)
+            {
+                var relative = Path.GetRelativePath(plan.ServerRoot, change.TargetPath);
+                EnsureSafeRelativePath(relative);
+                if (change.OriginalExists)
+                {
+                    var backupPath = Path.Combine(backupDirectory, "files", relative);
+                    Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
+                    File.Copy(change.TargetPath, backupPath, overwrite: false);
+                }
+
+                ReplaceFileSafely(change.TargetPath, change.ProposedBytes);
+                applied.Add(change);
+            }
+
+            var manifest = new BackupManifest
+            {
+                SchemaVersion = 1,
+                PlanId = plan.PlanId,
+                CreatedUtc = plan.CreatedUtc,
+                ServerRoot = plan.ServerRoot,
+                RuleId = plan.RuleId,
+                ModuleIds = plan.ModuleIds.ToArray(),
+                Files = pending.Changes.Select(change => new BackupFileEntry
+                {
+                    RelativePath = Path.GetRelativePath(plan.ServerRoot, change.TargetPath),
+                    OriginalExisted = change.OriginalExists,
+                    OriginalSha256 = change.PublicChange.OriginalSha256,
+                    AppliedSha256 = change.PublicChange.ProposedSha256
+                }).ToList()
+            };
+            var manifestPath = Path.Combine(backupDirectory, "bcs-compatibility-backup.json");
+            File.WriteAllText(
+                manifestPath,
+                JsonSerializer.Serialize(manifest, JsonOptions()) + Environment.NewLine,
+                Utf8NoBom);
+
+            UnblockPreparedModuleAssemblies(plan.ServerRoot, ReadEnabledModuleIds(plan.ServerRoot));
+
+            _pendingPlans.Remove(plan.PlanId);
+            return new CoopPreparationResult(
+                plan.PlanId,
+                backupDirectory,
+                manifestPath,
+                plan.ModuleIds);
+        }
+        catch (Exception applyException)
+        {
+            var rollbackErrors = RollBackApplied(plan.ServerRoot, backupDirectory, applied);
+            if (rollbackErrors.Count > 0)
+            {
+                throw new AggregateException(
+                    "Compatibility apply failed and one or more files could not be rolled back. " +
+                    $"Recovery material remains at: {backupDirectory}",
+                    new[] { applyException }.Concat(rollbackErrors));
+            }
+
+            throw;
+        }
+    }
+
+    public CoopPreparationResult Revert(string manifestPath)
+    {
+        var canonicalManifest = Path.GetFullPath(manifestPath);
+        if (!File.Exists(canonicalManifest))
+            throw new FileNotFoundException("Compatibility backup manifest was not found.", canonicalManifest);
+
+        var backupDirectory = Path.GetDirectoryName(canonicalManifest)!;
+        var manifest = JsonSerializer.Deserialize<BackupManifest>(
+                           File.ReadAllText(canonicalManifest, Utf8NoBom),
+                           JsonOptions())
+                       ?? throw new InvalidDataException("Compatibility backup manifest is empty.");
+        if (manifest.SchemaVersion != 1 || string.IsNullOrWhiteSpace(manifest.PlanId))
+            throw new InvalidDataException("Unsupported compatibility backup manifest.");
+
+        var serverRoot = Path.GetFullPath(manifest.ServerRoot);
+        foreach (var entry in manifest.Files)
+        {
+            EnsureSafeRelativePath(entry.RelativePath);
+            var target = Path.GetFullPath(Path.Combine(serverRoot, entry.RelativePath));
+            EnsureWithin(target, serverRoot, "Backup target");
+            if (!File.Exists(target) || !HashFile(target).Equals(entry.AppliedSha256, StringComparison.Ordinal))
+            {
+                throw new IOException(
+                    $"Cannot revert because the prepared file changed after apply: {target}");
+            }
+        }
+
+        var appliedBytes = manifest.Files.ToDictionary(
+            entry => entry.RelativePath,
+            entry => File.ReadAllBytes(
+                Path.GetFullPath(Path.Combine(serverRoot, entry.RelativePath))),
+            StringComparer.OrdinalIgnoreCase);
+        var reverted = new List<BackupFileEntry>();
+        try
+        {
+            foreach (var entry in manifest.Files.AsEnumerable().Reverse())
+            {
+                var target = Path.GetFullPath(Path.Combine(serverRoot, entry.RelativePath));
+                if (entry.OriginalExisted)
+                {
+                    var backup = Path.Combine(backupDirectory, "files", entry.RelativePath);
+                    if (!File.Exists(backup) ||
+                        !HashFile(backup).Equals(entry.OriginalSha256, StringComparison.Ordinal))
+                    {
+                        throw new IOException($"Original backup is missing or damaged: {backup}");
+                    }
+
+                    ReplaceFileSafely(target, File.ReadAllBytes(backup));
+                }
+                else
+                {
+                    File.Delete(target);
+                }
+
+                reverted.Add(entry);
+            }
+        }
+        catch (Exception revertException)
+        {
+            var recoveryErrors = new List<Exception>();
+            foreach (var entry in reverted.AsEnumerable().Reverse())
+            {
+                try
+                {
+                    var target = Path.GetFullPath(Path.Combine(serverRoot, entry.RelativePath));
+                    ReplaceFileSafely(target, appliedBytes[entry.RelativePath]);
+                }
+                catch (Exception recoveryException)
+                {
+                    recoveryErrors.Add(recoveryException);
+                }
+            }
+
+            if (recoveryErrors.Count > 0)
+            {
+                throw new AggregateException(
+                    "Compatibility revert failed and the prepared state could not be fully restored.",
+                    new[] { revertException }.Concat(recoveryErrors));
+            }
+
+            throw;
+        }
+
+        File.WriteAllText(
+            Path.Combine(backupDirectory, "REVERTED.txt"),
+            $"Reverted by BCS Tool at {DateTimeOffset.UtcNow:O}{Environment.NewLine}",
+            Utf8NoBom);
+
+        return new CoopPreparationResult(
+            manifest.PlanId,
+            backupDirectory,
+            canonicalManifest,
+            manifest.ModuleIds);
+    }
+
+    public string? FindLatestBackupManifest(string serverRoot)
+    {
+        var root = Path.Combine(Path.GetFullPath(serverRoot), "bcs-compatibility-backups");
+        if (!Directory.Exists(root))
+            return null;
+
+        return Directory.EnumerateFiles(
+                root,
+                "bcs-compatibility-backup.json",
+                SearchOption.AllDirectories)
+            .Where(path => !File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "REVERTED.txt")))
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .FirstOrDefault();
+    }
+
+    private static void BuildRealmOfThronesPlan(
+        IReadOnlyDictionary<string, BannerlordModule> byId,
+        string modulesRoot,
+        ICollection<string> blockers,
+        ICollection<string> warnings,
+        ICollection<PendingChange> proposed,
+        ICollection<string> selectedIds)
+    {
+        var family = new List<BannerlordModule>();
+        foreach (var id in RealmOfThronesModuleIds)
+        {
+            if (!byId.TryGetValue(id, out var module))
+            {
+                blockers.Add($"Realm of Thrones package is incomplete; missing server module '{id}'.");
+                continue;
+            }
+
+            EnsureDirectChild(module.Path, modulesRoot, $"Module '{id}'");
+            family.Add(module);
+            selectedIds.Add(id);
+            if (!module.Version.Equals("v8.1.7", StringComparison.OrdinalIgnoreCase))
+            {
+                blockers.Add(
+                    $"Realm of Thrones rule supports v8.1.7, but '{id}' is {module.Version}.");
+            }
+        }
+
+        if (!byId.TryGetValue("Coop", out var coop) ||
+            !IsSupportedReleasedCoopVersion(coop.Version))
+        {
+            blockers.Add(
+                "Realm of Thrones rule requires a verified released Coop build " +
+                "(v0.1.1 or v0.1.2).");
+        }
+
+        foreach (var framework in new[]
+                 {
+                     "Bannerlord.Harmony",
+                     "Bannerlord.ButterLib",
+                     "Bannerlord.UIExtenderEx",
+                     "Bannerlord.MBOptionScreen"
+                 })
+        {
+            if (!byId.ContainsKey(framework))
+                blockers.Add($"Required server framework module is missing: {framework}.");
+            else
+                selectedIds.Add(framework);
+        }
+
+        var core = family.FirstOrDefault(module =>
+            module.Id.Equals("ROT-Core", StringComparison.OrdinalIgnoreCase));
+        if (core is null)
+            return;
+
+        var coreDll = FindDeclaredDll(core.Path, "ROT.dll");
+        if (coreDll is null)
+        {
+            blockers.Add("ROT-Core does not contain its declared ROT.dll.");
+            return;
+        }
+
+        var hash = HashFile(coreDll);
+        if (!hash.Equals(RealmOfThronesCoreHash, StringComparison.Ordinal))
+        {
+            blockers.Add(
+                $"ROT.dll build is not supported by the pinned rule. SHA-256: {hash}");
+            return;
+        }
+
+        var navalDlc = FindAssembly(byId.Values, modulesRoot, "NavalDLC.dll");
+        if (navalDlc is null)
+        {
+            blockers.Add(
+                "ROT.dll directly references NavalDLC.dll from the commercial War Sails expansion, " +
+                "but that licensed runtime is not installed in the client or dedicated-server module set. " +
+                "BCS Tool will not synthesize or bypass paid DLC code.");
+        }
+
+        if (blockers.Count > 0)
+            return;
+
+        foreach (var module in family)
+        {
+            AddManifestTransformation(
+                module,
+                addCoopOrdering: true,
+                enableDllNames: module.Id.Equals("ROT-Core", StringComparison.OrdinalIgnoreCase)
+                    ? ["ROT.dll"]
+                    : [],
+                proposed);
+        }
+
+        AddClientDllProjection(core, proposed);
+        warnings.Add(
+            "RoT naval/War Sails behaviors are not proven compatible with the current Coop protocol. " +
+            "Do not use an existing campaign until isolated join, save, reconnect, and battle tests pass.");
+        warnings.Add(
+            "RoT adds custom campaign behaviors and Harmony patches. Preparing files only reaches the " +
+            "server-load milestone; it is not proof that every campaign mutation is synchronized.");
+    }
+
+    private static void BuildEurope1700Plan(
+        BannerlordModule module,
+        IReadOnlyDictionary<string, BannerlordModule> byId,
+        string modulesRoot,
+        ICollection<string> blockers,
+        ICollection<string> warnings,
+        ICollection<PendingChange> proposed,
+        ICollection<string> selectedIds)
+    {
+        EnsureDirectChild(module.Path, modulesRoot, "Empires of Europe 1700 module");
+        selectedIds.Add(module.Id);
+        if (!module.Version.Equals("v1.4.7.1", StringComparison.OrdinalIgnoreCase))
+        {
+            blockers.Add(
+                $"Empires of Europe 1700 rule supports v1.4.7.1, but the installed module is {module.Version}.");
+        }
+        if (!byId.TryGetValue("Coop", out var coop) ||
+            !IsSupportedReleasedCoopVersion(coop.Version))
+        {
+            blockers.Add(
+                "Empires of Europe 1700 rule requires a verified released Coop build " +
+                "(v0.1.1 or v0.1.2).");
+        }
+
+        var manifest = LoadManifest(Path.Combine(module.Path, "SubModule.xml"));
+        var declared = DeclaredDllNames(manifest).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var expected = Europe1700AssemblyHashes.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!declared.SetEquals(expected))
+        {
+            blockers.Add(
+                "Empires of Europe 1700 submodule set does not match the pinned v1.4.7.1 package. " +
+                $"Declared: {string.Join(", ", declared.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))}.");
+        }
+
+        var clientBin = Path.Combine(module.Path, "bin", "Win64_Shipping_Client");
+        foreach (var expectedAssembly in Europe1700AssemblyHashes)
+        {
+            var path = Path.Combine(clientBin, expectedAssembly.Key);
+            if (!File.Exists(path))
+            {
+                blockers.Add($"Empires of Europe 1700 assembly is missing: {expectedAssembly.Key}.");
+                continue;
+            }
+            var actualHash = HashFile(path);
+            if (!actualHash.Equals(expectedAssembly.Value, StringComparison.Ordinal))
+            {
+                blockers.Add(
+                    $"Empires of Europe 1700 assembly is not the pinned build: {expectedAssembly.Key} " +
+                    $"(SHA-256 {actualHash}).");
+            }
+        }
+
+        var clansResourceConfig = Path.Combine(clientBin, "conf_clans_resource_adder.xml");
+        byte[]? clansResourceConfigBytes = null;
+        if (!File.Exists(clansResourceConfig))
+        {
+            blockers.Add(
+                "Empires of Europe 1700 ClansResourceAdder configuration is missing: " +
+                clansResourceConfig);
+        }
+
+        else
+        {
+            clansResourceConfigBytes = File.ReadAllBytes(clansResourceConfig);
+            if (!IsPinnedEurope1700ClansResourceConfig(clansResourceConfigBytes))
+            {
+                blockers.Add(
+                    "Empires of Europe 1700 ClansResourceAdder configuration does not match the pinned " +
+                    $"v1.4.7.1 package (SHA-256 {Hash(clansResourceConfigBytes)})." );
+            }
+        }
+
+        var mainMapScene = Path.Combine(
+            module.Path,
+            "SceneObj",
+            "Main_map",
+            "scene.xscene");
+        if (!IsRegularUnlinkedFileWithin(mainMapScene, module.Path))
+        {
+            blockers.Add(
+                "Empires of Europe 1700 Main_map scene is missing, linked, or outside its module: " +
+                mainMapScene);
+        }
+        else
+        {
+            var mainMapSceneHash = HashFile(mainMapScene);
+            if (!mainMapSceneHash.Equals(Europe1700MainMapSceneHash, StringComparison.Ordinal))
+            {
+                blockers.Add(
+                    "Empires of Europe 1700 Main_map does not match the pinned v1.4.7.1 map " +
+                    $"(SHA-256 {mainMapSceneHash}).");
+            }
+        }
+
+        var engineRoot = Directory.GetParent(modulesRoot)?.FullName;
+        if (engineRoot is null)
+        {
+            blockers.Add("Dedicated-server engine root could not be resolved for EOE terrain compatibility.");
+        }
+        else
+        {
+            ValidatePinnedRuntimeAssembly(
+                Path.Combine(
+                    engineRoot,
+                    "bin",
+                    "Win64_Shipping_Server",
+                    "DedicatedServer.Core.dll"),
+                engineRoot,
+                "DedicatedServer.Core",
+                Europe1700DedicatedServerCoreHash,
+                "EOE dedicated-server map loader",
+                blockers);
+        }
+
+        if (!byId.TryGetValue("Sandbox", out var sandboxModule))
+        {
+            blockers.Add("Sandbox module is missing for EOE terrain compatibility.");
+        }
+        else
+        {
+            ValidatePinnedRuntimeAssembly(
+                Path.Combine(
+                    sandboxModule.Path,
+                    "bin",
+                    "Win64_Shipping_Server",
+                    "SandBox.dll"),
+                sandboxModule.Path,
+                "SandBox",
+                Europe1700ServerSandBoxHash,
+                "EOE server terrain patch target",
+                blockers);
+        }
+
+        string? storyModeBin = null;
+        string? storyModeHash = null;
+        var bannerlordRoot = ServerExecutableLocator.FindBannerlordInstallRoot();
+        if (bannerlordRoot is null)
+        {
+            blockers.Add(
+                "Empires of Europe 1700 artillery requires the installed Bannerlord StoryMode runtime, " +
+                "but the Bannerlord client installation could not be located.");
+        }
+        else
+        {
+            storyModeBin = Path.Combine(
+                bannerlordRoot,
+                "Modules",
+                "StoryMode",
+                "bin",
+                "Win64_Shipping_Client");
+            var storyModeDll = Path.Combine(storyModeBin, "StoryMode.dll");
+            if (!File.Exists(storyModeDll))
+            {
+                blockers.Add(
+                    $"Empires of Europe 1700 artillery requires StoryMode.dll, which is missing: {storyModeDll}");
+            }
+            else
+            {
+                storyModeHash = HashFile(storyModeDll);
+                if (!IsPinnedEurope1700StoryModeHash(storyModeHash))
+                {
+                    blockers.Add(
+                        "The installed StoryMode.dll does not match the Bannerlord build pinned for EOE 1.4.7.1 " +
+                        $"(SHA-256 {storyModeHash}).");
+                }
+            }
+        }
+
+        if (blockers.Count > 0)
+            return;
+
+        AddManifestTransformation(
+            module,
+            addCoopOrdering: false,
+            enableDllNames: Europe1700ServerDlls,
+            proposed);
+        AddClientDllProjection(module, proposed, Europe1700ServerDlls);
+        AddEurope1700HeadlessCollisionTransformation(module, proposed);
+        AddEurope1700HeadlessActionSetTransformation(module, proposed);
+        AddEurope1700HeadlessActionTypesTransformation(module, proposed);
+        AddEurope1700TrebuchetPrefabTransformation(module, proposed);
+        AddEurope1700ManagedDependencyProfile(
+            modulesRoot,
+            storyModeBin!,
+            storyModeHash!,
+            proposed);
+        AddPendingChange(
+            proposed,
+            Path.Combine(
+                module.Path,
+                "bin",
+                "Win64_Shipping_Server",
+                "conf_clans_resource_adder.xml"),
+            clansResourceConfigBytes!,
+            "Project ClansResourceAdder configuration into the server bin");
+        warnings.Add(
+            "EOE.CustomBattlePatch and BannerColorPersistence remain disabled on the dedicated server because " +
+            "they are client/custom-battle presentation paths, not Coop campaign authority.");
+        warnings.Add(
+            "The bridge suppresses ClansResourceAdder daily mutations on clients and allows them only on the " +
+            "authoritative Coop server. It also suppresses EOEPatches' music/UI startup hook on the headless server " +
+            "while retaining its gameplay Harmony patches. Real join, save, reconnect, campaign tick, and " +
+            "field/siege battle tests remain required.");
+        warnings.Add(
+            "EOE client animation TPACs crash Bannerlord's no-render asset loader. The server projection keeps " +
+            "all 24 EOE action IDs, maps their visual animations to pinned Native headless equivalents, and " +
+            "repairs the package's mismatched bomb-reload action ID and four malformed trebuchet XML tags.");
+        warnings.Add(
+            "The generated bridge redirects pinned EOE XML reads to bridge-owned casing, terminator, workshop-output, " +
+            "legacy NPC equipment-type, and invalid equipment-slot overlays. EOE files remain unchanged. " +
+            "Firearm alternate melee modes are retained; " +
+            "the v1.4.7 server schema " +
+            "warnings for multiple Weapon elements are not silently stripped.");
+        warnings.Add(
+            "BattleArtilleryReworked references StoryMode.CampaignStoryMode while EOE declares no StoryMode " +
+            "dependency and the dedicated-server package omits StoryMode.dll. BCS pins the installed official " +
+            "StoryMode binary for both role-specific resolvers; no official game files are copied or redistributed.");
+        warnings.Add(
+            "ClansResourceAdder resolves conf_clans_resource_adder.xml beside its loaded assembly. BCS pins and " +
+            "projects the EOE-supplied configuration into the server bin so campaign initialization does not fail.");
+        warnings.Add(
+            "The released dedicated server selects Sandbox's settlement distance cache even while EOE's Main_map " +
+            "is active. The generated bridge redirects only that server cache read to EOE's exact pinned cache; " +
+            "official Coop, Sandbox, and client files remain unchanged.");
+        warnings.Add(
+            "The released dedicated-server map loader reports a fixed 848x848 terrain while EOE's pinned Main_map " +
+            "is 1696x1696. The generated bridge corrects SandBox.MapScene.GetTerrainSize only on the server, " +
+            "preventing valid EOE positions from indexing outside Bannerlord's weather grid.");
+    }
+
+    internal static bool IsPinnedEurope1700ClansResourceConfig(byte[] bytes)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        return Hash(bytes).Equals(
+            Europe1700ClansResourceConfigHash,
+            StringComparison.Ordinal);
+    }
+
+    internal static bool IsPinnedEurope1700StoryModeHash(string hash) =>
+        Europe1700StoryModeHashes.Contains(hash);
+
+    private static IReadOnlyList<BridgeClientAssemblyResolve>
+        CreateEurope1700ClientAssemblyResolves()
+    {
+        var bannerlordRoot = ServerExecutableLocator.FindBannerlordInstallRoot()
+                             ?? throw new InvalidDataException(
+                                 "Bannerlord client installation could not be located for the EOE StoryMode resolver.");
+        const string relativePath = "bin/Win64_Shipping_Client/StoryMode.dll";
+        var sourcePath = Path.Combine(
+            bannerlordRoot,
+            "Modules",
+            "StoryMode",
+            relativePath.Replace('/', Path.DirectorySeparatorChar));
+        if (!File.Exists(sourcePath))
+            throw new FileNotFoundException("EOE StoryMode client dependency is missing.", sourcePath);
+        var hash = HashFile(sourcePath);
+        if (!IsPinnedEurope1700StoryModeHash(hash))
+        {
+            throw new InvalidDataException(
+                "EOE StoryMode client dependency does not match the pinned Bannerlord build: " + hash + ".");
+        }
+        return
+        [
+            new BridgeClientAssemblyResolve(
+                "StoryMode",
+                relativePath,
+                hash,
+                sourcePath)
+        ];
+    }
+
+    private static IReadOnlyList<BridgeServerXmlOverlay> CreateEurope1700SchemaOverlays(
+        BannerlordModule module)
+    {
+        var overlays = new List<BridgeServerXmlOverlay>();
+        foreach (var repair in Europe1700SchemaRepairs)
+        {
+            var path = Path.Combine(
+                module.Path,
+                repair.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(path))
+                throw new FileNotFoundException("Pinned EOE schema-repair file is missing.", path);
+
+            var currentHash = HashFile(path);
+            if (!currentHash.Equals(repair.SourceSha256, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    $"EOE XML overlay source changed: {repair.RelativePath} (SHA-256 {currentHash}). " +
+                    "Revert the existing preparation before generating a new bridge.");
+            }
+
+            var transformed = TransformEurope1700SchemaRepairForHeadless(
+                repair.RelativePath,
+                File.ReadAllBytes(path));
+            var transformedHash = Convert.ToHexString(SHA256.HashData(transformed));
+            if (!transformedHash.Equals(repair.OutputSha256, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    $"EOE schema repair was not deterministic: {repair.RelativePath}.");
+            }
+            overlays.Add(new BridgeServerXmlOverlay(
+                module.Id,
+                repair.RelativePath,
+                repair.SourceSha256,
+                "bcs-server-overlays/" + module.Id + "/" + repair.RelativePath,
+                repair.OutputSha256,
+                transformed));
+        }
+        return overlays;
+    }
+
+    internal static byte[] TransformEurope1700SchemaRepairForHeadless(
+        string relativePath,
+        byte[] sourceBytes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
+        ArgumentNullException.ThrowIfNull(sourceBytes);
+        var repair = Europe1700SchemaRepairs.SingleOrDefault(candidate =>
+            candidate.RelativePath.Equals(relativePath, StringComparison.OrdinalIgnoreCase));
+        if (repair is null)
+            throw new InvalidDataException($"Unknown EOE schema repair: {relativePath}.");
+
+        var source = Utf8NoBom.GetString(sourceBytes);
+        string transformed;
+        switch (repair.Kind)
+        {
+            case Europe1700SchemaRepairKind.EquipmentElementCase:
+            {
+                var count = CountElementOpenings(source, "equipment");
+                if (count != repair.ExpectedOccurrences)
+                {
+                    throw new InvalidDataException(
+                        $"EOE file {relativePath} contains {count} lowercase equipment elements; " +
+                        $"expected {repair.ExpectedOccurrences}.");
+                }
+                transformed = source.Replace("<equipment", "<Equipment", StringComparison.Ordinal);
+                break;
+            }
+            case Europe1700SchemaRepairKind.TraitsElementCase:
+            {
+                var openings = CountElementOpenings(source, "traits");
+                var closings = CountOccurrences(source, "</traits>");
+                if (openings != repair.ExpectedOccurrences || closings != repair.ExpectedOccurrences)
+                {
+                    throw new InvalidDataException(
+                        $"EOE file {relativePath} contains {openings} lowercase trait openings and " +
+                        $"{closings} closings; expected {repair.ExpectedOccurrences} of each.");
+                }
+                transformed = source
+                    .Replace("<traits", "<Traits", StringComparison.Ordinal)
+                    .Replace("</traits>", "</Traits>", StringComparison.Ordinal);
+                break;
+            }
+            case Europe1700SchemaRepairKind.StrayElementTerminator:
+            {
+                const string malformed = "equipmentType=\"Civilian\" />/>";
+                var count = CountOccurrences(source, malformed);
+                if (count != repair.ExpectedOccurrences)
+                {
+                    throw new InvalidDataException(
+                        $"EOE file {relativePath} contains {count} stray element terminators; " +
+                        $"expected {repair.ExpectedOccurrences}.");
+                }
+                transformed = source.Replace(
+                    malformed,
+                    "equipmentType=\"Civilian\" />",
+                    StringComparison.Ordinal);
+                break;
+            }
+            case Europe1700SchemaRepairKind.MergedBearskinEquipmentXslt:
+            {
+                transformed = AppendEurope1700CompatibilityXslt(
+                    source,
+                    includeCivilianEquipmentTypeRepair: false,
+                    repair.ExpectedOccurrences,
+                    relativePath);
+                break;
+            }
+            case Europe1700SchemaRepairKind.MergedNpcCompatibilityXslt:
+            {
+                transformed = AppendEurope1700CompatibilityXslt(
+                    source,
+                    includeCivilianEquipmentTypeRepair: true,
+                    repair.ExpectedOccurrences,
+                    relativePath);
+                break;
+            }
+            case Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment:
+            {
+                const string invalidBearskinCape =
+                    "<Equipment\\s+slot=\"Cape\"\\s+id=\"Item\\.bearskin\"\\s*/>";
+                var count = Regex.Matches(
+                    source,
+                    invalidBearskinCape,
+                    RegexOptions.CultureInvariant).Count;
+                if (count != repair.ExpectedOccurrences)
+                {
+                    throw new InvalidDataException(
+                        $"EOE file {relativePath} contains {count} invalid Bearskin Cape equipment entries; " +
+                        $"expected {repair.ExpectedOccurrences}.");
+                }
+                transformed = Regex.Replace(
+                    source,
+                    invalidBearskinCape,
+                    string.Empty,
+                    RegexOptions.CultureInvariant);
+                break;
+            }
+            case Europe1700SchemaRepairKind.WorkshopRangedOutputCategory:
+            {
+                const string rangedTierOne = "output=\"ItemCategory.ranged_weapons\"";
+                const string rangedTierTwo = "output=\"ItemCategory.ranged_weapons_2\"";
+                const string rangedTierThree = "output=\"ItemCategory.ranged_weapons_3\"";
+                const string rangedTierFour = "output=\"ItemCategory.ranged_weapons_4\"";
+                const string rangedTierFive = "output=\"ItemCategory.ranged_weapons_5\"";
+                var tierOneCount = CountOccurrences(source, rangedTierOne);
+                var tierTwoCount = CountOccurrences(source, rangedTierTwo);
+                var tierThreeCount = CountOccurrences(source, rangedTierThree);
+                var tierFourCount = CountOccurrences(source, rangedTierFour);
+                var totalCount = tierOneCount + tierTwoCount + tierThreeCount + tierFourCount;
+                if (tierOneCount != 1 ||
+                    tierTwoCount != 1 ||
+                    tierThreeCount != 2 ||
+                    tierFourCount != 1 ||
+                    totalCount != repair.ExpectedOccurrences)
+                {
+                    throw new InvalidDataException(
+                        $"EOE file {relativePath} contains ranged workshop outputs " +
+                        $"{tierOneCount}/{tierTwoCount}/{tierThreeCount}/{tierFourCount}; " +
+                        "expected 1/1/2/1.");
+                }
+                transformed = source
+                    .Replace(rangedTierOne, rangedTierFive, StringComparison.Ordinal)
+                    .Replace(rangedTierTwo, rangedTierFive, StringComparison.Ordinal)
+                    .Replace(rangedTierThree, rangedTierFive, StringComparison.Ordinal)
+                    .Replace(rangedTierFour, rangedTierFive, StringComparison.Ordinal);
+                break;
+            }
+            default:
+                throw new InvalidDataException($"Unsupported EOE schema repair: {repair.Kind}.");
+        }
+
+        var transformedBytes = Utf8NoBom.GetBytes(transformed);
+        var document = new XmlDocument { XmlResolver = null };
+        using var stream = new MemoryStream(transformedBytes, writable: false);
+        using var reader = XmlReader.Create(stream, new XmlReaderSettings
+        {
+            DtdProcessing = DtdProcessing.Prohibit,
+            XmlResolver = null,
+            MaxCharactersInDocument = MaximumManifestCharacters
+        });
+        document.Load(reader);
+        return transformedBytes;
+    }
+
+    private static string AppendEurope1700CompatibilityXslt(
+        string source,
+        bool includeCivilianEquipmentTypeRepair,
+        int expectedOccurrences,
+        string relativePath)
+    {
+        const string closing = "</xsl:stylesheet>";
+        const string bearskinTemplate =
+            "<xsl:template match=\"equipment[@slot='Cape' and @id='Item.bearskin'] | " +
+            "Equipment[@slot='Cape' and @id='Item.bearskin']\"/>";
+        const string civilianTemplate =
+            "<xsl:template match=\"EquipmentSet[not(@equipmentType)]/@civilian[.='true']\">";
+        var closingCount = CountOccurrences(source, closing);
+        if (closingCount != expectedOccurrences ||
+            source.Contains(bearskinTemplate, StringComparison.Ordinal) ||
+            source.Contains(civilianTemplate, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"EOE XSLT {relativePath} has {closingCount} stylesheet terminators or already contains " +
+                $"a BCS compatibility template; expected {expectedOccurrences} unmodified terminator.");
+        }
+
+        var newline = source.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var addition = "\t" + bearskinTemplate + newline;
+        if (includeCivilianEquipmentTypeRepair)
+        {
+            addition +=
+                "\t" + civilianTemplate + newline +
+                "\t\t<xsl:attribute name=\"equipmentType\">Civilian</xsl:attribute>" + newline +
+                "\t</xsl:template>" + newline;
+        }
+        addition += newline + closing;
+        return source.Replace(closing, addition, StringComparison.Ordinal);
+    }
+
+    private static int CountElementOpenings(string text, string elementName)
+    {
+        var prefix = "<" + elementName;
+        var count = 0;
+        for (var index = 0;;)
+        {
+            index = text.IndexOf(prefix, index, StringComparison.Ordinal);
+            if (index < 0)
+                return count;
+            var followingIndex = index + prefix.Length;
+            if (followingIndex < text.Length &&
+                (char.IsWhiteSpace(text[followingIndex]) ||
+                 text[followingIndex] == '/' ||
+                 text[followingIndex] == '>'))
+            {
+                count++;
+            }
+            index = followingIndex;
+        }
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        for (var index = 0;;)
+        {
+            index = text.IndexOf(value, index, StringComparison.Ordinal);
+            if (index < 0)
+                return count;
+            count++;
+            index += value.Length;
+        }
+    }
+
+    private static void AddEurope1700ManagedDependencyProfile(
+        string modulesRoot,
+        string storyModeBin,
+        string storyModeHash,
+        ICollection<PendingChange> proposed)
+    {
+        var serverRoot = Directory.GetParent(Directory.GetParent(modulesRoot)!.FullName)!.FullName;
+        var profilePath = Path.Combine(
+            serverRoot,
+            DedicatedServerLaunchBuilder.ManagedDependencyProfileFileName);
+        var profile = File.Exists(profilePath)
+            ? JsonSerializer.Deserialize<GeneratedManagedDependencyProfile>(
+                  File.ReadAllText(profilePath, Utf8NoBom),
+                  JsonOptions())
+              ?? throw new InvalidDataException(
+                  $"Managed dependency profile is empty: {profilePath}")
+            : new GeneratedManagedDependencyProfile();
+        if (profile.SchemaVersion != 1)
+        {
+            throw new InvalidDataException(
+                $"Managed dependency profile has an unsupported schema: {profilePath}");
+        }
+
+        profile.Directories.RemoveAll(entry => entry.RequiredFiles.Any(file =>
+            file.Name.Equals("StoryMode.dll", StringComparison.OrdinalIgnoreCase)));
+        profile.Directories.Add(new GeneratedManagedDependencyDirectory
+        {
+            Path = Path.GetFullPath(storyModeBin),
+            RequiredFiles =
+            [
+                new GeneratedManagedDependencyFile
+                {
+                    Name = "StoryMode.dll",
+                    Sha256 = storyModeHash
+                }
+            ]
+        });
+
+        var bytes = Utf8NoBom.GetBytes(
+            JsonSerializer.Serialize(profile, JsonOptions()) + Environment.NewLine);
+        AddPendingChange(
+            proposed,
+            profilePath,
+            bytes,
+            "Pin Bannerlord StoryMode runtime for EOE artillery on the dedicated server");
+    }
+
+    private static void AddEurope1700TrebuchetPrefabTransformation(
+        BannerlordModule module,
+        ICollection<PendingChange> proposed)
+    {
+        var path = Path.Combine(module.Path, "Prefabs", "props_siege_trebuchets.xml");
+        if (!File.Exists(path))
+            throw new FileNotFoundException("Empires of Europe 1700 trebuchet prefab is missing.", path);
+
+        var currentHash = HashFile(path);
+        if (currentHash.Equals(Europe1700HeadlessTrebuchetPrefabHash, StringComparison.Ordinal))
+            return;
+        if (!currentHash.Equals(Europe1700TrebuchetPrefabHash, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "EOE trebuchet prefab does not match the pinned v1.4.7.1 syntax repair.");
+        }
+
+        var transformed = TransformEurope1700TrebuchetPrefabForHeadless(File.ReadAllBytes(path));
+        var transformedHash = Convert.ToHexString(SHA256.HashData(transformed));
+        if (!transformedHash.Equals(Europe1700HeadlessTrebuchetPrefabHash, StringComparison.Ordinal))
+            throw new InvalidDataException("EOE trebuchet prefab repair was not deterministic.");
+        AddPendingChange(
+            proposed,
+            path,
+            transformed,
+            "Close four malformed EOE trebuchet ProjectileSpeed XML elements");
+    }
+
+    internal static byte[] TransformEurope1700TrebuchetPrefabForHeadless(byte[] sourceBytes)
+    {
+        ArgumentNullException.ThrowIfNull(sourceBytes);
+        const string malformed = "<variable name=\"ProjectileSpeed\" value=\"53.500\"";
+        const string repaired = "<variable name=\"ProjectileSpeed\" value=\"53.500\"/>";
+        var source = Utf8NoBom.GetString(sourceBytes);
+        var occurrences = 0;
+        for (var index = 0;;)
+        {
+            index = source.IndexOf(malformed, index, StringComparison.Ordinal);
+            if (index < 0)
+                break;
+            occurrences++;
+            index += malformed.Length;
+        }
+        if (occurrences != 4)
+        {
+            throw new InvalidDataException(
+                $"EOE trebuchet prefab contains {occurrences} malformed ProjectileSpeed elements; expected 4.");
+        }
+
+        var transformed = Utf8NoBom.GetBytes(source.Replace(
+            malformed,
+            repaired,
+            StringComparison.Ordinal));
+        var document = new XmlDocument { XmlResolver = null };
+        using var stream = new MemoryStream(transformed, writable: false);
+        using var reader = XmlReader.Create(stream, new XmlReaderSettings
+        {
+            DtdProcessing = DtdProcessing.Prohibit,
+            XmlResolver = null,
+            MaxCharactersInDocument = MaximumManifestCharacters
+        });
+        document.Load(reader);
+        if (document.DocumentElement?.LocalName != "prefabs")
+            throw new InvalidDataException("Unexpected EOE trebuchet-prefab root.");
+        return transformed;
+    }
+
+    private static void AddEurope1700HeadlessActionTypesTransformation(
+        BannerlordModule module,
+        ICollection<PendingChange> proposed)
+    {
+        var path = Path.Combine(module.Path, "ModuleData", "action_types.xml");
+        if (!File.Exists(path))
+            throw new FileNotFoundException("Empires of Europe 1700 action types are missing.", path);
+
+        var currentHash = HashFile(path);
+        if (currentHash.Equals(Europe1700HeadlessActionTypesHash, StringComparison.Ordinal))
+            return;
+        if (!currentHash.Equals(Europe1700ActionTypesHash, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "EOE action types do not match the pinned v1.4.7.1 headless transformation.");
+        }
+
+        var transformed = TransformEurope1700ActionTypesForHeadless(File.ReadAllBytes(path));
+        var transformedHash = Convert.ToHexString(SHA256.HashData(transformed));
+        if (!transformedHash.Equals(Europe1700HeadlessActionTypesHash, StringComparison.Ordinal))
+            throw new InvalidDataException("EOE headless action-type transformation was not deterministic.");
+        AddPendingChange(
+            proposed,
+            path,
+            transformed,
+            "Repair EOE bomb-reload action ID for dedicated-server action registration");
+    }
+
+    internal static byte[] TransformEurope1700ActionTypesForHeadless(byte[] sourceBytes)
+    {
+        ArgumentNullException.ThrowIfNull(sourceBytes);
+        var document = new XmlDocument { XmlResolver = null };
+        using (var stream = new MemoryStream(sourceBytes, writable: false))
+        using (var reader = XmlReader.Create(stream, new XmlReaderSettings
+               {
+                   DtdProcessing = DtdProcessing.Prohibit,
+                   XmlResolver = null,
+                   MaxCharactersInDocument = MaximumManifestCharacters
+               }))
+        {
+            document.Load(reader);
+        }
+        if (document.DocumentElement?.LocalName != "action_types")
+            throw new InvalidDataException("Unexpected EOE action-types root.");
+
+        var mismatched = document.SelectNodes(
+                "/action_types/action[@name='cla_reload_bomb']")!
+            .OfType<XmlElement>()
+            .ToArray();
+        if (mismatched.Length != 1 || document.SelectSingleNode(
+                "/action_types/action[@name='cla_act_reload_bomb']") is not null)
+        {
+            throw new InvalidDataException(
+                "EOE bomb-reload action types do not match the pinned repair.");
+        }
+        mismatched[0].SetAttribute("name", "cla_act_reload_bomb");
+
+        var settings = new XmlWriterSettings
+        {
+            Encoding = Utf8NoBom,
+            Indent = true,
+            NewLineChars = "\n",
+            NewLineHandling = NewLineHandling.Replace,
+            OmitXmlDeclaration = document.FirstChild is not XmlDeclaration
+        };
+        using var output = new MemoryStream();
+        using (var writer = XmlWriter.Create(output, settings))
+            document.Save(writer);
+        return output.ToArray();
+    }
+
+    internal static bool IsSupportedReleasedCoopVersion(string? version) =>
+        version is not null && SupportedReleasedCoopVersions.Contains(version);
+
+    private static void AddEurope1700HeadlessActionSetTransformation(
+        BannerlordModule module,
+        ICollection<PendingChange> proposed)
+    {
+        var path = Path.Combine(module.Path, "ModuleData", "action_sets.xml");
+        if (!File.Exists(path))
+            throw new FileNotFoundException("Empires of Europe 1700 action set is missing.", path);
+
+        var currentHash = HashFile(path);
+        if (currentHash.Equals(Europe1700HeadlessActionSetHash, StringComparison.Ordinal))
+            return;
+        if (!currentHash.Equals(Europe1700ActionSetHash, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "EOE action set does not match the pinned v1.4.7.1 headless transformation.");
+        }
+
+        var transformed = TransformEurope1700ActionSetForHeadless(File.ReadAllBytes(path));
+        var transformedHash = Convert.ToHexString(SHA256.HashData(transformed));
+        if (!transformedHash.Equals(Europe1700HeadlessActionSetHash, StringComparison.Ordinal))
+            throw new InvalidDataException("EOE headless action-set transformation was not deterministic.");
+        AddPendingChange(
+            proposed,
+            path,
+            transformed,
+            "Map EOE visual actions to Native animations available in headless asset packages");
+    }
+
+    internal static byte[] TransformEurope1700ActionSetForHeadless(byte[] sourceBytes)
+    {
+        ArgumentNullException.ThrowIfNull(sourceBytes);
+        var document = new XmlDocument { XmlResolver = null };
+        using (var stream = new MemoryStream(sourceBytes, writable: false))
+        using (var reader = XmlReader.Create(stream, new XmlReaderSettings
+               {
+                   DtdProcessing = DtdProcessing.Prohibit,
+                   XmlResolver = null,
+                   MaxCharactersInDocument = MaximumManifestCharacters
+               }))
+        {
+            document.Load(reader);
+        }
+        if (document.DocumentElement?.LocalName != "action_sets")
+            throw new InvalidDataException("Unexpected EOE action-set root.");
+
+        var actions = document.SelectNodes("/action_sets/action_set/action")!
+            .OfType<XmlElement>()
+            .ToArray();
+        if (actions.Length != Europe1700AnimationProjections.Count)
+        {
+            throw new InvalidDataException(
+                $"EOE action set contains {actions.Length} actions; expected {Europe1700AnimationProjections.Count}.");
+        }
+
+        var actionsByType = new Dictionary<string, XmlElement>(StringComparer.Ordinal);
+        foreach (var action in actions)
+        {
+            var type = action.GetAttribute("type");
+            if (!Europe1700AnimationProjections.ContainsKey(type) ||
+                !actionsByType.TryAdd(type, action))
+            {
+                throw new InvalidDataException($"Unexpected or duplicate EOE action type: {type}");
+            }
+        }
+
+        foreach (var projection in Europe1700AnimationProjections)
+        {
+            var action = actionsByType[projection.Key];
+            var currentAnimation = action.GetAttribute("animation");
+            if (!currentAnimation.Equals(projection.Value.ClientAnimation, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    $"EOE action '{projection.Key}' expected animation " +
+                    $"'{projection.Value.ClientAnimation}', found '{currentAnimation}'.");
+            }
+            action.SetAttribute("animation", projection.Value.HeadlessAnimation);
+        }
+
+        var settings = new XmlWriterSettings
+        {
+            Encoding = Utf8NoBom,
+            Indent = true,
+            NewLineChars = "\n",
+            NewLineHandling = NewLineHandling.Replace,
+            OmitXmlDeclaration = document.FirstChild is not XmlDeclaration
+        };
+        using var output = new MemoryStream();
+        using (var writer = XmlWriter.Create(output, settings))
+            document.Save(writer);
+        return output.ToArray();
+    }
+
+    private static void AddEurope1700HeadlessCollisionTransformation(
+        BannerlordModule module,
+        ICollection<PendingChange> proposed)
+    {
+        var path = Path.Combine(module.Path, "ModuleData", "collision_infos.xml");
+        if (!File.Exists(path))
+            throw new FileNotFoundException("Empires of Europe 1700 collision info is missing.", path);
+
+        var document = new XmlDocument { XmlResolver = null };
+        using (var reader = XmlReader.Create(path, new XmlReaderSettings
+               {
+                   DtdProcessing = DtdProcessing.Prohibit,
+                   XmlResolver = null,
+                   MaxCharactersInDocument = MaximumManifestCharacters
+               }))
+        {
+            document.Load(reader);
+        }
+        if (document.DocumentElement?.LocalName != "base")
+            throw new InvalidDataException($"Unexpected EOE collision-info root: {path}");
+
+        var particleAttributes = document
+            .SelectNodes("/base/collision_infos/material[@id='cla_explosion' or @id='cla_explosion_small']/collision_info/collision_effect/@particle")!
+            .OfType<XmlAttribute>()
+            .ToArray();
+        if (particleAttributes.Length == 0)
+        {
+            if (!HashFile(path).Equals(Europe1700HeadlessCollisionInfoHash, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "EOE headless collision-info file changed after preparation.");
+            }
+            return;
+        }
+        if (!HashFile(path).Equals(Europe1700CollisionInfoHash, StringComparison.Ordinal) ||
+            particleAttributes.Length != 76 ||
+            particleAttributes.Any(attribute =>
+                !attribute.Value.Equals("cla_explosion", StringComparison.Ordinal) &&
+                !attribute.Value.Equals("cla_explosion_small", StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException(
+                "EOE collision particles do not match the pinned v1.4.7.1 headless transformation.");
+        }
+
+        foreach (var attribute in particleAttributes)
+            attribute.OwnerElement!.RemoveAttributeNode(attribute);
+        var settings = new XmlWriterSettings
+        {
+            Encoding = Utf8NoBom,
+            Indent = true,
+            NewLineChars = "\n",
+            NewLineHandling = NewLineHandling.Replace,
+            OmitXmlDeclaration = document.FirstChild is not XmlDeclaration
+        };
+        using var stream = new MemoryStream();
+        using (var writer = XmlWriter.Create(stream, settings))
+            document.Save(writer);
+        AddPendingChange(
+            proposed,
+            path,
+            stream.ToArray(),
+            "Remove EOE collision particles unavailable in headless dedicated-server asset packages");
+    }
+
+    private sealed record Europe1700AnimationProjection(
+        string ClientAnimation,
+        string HeadlessAnimation);
+
+    private sealed record Europe1700SchemaRepair(
+        string RelativePath,
+        Europe1700SchemaRepairKind Kind,
+        int ExpectedOccurrences,
+        string SourceSha256,
+        string OutputSha256);
+
+    private enum Europe1700SchemaRepairKind
+    {
+        EquipmentElementCase,
+        TraitsElementCase,
+        StrayElementTerminator,
+        MergedBearskinEquipmentXslt,
+        MergedNpcCompatibilityXslt,
+        InvalidBearskinCapeEquipment,
+        WorkshopRangedOutputCategory
+    }
+
+    private static void AddManifestTransformation(
+        BannerlordModule module,
+        bool addCoopOrdering,
+        IReadOnlyCollection<string> enableDllNames,
+        ICollection<PendingChange> proposed,
+        bool suppressSubModules = false)
+    {
+        var manifestPath = Path.Combine(module.Path, "SubModule.xml");
+        var document = LoadManifest(manifestPath);
+        var root = document.DocumentElement!;
+
+        foreach (XmlElement dependency in root.SelectNodes("./DependedModules/DependedModule")!)
+        {
+            var id = dependency.GetAttribute("Id");
+            if (ClientOnlyOfficialDependencies.Contains(id))
+                dependency.ParentNode!.RemoveChild(dependency);
+        }
+
+        if (addCoopOrdering &&
+            !module.Id.Equals("Coop", StringComparison.OrdinalIgnoreCase))
+        {
+            var container = root.ChildNodes.OfType<XmlElement>().FirstOrDefault(element =>
+                element.LocalName.Equals("DependedModuleMetadatas", StringComparison.OrdinalIgnoreCase));
+            if (container is null)
+            {
+                container = document.CreateElement("DependedModuleMetadatas");
+                root.AppendChild(container);
+            }
+
+            var existing = container.ChildNodes.OfType<XmlElement>().FirstOrDefault(element =>
+                element.LocalName.Equals("DependedModuleMetadata", StringComparison.OrdinalIgnoreCase) &&
+                element.GetAttribute("Id").Equals("Coop", StringComparison.OrdinalIgnoreCase));
+            if (existing is null)
+            {
+                existing = document.CreateElement("DependedModuleMetadata");
+                existing.SetAttribute("Id", "Coop");
+                container.AppendChild(existing);
+            }
+
+            existing.SetAttribute("Order", "LoadBeforeThis");
+            existing.SetAttribute("Optional", "true");
+        }
+
+        foreach (var enableDllName in enableDllNames)
+        {
+            var submodules = root.SelectNodes("./SubModules/SubModule")!
+                .OfType<XmlElement>()
+                .Where(element =>
+                    Value(element, "DLLName").Equals(enableDllName, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (submodules.Length == 0)
+                throw new InvalidDataException(
+                    $"Manifest does not declare expected server submodule '{enableDllName}': {manifestPath}");
+
+            foreach (var submodule in submodules)
+            {
+                var tags = submodule.ChildNodes.OfType<XmlElement>().FirstOrDefault(element =>
+                    element.LocalName.Equals("Tags", StringComparison.OrdinalIgnoreCase));
+                if (suppressSubModules)
+                {
+                    if (tags is null)
+                    {
+                        tags = document.CreateElement("Tags");
+                        submodule.AppendChild(tags);
+                    }
+                    foreach (var setting in new[]
+                             {
+                                 (Key: "DedicatedServerType", Value: "none"),
+                                 (Key: "IsNoRenderModeElement", Value: "false")
+                             })
+                    {
+                        var tag = tags.ChildNodes.OfType<XmlElement>().FirstOrDefault(element =>
+                            element.LocalName.Equals("Tag", StringComparison.OrdinalIgnoreCase) &&
+                            element.GetAttribute("key").Equals(setting.Key, StringComparison.OrdinalIgnoreCase));
+                        if (tag is null)
+                        {
+                            tag = document.CreateElement("Tag");
+                            tag.SetAttribute("key", setting.Key);
+                            tags.AppendChild(tag);
+                        }
+                        tag.SetAttribute("value", setting.Value);
+                    }
+                }
+                else if (tags is not null)
+                {
+                    foreach (var tag in tags.ChildNodes.OfType<XmlElement>().Where(element =>
+                                 element.LocalName.Equals("Tag", StringComparison.OrdinalIgnoreCase) &&
+                                 (element.GetAttribute("key").Equals(
+                                      "DedicatedServerType",
+                                      StringComparison.OrdinalIgnoreCase) ||
+                                  element.GetAttribute("key").Equals(
+                                      "IsNoRenderModeElement",
+                                      StringComparison.OrdinalIgnoreCase))).ToArray())
+                    {
+                        tags.RemoveChild(tag);
+                    }
+                }
+            }
+        }
+
+        var settings = new XmlWriterSettings
+        {
+            Encoding = Utf8NoBom,
+            Indent = true,
+            NewLineChars = Environment.NewLine,
+            NewLineHandling = NewLineHandling.Replace,
+            OmitXmlDeclaration = document.FirstChild is not XmlDeclaration
+        };
+        using var stream = new MemoryStream();
+        using (var writer = XmlWriter.Create(stream, settings))
+            document.Save(writer);
+        AddPendingChange(
+            proposed,
+            manifestPath,
+            stream.ToArray(),
+            $"Transform {module.Id} manifest for dedicated-server loading");
+    }
+
+    private static IReadOnlyList<BridgeAuthorityRule> DiscoverMcmSettingsFallbackRules(
+        IReadOnlyList<BannerlordModule> modules)
+    {
+        var rules = new List<BridgeAuthorityRule>();
+        foreach (var module in modules.Where(candidate => !IsEarlyFramework(candidate)))
+        {
+            var manifest = LoadManifest(Path.Combine(module.Path, "SubModule.xml"));
+            foreach (var submodule in manifest.SelectNodes("/Module/SubModules/SubModule")!
+                         .OfType<XmlElement>())
+            {
+                var dllName = Value(submodule, "DLLName");
+                var typeName = Value(submodule, "SubModuleClassType");
+                if (string.IsNullOrWhiteSpace(dllName) || string.IsNullOrWhiteSpace(typeName))
+                    continue;
+
+                var assemblyPath = FindDeclaredAssembly(module.Path, dllName);
+                if (assemblyPath is null)
+                    continue;
+                var rule = TryCreateMcmSettingsFallbackRule(
+                    module.Id,
+                    dllName,
+                    typeName,
+                    assemblyPath);
+                if (rule is not null)
+                    rules.Add(rule);
+            }
+        }
+        return rules;
+    }
+
+    private static BridgeAuthorityRule? TryCreateMcmSettingsFallbackRule(
+        string moduleId,
+        string dllName,
+        string typeName,
+        string assemblyPath)
+    {
+        try
+        {
+            using var stream = File.OpenRead(assemblyPath);
+            using var peReader = new PEReader(stream, PEStreamOptions.LeaveOpen);
+            if (!peReader.HasMetadata)
+                return null;
+            var reader = peReader.GetMetadataReader();
+            if (!reader.AssemblyReferences.Any(handle =>
+                    reader.GetString(reader.GetAssemblyReference(handle).Name)
+                        .StartsWith("MCM", StringComparison.OrdinalIgnoreCase)))
+            {
+                return null;
+            }
+
+            var typeHandle = reader.TypeDefinitions.FirstOrDefault(handle =>
+            {
+                var type = reader.GetTypeDefinition(handle);
+                var name = reader.GetString(type.Name);
+                var @namespace = reader.GetString(type.Namespace);
+                var fullName = string.IsNullOrWhiteSpace(@namespace) ? name : $"{@namespace}.{name}";
+                return fullName.Equals(typeName, StringComparison.Ordinal);
+            });
+            if (typeHandle.IsNil)
+                return null;
+            var typeDefinition = reader.GetTypeDefinition(typeHandle);
+            var onGameStartCount = typeDefinition.GetMethods().Count(handle =>
+            {
+                var method = reader.GetMethodDefinition(handle);
+                return reader.GetString(method.Name).Equals("OnGameStart", StringComparison.Ordinal) &&
+                       method.GetParameters().Count(parameterHandle =>
+                           reader.GetParameter(parameterHandle).SequenceNumber > 0) == 2;
+            });
+            return onGameStartCount == 1
+                ? new BridgeAuthorityRule(
+                    moduleId,
+                    dllName,
+                    typeName,
+                    "OnGameStart",
+                    2,
+                    BridgeInvocationScope.ServerSettingsFallback)
+                : null;
+        }
+        catch (BadImageFormatException)
+        {
+            return null;
+        }
+    }
+
+    private static string? FindDeclaredAssembly(string modulePath, string dllName)
+    {
+        foreach (var relativeBin in new[]
+                 {
+                     Path.Combine("bin", "Win64_Shipping_Server"),
+                     Path.Combine("bin", "Win64_Shipping_Client"),
+                     Path.Combine("bin", "Gaming.Desktop.x64_Shipping_Client")
+                 })
+        {
+            var candidate = Path.Combine(modulePath, relativeBin, dllName);
+            if (File.Exists(candidate))
+                return candidate;
+        }
+        return null;
+    }
+
+    private static IReadOnlyList<BannerlordModule> BuildGenericDependencyFamily(
+        BannerlordModule selected,
+        IReadOnlyDictionary<string, BannerlordModule> byId,
+        string modulesRoot,
+        ICollection<string> blockers,
+        ICollection<string> selectedIds)
+    {
+        var family = new List<BannerlordModule>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pending = new Stack<BannerlordModule>();
+        pending.Push(selected);
+
+        while (pending.Count > 0)
+        {
+            var module = pending.Pop();
+            if (!visited.Add(module.Id))
+                continue;
+
+            if (ProtectedModuleIds.Contains(module.Id) ||
+                ClientOnlyOfficialDependencies.Contains(module.Id))
+                continue;
+            if (!module.IsInstalled)
+            {
+                blockers.Add($"Required module is not installed: {module.Id}.");
+                continue;
+            }
+
+            EnsureDirectChild(module.Path, modulesRoot, $"Module '{module.Id}'");
+            family.Add(module);
+            selectedIds.Add(module.Id);
+
+            foreach (var dependencyId in module.Dependencies)
+            {
+                if (ProtectedModuleIds.Contains(dependencyId) ||
+                    ClientOnlyOfficialDependencies.Contains(dependencyId))
+                    continue;
+                if (!byId.TryGetValue(dependencyId, out var dependency) || !dependency.IsInstalled)
+                {
+                    blockers.Add($"Required dependency is missing: {module.Id} -> {dependencyId}.");
+                    continue;
+                }
+                pending.Push(dependency);
+            }
+        }
+
+        return family;
+    }
+
+    private void AddBridgePackage(
+        IReadOnlyList<BannerlordModule> installedModules,
+        IReadOnlyCollection<string> preparedIds,
+        string serverRoot,
+        ICollection<PendingChange> proposed,
+        ICollection<string> selectedIds,
+        ICollection<string> warnings,
+        IReadOnlyList<BridgeAuthorityRule>? authorityRules = null,
+        IReadOnlyList<BridgeContentExclusion>? contentExclusions = null,
+        IReadOnlyList<BridgeServerFileRedirect>? serverFileRedirects = null,
+        IReadOnlyList<BridgeServerXmlOverlay>? serverXmlOverlays = null,
+        IReadOnlyList<BridgeClientAssemblyResolve>? clientAssemblyResolves = null,
+        IReadOnlyList<BridgeServerMapTerrainSize>? serverMapTerrainSizes = null)
+    {
+        var fingerprinted = installedModules
+            .Where(module => module.IsInstalled &&
+                             (preparedIds.Contains(module.Id, StringComparer.OrdinalIgnoreCase) ||
+                              module.Id.Equals("Coop", StringComparison.OrdinalIgnoreCase)))
+            .GroupBy(module => module.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+        if (!fingerprinted.Any(module =>
+                module.Id.Equals("Coop", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidDataException("Released Coop must be installed before a bridge can be generated.");
+        }
+
+        var package = _bridgePackageBuilder.Build(
+            fingerprinted,
+            projectedModuleIds: preparedIds,
+            authorityRules: authorityRules,
+            contentExclusions: contentExclusions,
+            plannedContentPaths: proposed.Select(change => change.TargetPath).ToArray(),
+            serverFileRedirects: serverFileRedirects,
+            serverXmlOverlays: serverXmlOverlays,
+            gameVersionCompatibility: CreateGameVersionCompatibility(serverRoot),
+            clientAssemblyResolves: clientAssemblyResolves,
+            serverMapTerrainSizes: serverMapTerrainSizes);
+        var bridgeRoot = Path.Combine(
+            serverRoot,
+            "engine",
+            "Modules",
+            package.ModuleId);
+        AddPendingChange(
+            proposed,
+            Path.Combine(bridgeRoot, "SubModule.xml"),
+            package.Manifest,
+            $"Create generated bridge manifest {package.ModuleId}");
+        AddPendingChange(
+            proposed,
+            Path.Combine(bridgeRoot, "bcs-coop-bridge.config"),
+            package.Configuration,
+            "Create exact module/DLL bridge fingerprint");
+        AddPendingChange(
+            proposed,
+            Path.Combine(bridgeRoot, "bin", "Win64_Shipping_Server", "BCS.CoopBridge.dll"),
+            package.Assembly,
+            "Install generic Coop bridge runtime on the dedicated server");
+        AddPendingChange(
+            proposed,
+            Path.Combine(bridgeRoot, "bin", "Win64_Shipping_Client", "BCS.CoopBridge.dll"),
+            package.ClientAssembly,
+            "Install matching client bridge runtime for full package identity validation");
+        foreach (var overlay in package.ServerXmlOverlays)
+        {
+            AddPendingChange(
+                proposed,
+                Path.Combine(
+                    bridgeRoot,
+                    overlay.OverlayRelativePath.Replace('/', Path.DirectorySeparatorChar)),
+                overlay.Content,
+                "Install bridge-owned server XML overlay for " +
+                overlay.ModuleId + "/" + overlay.RelativePath);
+        }
+        AddPendingChange(
+            proposed,
+            Path.Combine(serverRoot, "bcs-client-packages", package.ModuleId + ".zip"),
+            package.ClientPackageZip,
+            "Create matching client bridge package");
+
+        selectedIds.Add(package.ModuleId);
+        AddProfileTransformation(installedModules, preparedIds, package.ModuleId, serverRoot, proposed);
+        warnings.Add(
+            $"Every client must install the generated package bcs-client-packages\\{package.ModuleId}.zip. " +
+            "Coop will reject a different bridge module ID/version, and the bridge validates local DLL hashes at startup.");
+        warnings.Add(
+            "The bridge never creates or repairs campaign state. Select an existing EOE save before starting " +
+            "the server; missing-save handling remains owned by Bannerlord Coop.");
+        if (package.GameVersionCompatibility is not null)
+        {
+            warnings.Add(
+                "The released Coop server and installed Bannerlord client use different supported game versions. " +
+                "The bridge pins both exact TaleWorlds runtime sets and bypasses only Coop's game-version gate for " +
+                $"{package.GameVersionCompatibility.ServerVersion} -> " +
+                $"{package.GameVersionCompatibility.ClientVersion}; changed binaries fail closed.");
+        }
+    }
+
+    internal static BridgeGameVersionCompatibility? CreateGameVersionCompatibility(
+        string serverRoot)
+    {
+        var bannerlordRoot = ServerExecutableLocator.FindBannerlordInstallRoot();
+        if (bannerlordRoot is null)
+            return null;
+
+        var serverManifestPath = Path.Combine(
+            serverRoot,
+            "engine",
+            "Modules",
+            "Native",
+            "SubModule.xml");
+        var clientManifestPath = Path.Combine(
+            bannerlordRoot,
+            "Modules",
+            "Native",
+            "SubModule.xml");
+        var serverBin = Path.Combine(
+            serverRoot,
+            "engine",
+            "bin",
+            "Win64_Shipping_Server");
+        var clientBin = Path.Combine(
+            bannerlordRoot,
+            "bin",
+            "Win64_Shipping_Client");
+        if (!File.Exists(serverManifestPath) ||
+            !File.Exists(clientManifestPath) ||
+            GameRuntimeFingerprintFiles.Any(fileName =>
+                !File.Exists(Path.Combine(serverBin, fileName)) ||
+                !File.Exists(Path.Combine(clientBin, fileName))))
+        {
+            return null;
+        }
+
+        var serverVersion = Value(
+            LoadManifest(serverManifestPath).DocumentElement!,
+            "Version");
+        var clientVersion = Value(
+            LoadManifest(clientManifestPath).DocumentElement!,
+            "Version");
+        if (serverVersion.Equals(clientVersion, StringComparison.OrdinalIgnoreCase))
+            return null;
+        if (!SupportedGameVersionCompatibilityPairs.Contains(
+                serverVersion + "|" + clientVersion))
+        {
+            return null;
+        }
+
+        return new BridgeGameVersionCompatibility(
+            serverVersion,
+            clientVersion,
+            BuildGameRuntimeFingerprint(serverBin),
+            BuildGameRuntimeFingerprint(clientBin));
+    }
+
+    internal static string BuildGameRuntimeFingerprint(string binDirectory)
+    {
+        using var payload = new MemoryStream();
+        foreach (var fileName in GameRuntimeFingerprintFiles.Order(StringComparer.Ordinal))
+        {
+            var path = Path.Combine(binDirectory, fileName);
+            if (!File.Exists(path) ||
+                (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new FileNotFoundException(
+                    "Pinned Bannerlord runtime file is missing or linked.",
+                    path);
+            }
+            var nameBytes = Utf8NoBom.GetBytes(fileName);
+            payload.Write(nameBytes, 0, nameBytes.Length);
+            payload.WriteByte(0);
+            var fileHash = SHA256.HashData(File.ReadAllBytes(path));
+            payload.Write(fileHash, 0, fileHash.Length);
+        }
+        return Hash(payload.ToArray());
+    }
+
+    private static void AddProfileTransformation(
+        IReadOnlyList<BannerlordModule> installedModules,
+        IReadOnlyCollection<string> preparedIds,
+        string bridgeId,
+        string serverRoot,
+        ICollection<PendingChange> proposed)
+    {
+        var entries = installedModules
+            .Where(module => !module.Id.Equals(bridgeId, StringComparison.OrdinalIgnoreCase))
+            .Select(module => new GeneratedModuleEntry
+            {
+                Id = module.Id,
+                Enabled = module.Id.StartsWith(
+                              CoopBridgePackageBuilder.BridgeIdPrefix,
+                              StringComparison.OrdinalIgnoreCase)
+                    ? false
+                    : module.Enabled ||
+                      preparedIds.Contains(module.Id, StringComparer.OrdinalIgnoreCase) ||
+                      ProtectedModuleIds.Contains(module.Id)
+            })
+            .ToList();
+
+        var coop = entries.FirstOrDefault(entry =>
+            entry.Id.Equals("Coop", StringComparison.OrdinalIgnoreCase));
+        if (coop is null)
+            throw new InvalidDataException("Cannot build a bridge load order without Coop.");
+        coop.Enabled = true;
+        NormalizePreparedProfileOrder(entries, installedModules, preparedIds);
+        entries.Add(new GeneratedModuleEntry { Id = bridgeId, Enabled = true });
+
+        var profile = new GeneratedModuleProfile
+        {
+            SchemaVersion = 1,
+            Modules = entries
+        };
+        var bytes = Utf8NoBom.GetBytes(
+            JsonSerializer.Serialize(profile, JsonOptions()) + Environment.NewLine);
+        AddPendingChange(
+            proposed,
+            Path.Combine(serverRoot, "bcs-server-modules.json"),
+            bytes,
+            "Enable prepared modules, place Coop before them, and place the generated bridge last");
+    }
+
+    private static void NormalizePreparedProfileOrder(
+        List<GeneratedModuleEntry> entries,
+        IReadOnlyList<BannerlordModule> installedModules,
+        IReadOnlyCollection<string> preparedIds)
+    {
+        var active = entries.Where(entry => entry.Enabled).ToArray();
+        var activeById = active.ToDictionary(entry => entry.Id, StringComparer.OrdinalIgnoreCase);
+        var moduleById = installedModules
+            .Where(module => activeById.ContainsKey(module.Id))
+            .GroupBy(module => module.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var originalIndex = active
+            .Select((entry, index) => (entry.Id, index))
+            .ToDictionary(pair => pair.Id, pair => pair.index, StringComparer.OrdinalIgnoreCase);
+        var outgoing = active.ToDictionary(
+            entry => entry.Id,
+            _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase),
+            StringComparer.OrdinalIgnoreCase);
+        var incoming = active.ToDictionary(
+            entry => entry.Id,
+            _ => 0,
+            StringComparer.OrdinalIgnoreCase);
+
+        void AddEdge(string before, string after)
+        {
+            if (before.Equals(after, StringComparison.OrdinalIgnoreCase) ||
+                !activeById.ContainsKey(before) ||
+                !activeById.ContainsKey(after) ||
+                !outgoing[before].Add(after))
+            {
+                return;
+            }
+            incoming[after]++;
+        }
+
+        foreach (var module in moduleById.Values)
+        {
+            var isPrepared = preparedIds.Contains(module.Id, StringComparer.OrdinalIgnoreCase);
+            foreach (var dependency in module.Dependencies.Concat(module.MustLoadAfter))
+            {
+                if (!ClientOnlyOfficialDependencies.Contains(dependency) &&
+                    !module.MustLoadBefore.Contains(dependency, StringComparer.OrdinalIgnoreCase))
+                    AddEdge(dependency, module.Id);
+            }
+            foreach (var later in module.MustLoadBefore)
+            {
+                if (isPrepared && later.Equals("Coop", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                AddEdge(module.Id, later);
+            }
+        }
+        AddEdge("Sandbox", "Coop");
+        foreach (var preparedId in preparedIds)
+        {
+            if (!ProtectedModuleIds.Contains(preparedId) &&
+                moduleById.TryGetValue(preparedId, out var preparedModule) &&
+                !IsEarlyFramework(preparedModule))
+            {
+                AddEdge("Sandbox", preparedId);
+                AddEdge("Coop", preparedId);
+            }
+        }
+
+        var ready = new List<string>(incoming
+            .Where(pair => pair.Value == 0)
+            .Select(pair => pair.Key));
+        var orderedIds = new List<string>(active.Length);
+        while (ready.Count > 0)
+        {
+            ready.Sort((left, right) => originalIndex[left].CompareTo(originalIndex[right]));
+            var next = ready[0];
+            ready.RemoveAt(0);
+            orderedIds.Add(next);
+            foreach (var after in outgoing[next].OrderBy(id => originalIndex[id]))
+            {
+                incoming[after]--;
+                if (incoming[after] == 0)
+                    ready.Add(after);
+            }
+        }
+        if (orderedIds.Count != active.Length)
+            throw new InvalidDataException("Prepared module dependencies contain a load-order cycle.");
+
+        var orderedActive = orderedIds.Select(id => activeById[id]).ToArray();
+        var activeIndex = 0;
+        for (var index = 0; index < entries.Count; index++)
+        {
+            if (entries[index].Enabled)
+                entries[index] = orderedActive[activeIndex++];
+        }
+
+        var hostIndex = entries.FindIndex(entry =>
+            entry.Id.Equals("DedicatedServer.Windows", StringComparison.OrdinalIgnoreCase));
+        var nativeIndex = entries.FindIndex(entry =>
+            entry.Id.Equals("Native", StringComparison.OrdinalIgnoreCase));
+        if (hostIndex >= 0 && nativeIndex >= 0 && hostIndex != nativeIndex + 1)
+        {
+            var host = entries[hostIndex];
+            entries.RemoveAt(hostIndex);
+            nativeIndex = entries.FindIndex(entry =>
+                entry.Id.Equals("Native", StringComparison.OrdinalIgnoreCase));
+            entries.Insert(nativeIndex + 1, host);
+        }
+    }
+
+    private static void AddClientDllProjection(
+        BannerlordModule module,
+        ICollection<PendingChange> proposed,
+        IReadOnlyCollection<string>? includedDlls = null)
+    {
+        var source = Path.Combine(module.Path, "bin", "Win64_Shipping_Client");
+        if (!Directory.Exists(source))
+            throw new DirectoryNotFoundException($"Client managed bin was not found: {source}");
+        if ((File.GetAttributes(source) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException($"Linked client bin is not safe to project: {source}");
+
+        var target = Path.Combine(module.Path, "bin", "Win64_Shipping_Server");
+        foreach (var sourceFile in Directory.EnumerateFiles(source, "*.dll", SearchOption.TopDirectoryOnly))
+        {
+            if (includedDlls is not null &&
+                !includedDlls.Contains(Path.GetFileName(sourceFile), StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            if ((File.GetAttributes(sourceFile) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException($"Linked assembly is not safe to project: {sourceFile}");
+            var targetFile = Path.Combine(target, Path.GetFileName(sourceFile));
+            AddPendingChange(
+                proposed,
+                targetFile,
+                File.ReadAllBytes(sourceFile),
+                $"Project {Path.GetFileName(sourceFile)} into the server bin");
+        }
+    }
+
+    private static bool IsEarlyFramework(BannerlordModule module) =>
+        FrameworkModuleIds.Contains(module.Id) ||
+        module.MustLoadBefore.Any(CoreRuntimeModuleIds.Contains);
+
+    private static void AddPendingChange(
+        ICollection<PendingChange> proposed,
+        string targetPath,
+        byte[] proposedBytes,
+        string description)
+    {
+        var target = Path.GetFullPath(targetPath);
+        var originalExists = File.Exists(target);
+        var originalHash = originalExists ? HashFile(target) : string.Empty;
+        var proposedHash = Hash(proposedBytes);
+        if (originalExists && originalHash.Equals(proposedHash, StringComparison.Ordinal))
+            return;
+
+        if (proposed.Any(change =>
+                change.TargetPath.Equals(target, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidDataException($"Compatibility plan contains duplicate target: {target}");
+        }
+
+        proposed.Add(new PendingChange(
+            target,
+            proposedBytes,
+            originalExists,
+            new CoopPreparationChange(
+                originalExists
+                    ? CoopPreparationChangeKind.ReplaceFile
+                    : CoopPreparationChangeKind.CreateFile,
+                target,
+                description,
+                originalHash,
+                proposedHash)));
+    }
+
+    private static void VerifyUnchanged(PendingChange change)
+    {
+        if (change.OriginalExists)
+        {
+            if (!File.Exists(change.TargetPath) ||
+                !HashFile(change.TargetPath).Equals(
+                    change.PublicChange.OriginalSha256,
+                    StringComparison.Ordinal))
+            {
+                throw new IOException(
+                    $"Compatibility target changed after analysis: {change.TargetPath}");
+            }
+        }
+        else if (File.Exists(change.TargetPath))
+        {
+            throw new IOException(
+                $"Compatibility target was created after analysis: {change.TargetPath}");
+        }
+    }
+
+    private static void ReplaceFileSafely(string path, byte[] bytes)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temporary = Path.Combine(
+            Path.GetDirectoryName(path)!,
+            $".{Path.GetFileName(path)}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
+        File.WriteAllBytes(temporary, bytes);
+        try
+        {
+            if (File.Exists(path))
+                File.Replace(temporary, path, null, ignoreMetadataErrors: true);
+            else
+                File.Move(temporary, path);
+        }
+        finally
+        {
+            if (File.Exists(temporary))
+                File.Delete(temporary);
+        }
+    }
+
+    private static IReadOnlyList<Exception> RollBackApplied(
+        string serverRoot,
+        string backupDirectory,
+        IEnumerable<PendingChange> applied)
+    {
+        var errors = new List<Exception>();
+        foreach (var change in applied.Reverse())
+        {
+            try
+            {
+                if (change.OriginalExists)
+                {
+                    var relative = Path.GetRelativePath(serverRoot, change.TargetPath);
+                    var backup = Path.Combine(backupDirectory, "files", relative);
+                    if (File.Exists(backup))
+                        ReplaceFileSafely(change.TargetPath, File.ReadAllBytes(backup));
+                }
+                else if (File.Exists(change.TargetPath))
+                {
+                    File.Delete(change.TargetPath);
+                }
+            }
+            catch (Exception exception)
+            {
+                errors.Add(exception);
+            }
+        }
+
+        return errors;
+    }
+
+    private static XmlDocument LoadManifest(string path)
+    {
+        var document = new XmlDocument { XmlResolver = null };
+        using var reader = XmlReader.Create(path, new XmlReaderSettings
+        {
+            DtdProcessing = DtdProcessing.Prohibit,
+            XmlResolver = null,
+            MaxCharactersInDocument = MaximumManifestCharacters
+        });
+        document.Load(reader);
+        if (document.DocumentElement?.LocalName != "Module")
+            throw new InvalidDataException($"Manifest has no Module root: {path}");
+        return document;
+    }
+
+    private static IEnumerable<string> DeclaredDllNames(XmlDocument document)
+    {
+        var names = document.SelectNodes("/Module/SubModules/SubModule/DLLName")!
+            .OfType<XmlElement>()
+            .Select(element => element.GetAttribute("value"))
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToArray();
+        foreach (var name in names)
+        {
+            if (!Path.GetFileName(name).Equals(name, StringComparison.Ordinal) ||
+                !Path.GetExtension(name).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException($"Unsafe declared DLL name: {name}");
+            }
+        }
+        return names;
+    }
+
+    private static string? FindDeclaredDll(string modulePath, string dllName)
+    {
+        foreach (var bin in new[]
+                 {
+                     Path.Combine(modulePath, "bin", "Win64_Shipping_Server"),
+                     Path.Combine(modulePath, "bin", "Win64_Shipping_Client"),
+                     Path.Combine(modulePath, "bin", "Gaming.Desktop.x64_Shipping_Client")
+                 })
+        {
+            var candidate = Path.Combine(bin, dllName);
+            if (File.Exists(candidate))
+                return candidate;
+        }
+
+        return null;
+    }
+
+    private static string? FindAssembly(
+        IEnumerable<BannerlordModule> modules,
+        string modulesRoot,
+        string assemblyName)
+    {
+        foreach (var module in modules)
+        {
+            foreach (var directory in new[]
+                     {
+                         Path.Combine(module.Path, "bin", "Win64_Shipping_Server"),
+                         Path.Combine(module.Path, "bin", "Win64_Shipping_Client"),
+                         Path.Combine(module.Path, "bin", "Gaming.Desktop.x64_Shipping_Client")
+                     })
+            {
+                var candidate = Path.Combine(directory, assemblyName);
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+        }
+
+        var clientModules = TryFindClientModules(modulesRoot);
+        if (clientModules is null)
+            return null;
+        foreach (var moduleDirectory in Directory.EnumerateDirectories(
+                     clientModules,
+                     "*",
+                     SearchOption.TopDirectoryOnly))
+        {
+            if ((File.GetAttributes(moduleDirectory) & FileAttributes.ReparsePoint) != 0)
+                continue;
+            foreach (var bin in new[]
+                     {
+                         "Win64_Shipping_Client",
+                         "Gaming.Desktop.x64_Shipping_Client",
+                         "Win64_Shipping_Server"
+                     })
+            {
+                var candidate = Path.Combine(moduleDirectory, "bin", bin, assemblyName);
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static string? TryFindClientModules(string serverModulesRoot)
+    {
+        for (var current = new DirectoryInfo(serverModulesRoot);
+             current is not null;
+             current = current.Parent)
+        {
+            if (!current.Name.Equals("steamapps", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var candidate = Path.Combine(
+                current.FullName,
+                "common",
+                "Mount & Blade II Bannerlord",
+                "Modules");
+            return Directory.Exists(candidate) ? candidate : null;
+        }
+
+        return null;
+    }
+
+    private static string Value(XmlElement parent, string childName) =>
+        parent.ChildNodes.OfType<XmlElement>()
+            .FirstOrDefault(element =>
+                element.LocalName.Equals(childName, StringComparison.OrdinalIgnoreCase))
+            ?.GetAttribute("value") ?? string.Empty;
+
+    private static bool IsRealmOfThronesModule(string id) =>
+        RealmOfThronesModuleIds.Contains(id, StringComparer.OrdinalIgnoreCase) ||
+        id.Equals("ROT-Map", StringComparison.OrdinalIgnoreCase);
+
+    private static void EnsureDirectChild(string path, string root, string description)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new InvalidDataException($"{description} has no installed path.");
+
+        var parent = Directory.GetParent(Path.GetFullPath(path))?.FullName;
+        if (parent is null ||
+            !parent.Equals(Path.GetFullPath(root), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"{description} must be a direct child of the dedicated-server Modules directory: {path}");
+        }
+    }
+
+    private static void ValidatePinnedRuntimeAssembly(
+        string path,
+        string trustedRoot,
+        string expectedAssemblyName,
+        string expectedSha256,
+        string description,
+        ICollection<string> blockers)
+    {
+        if (!IsRegularUnlinkedFileWithin(path, trustedRoot))
+        {
+            blockers.Add($"{description} is missing, linked, or outside its trusted root: {path}");
+            return;
+        }
+
+        string? actualAssemblyName;
+        try
+        {
+            actualAssemblyName = AssemblyName.GetAssemblyName(path).Name;
+        }
+        catch (Exception exception) when (exception is BadImageFormatException or FileLoadException)
+        {
+            blockers.Add($"{description} is not a readable managed assembly: {path}");
+            return;
+        }
+        if (!expectedAssemblyName.Equals(actualAssemblyName, StringComparison.Ordinal))
+        {
+            blockers.Add(
+                $"{description} assembly identity mismatch. Expected {expectedAssemblyName}, " +
+                $"found {actualAssemblyName ?? "<null>"}.");
+            return;
+        }
+
+        var actualHash = HashFile(path);
+        if (!expectedSha256.Equals(actualHash, StringComparison.Ordinal))
+        {
+            blockers.Add(
+                $"{description} does not match the pinned server runtime " +
+                $"(SHA-256 {actualHash}).");
+        }
+    }
+
+    private static bool IsRegularUnlinkedFileWithin(string path, string trustedRoot)
+    {
+        if (!File.Exists(path))
+            return false;
+
+        var canonicalPath = Path.GetFullPath(path);
+        var canonicalRoot = Path.GetFullPath(trustedRoot).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+        var rootPrefix = canonicalRoot + Path.DirectorySeparatorChar;
+        if (!canonicalPath.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase) ||
+            (File.GetAttributes(canonicalPath) &
+             (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+        {
+            return false;
+        }
+
+        for (var parent = Directory.GetParent(canonicalPath); parent is not null; parent = parent.Parent)
+        {
+            var parentPath = Path.GetFullPath(parent.FullName).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar);
+            if ((File.GetAttributes(parentPath) & FileAttributes.ReparsePoint) != 0)
+                return false;
+            if (parentPath.Equals(canonicalRoot, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    private static void EnsureWithin(string path, string root, string description)
+    {
+        var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path));
+        EnsureSafeRelativePath(relative);
+        if (Path.IsPathRooted(relative))
+            throw new InvalidDataException($"{description} escapes the server root: {path}");
+    }
+
+    private static void EnsureSafeRelativePath(string relative)
+    {
+        if (string.IsNullOrWhiteSpace(relative) ||
+            relative.Equals("..", StringComparison.Ordinal) ||
+            relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+            Path.IsPathRooted(relative))
+        {
+            throw new InvalidDataException($"Unsafe backup path: {relative}");
+        }
+    }
+
+    private static string HashFile(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return Convert.ToHexString(SHA256.HashData(stream));
+    }
+    private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
+
+    private static IReadOnlyList<string> ReadEnabledModuleIds(string serverRoot)
+    {
+        var profilePath = Path.Combine(serverRoot, "bcs-server-modules.json");
+        var profile = JsonSerializer.Deserialize<GeneratedModuleProfile>(
+                          File.ReadAllText(profilePath, Utf8NoBom),
+                          JsonOptions())
+                      ?? throw new InvalidDataException($"Module profile is empty: {profilePath}");
+        if (profile.SchemaVersion != 1)
+            throw new InvalidDataException($"Module profile has an unsupported schema: {profilePath}");
+        return profile.Modules
+            .Where(entry => entry.Enabled)
+            .Select(entry => entry.Id)
+            .ToArray();
+    }
+
+    private static JsonSerializerOptions JsonOptions() => new()
+    {
+        WriteIndented = true,
+        PropertyNameCaseInsensitive = false,
+        AllowTrailingCommas = false,
+        ReadCommentHandling = JsonCommentHandling.Disallow,
+        MaxDepth = 32
+    };
+
+    private sealed record PendingPlan(
+        CoopPreparationPlan PublicPlan,
+        IReadOnlyList<PendingChange> Changes);
+
+    private sealed record PendingChange(
+        string TargetPath,
+        byte[] ProposedBytes,
+        bool OriginalExists,
+        CoopPreparationChange PublicChange);
+
+    private sealed class BackupManifest
+    {
+        public int SchemaVersion { get; set; }
+        public string PlanId { get; set; } = string.Empty;
+        public DateTimeOffset CreatedUtc { get; set; }
+        public string ServerRoot { get; set; } = string.Empty;
+        public string RuleId { get; set; } = string.Empty;
+        public string[] ModuleIds { get; set; } = [];
+        public List<BackupFileEntry> Files { get; set; } = [];
+    }
+
+    private sealed class BackupFileEntry
+    {
+        public string RelativePath { get; set; } = string.Empty;
+        public bool OriginalExisted { get; set; }
+        public string OriginalSha256 { get; set; } = string.Empty;
+        public string AppliedSha256 { get; set; } = string.Empty;
+    }
+
+    private sealed class GeneratedModuleProfile
+    {
+        public int SchemaVersion { get; set; }
+        public List<GeneratedModuleEntry> Modules { get; set; } = [];
+    }
+
+    private sealed class GeneratedManagedDependencyProfile
+    {
+        public int SchemaVersion { get; set; } = 1;
+        public List<GeneratedManagedDependencyDirectory> Directories { get; set; } = [];
+    }
+
+    private sealed class GeneratedManagedDependencyDirectory
+    {
+        public string Path { get; set; } = string.Empty;
+        public List<GeneratedManagedDependencyFile> RequiredFiles { get; set; } = [];
+    }
+
+    private sealed class GeneratedManagedDependencyFile
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Sha256 { get; set; } = string.Empty;
+    }
+
+    private sealed class GeneratedModuleEntry
+    {
+        public string Id { get; set; } = string.Empty;
+        public bool Enabled { get; set; }
+    }
+}

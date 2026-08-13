@@ -1,272 +1,444 @@
-﻿# BCS Tool
+# Bannerlord Coop Manager
 
-BCS Tool is a Windows desktop application for managing a **Bannerlord Coop dedicated server**.
+Bannerlord Coop Manager is a Windows desktop manager for a Bannerlord Coop
+dedicated server. The current executable and user interface retain the upstream
+name **BCS Tool**.
 
-It provides a graphical interface for starting, stopping, saving, restarting, monitoring, and configuring the server without requiring a separate command-line management workflow.
+This repository is an **unreleased development snapshot**. It extends BCS Tool
+with dedicated-server module management, reversible Coop compatibility
+preparation, client bridge packaging, client-save import, persistent server
+logging, and an exact, fingerprint-pinned compatibility path for **Empires of
+Europe 1700 (EOE)**.
 
-> \*\*Current release:\*\* v0.2.1
+> Current application version: `0.2.1`
+>
+> Current generated bridge runtime: `0.6.58`
+> Upstream base: [`AppleDeath318/BCSTool@f7bc05c`](https://github.com/AppleDeath318/BCSTool/commit/f7bc05c672dad169663f9c8b245e5b01b5422742)
 
-## Features
+## Status at a glance
 
-* Manual server restart
-* Automatic scheduled restart
-* Restart warning message broadcast
-* Automatic crash recovery
-* Built-in interactable BCS terminal
-* Automatic server executable detection
-* Server configuration modification
-* Mod configuration modification
-* Save backups
-* Backup restore
+The EOE work is promising but is **not yet a stable or general compatibility
+release**.
+
+| Area | Current status |
+|---|---|
+| GUI server lifecycle, configuration, backups, and console | Implemented and regression-tested |
+| Dedicated-server module profile and enforced UDP port `4200` | Implemented and regression-tested |
+| Client campaign import into the server | Implemented and regression-tested |
+| Fingerprinted server/client bridge generation | Implemented and regression-tested |
+| EOE `1.4.7.1` dedicated-server preparation | Exact source/hash-pinned implementation |
+| EOE server startup and client join | Demonstrated in the prior hand test |
+| EOE 1696x1696 map/weather correction | Hand-tested; observed weather/MapEvent index failures stopped |
+| Ordinary Coop battles | Multiple battles completed in the prior hand test |
+| Final bridge `0.6.58` overlays and client lifecycle fixes | Built and regression/ABI-tested; final live retest pending |
+| World-map client movement | Still under investigation; teleporting/stalls were observed |
+| Save/reconnect, late join, and long-duration acceptance | Not yet proven on the final build |
+
+The manager can statically analyze other modules, but that is not a promise that
+they synchronize correctly. EOE is the current compatibility target. Realm of
+Thrones and arbitrary executable modules must be treated as experimental until
+they receive their own complete runtime test matrix.
+
+## Supported development snapshot
+
+The currently pinned EOE path was developed and tested against:
+
+| Component | Version |
+|---|---:|
+| Mount & Blade II: Bannerlord client | `1.4.8` |
+| Bannerlord Coop | `0.1.2` |
+| Empires of Europe 1700 | `1.4.7.1` |
+| Dedicated-server game runtime | `1.4.7` |
+| Generated bridge | `0.6.58` |
+
+These are exact compatibility inputs, not floating minimum versions. The
+preparation step validates versions and hashes and fails closed when an
+installed package differs. A game or Workshop update requires a new
+**Analyze → Prepare → reinstall client ZIP** cycle.
+
+The current EOE server profile does **not** require separate Harmony, ButterLib,
+UIExtenderEx, or Mod Configuration Menu modules. Coop supplies the Harmony
+runtime used by the bridge. StoryMode is not enabled as a server module and is
+not a bridge manifest dependency; preparation only locates and pins the
+official local `StoryMode.dll` needed by EOE artillery code. That official DLL
+is never redistributed by this project.
 
 ## Requirements
 
-* Windows 10 or Windows 11, 64-bit
-* Mount \& Blade II: Bannerlord
-* Bannerlord Coop / Bannerlord Coop dedicated server
-* Steam installation is supported for automatic server detection
+- Windows 10 or Windows 11, x64
+- A full Steam installation of Mount & Blade II: Bannerlord `1.4.8`
+- Bannerlord Coop `0.1.2`, including its dedicated-server package
+- Empires of Europe 1700 `1.4.7.1`
+- Steam Workshop updates completed before preparation
+- UDP port `4200` available; direct Internet hosting normally requires an
+  inbound firewall rule and router port forward
+- The same Bannerlord, Coop, EOE, and generated bridge versions on every client
 
-## Download
+Bannerlord Coop and EOE are not bundled with this repository.
 
-Download the latest compiled version from the repository's **Releases** page.
+## Install the development build
 
-For normal use, download:
+The target repository does not yet have a packaged release. Build from source
+using the instructions under [Building from source](#building-from-source).
+Keep these two files together when copying the published application:
 
 ```text
 BCS Tool.exe
+BCSTool.RuntimeBootstrap.dll
 ```
 
-The files automatically provided by GitHub as `Source code (zip)` and `Source code (tar.gz)` contain the project source rather than the compiled application.
+The bootstrap DLL is required when BCS Tool starts a managed module profile.
 
-## Getting Started
+## Initial server setup
 
-1. Launch **BCS Tool.exe**.
-2. BCS Tool will try to locate `BannerlordCoopServer.exe` automatically.
-3. If the executable is not detected, use **Browse** to select it manually.
-4. Press **Start** to launch the server.
-5. Configure save-backup rotation under **Server Configuration → Save Backups** if desired.
+1. Install or update Bannerlord, Bannerlord Coop, and EOE to the exact versions
+   above.
+2. Exit Bannerlord and stop the dedicated server completely.
+3. Launch `BCS Tool.exe`.
+4. Confirm that BCS Tool detected `BannerlordCoopServer.exe`. Use **Browse** if
+   it did not.
+5. If Coop has not created its configuration files yet, perform one initial
+   server boot, let Coop create them, then stop the server.
+6. Open **Server Configuration** and review the campaign name, autosave,
+   password, Steam, and logging settings.
+7. Keep `traceTick`, `tracePublish`, and `traceBandits` off unless collecting a
+   targeted diagnostic.
 
-## Configuration Editors
-
-BCS Tool includes editors for the Bannerlord Coop server and mod configuration files.
-
-### Server configuration
+Coop configuration paths:
 
 ```text
-Documents\\Mount and Blade II Bannerlord\\CoopData\\DedicatedServer\\server-config.json
+%USERPROFILE%\Documents\Mount and Blade II Bannerlord\CoopData\mod-config.json
+%USERPROFILE%\Documents\Mount and Blade II Bannerlord\CoopData\DedicatedServer\server-config.json
 ```
 
-### Mod configuration
+BCS Tool preserves the existing JSON-with-comments layout where supported and
+creates a sibling `.bak` before replacing a configuration file.
+
+## Prepare EOE for Coop
+
+Preparation is deliberately previewed, hash-bound, reversible, and narrower
+than ordinary mod conversion.
+
+1. Stop the server completely.
+2. Open **Server Mods**.
+3. If EOE is not present in the dedicated-server module directory, drag its
+   module folder—the folder containing `SubModule.xml`—onto the module list.
+4. Enable EOE and save the module profile.
+5. Select EOE and click **Analyze for Coop**. Read the evidence and blockers.
+6. Click **Prepare for Coop**.
+7. Inspect the complete preview. Apply only if no blocker remains.
+8. Record the generated bridge ID and client ZIP path shown by the tool.
+
+The resulting enabled order is:
 
 ```text
-Documents\\Mount and Blade II Bannerlord\\CoopData\\mod-config.json
+Native
+DedicatedServer.Windows
+SandBoxCore
+Sandbox
+Coop
+Europe1700
+BCS.CoopBridge.<fingerprint>
 ```
 
-If either configuration file does not exist yet, start the server once so Bannerlord Coop can generate it.
+The bridge loads last. Its manifest dependencies are exactly Coop and
+Europe1700.
 
-BCS Tool preserves the existing JSONC structure and comments when saving supported settings, and creates a `.bak` backup before overwriting a configuration file.
-
-## Save Backups
-
-BCS Tool can maintain a rotating history of Bannerlord Coop campaign saves.
-
-A Bannerlord Coop save consists of two companion files with the same base name:
+Preparation can create or update:
 
 ```text
-saveauto1.sav
-saveauto1.json
+<DedicatedServer>\bcs-server-modules.json
+<DedicatedServer>\bcs-client-packages\BCS.CoopBridge.<fingerprint>.zip
+<DedicatedServer>\bcs-compatibility-backups\<plan-id>\
+<DedicatedServer>\engine\Modules\BCS.CoopBridge.<fingerprint>\
 ```
 
-BCS Tool treats these files as a single save pair. Backup rotation and manual restore always operate on both files together.
+EOE source files and protected Coop files are not rewritten in place. Exact
+bridge-owned overlays and projections are recorded in the backup manifest.
+**Revert Preparation** restores the latest recorded preparation.
 
-### Backup rotation
+### What the EOE preparation currently addresses
 
-Backup rotation is configured under **Server Configuration → Save Backups**.
+- The dedicated server's incorrect 848x848 terrain size for EOE's 1696x1696
+  world map
+- Delayed client handler discovery so the bridge does not hard-reference
+  Coop's `Common.dll` before Coop loads
+- Headless action/action-type and malformed trebuchet XML adaptation
+- Exact workshop recipe repair for EOE's populated ranged-weapon tier
+- Invalid Bearskin Cape references and legacy civilian equipment attributes
+- Direct XSLT-load redirection through Bannerlord's pinned `ApplyXslt` path
+- Narrow client MapEvent removal authority and troop-upgrade after-load repair
+- Bounded diagnostics for disorganization and missing TroopRoster sequencing
 
-The number of retained backup generations can be set from **1 to 5**.
+The bridge does not invent campaign state and does not replace Bannerlord or
+Coop as the campaign authority.
 
-After the server reports that a save completed successfully, BCS Tool waits for both save files to become stable before creating the next backup generation.
+## Install the matching client bridge
 
-For a save named `saveauto1`, the rotating backups are named:
+Every client needs the ZIP generated by the same preparation:
 
 ```text
-saveauto1.backup1.sav
-saveauto1.backup1.json
-
-saveauto1.backup2.sav
-saveauto1.backup2.json
-
-...
-
-saveauto1.backup5.sav
-saveauto1.backup5.json
+<DedicatedServer>\bcs-client-packages\BCS.CoopBridge.<fingerprint>.zip
 ```
 
-`backup1` is the newest retained backup. Higher numbers are progressively older.
-
-For example, with three backups retained, a new backup rotates the existing history as follows:
+1. Exit Bannerlord.
+2. Extract the ZIP at the Bannerlord installation root so its included
+   `Modules` directory merges with the game's existing `Modules` directory.
+3. Do not extract it into `Modules` if that would create
+   `Modules\Modules\...`.
+4. Remove or disable older `BCS.CoopBridge.*` module IDs.
+5. Enable the exact Coop, Europe1700, and fingerprinted bridge modules in this
+   order:
 
 ```text
-backup2 -> backup3
-backup1 -> backup2
-current save -> backup1
+Coop
+Europe1700
+BCS.CoopBridge.<fingerprint>
 ```
 
-The active save remains unchanged in name:
+If EOE, Coop, or the game updates, rerun preparation and distribute the newly
+fingerprinted ZIP. BCS Tool does not download or silently update Workshop mods.
+The ZIP contains the bridge runtimes, manifest, configuration, GPL notice, and
+attribution. Server-only transformed EOE XML/XSLT overlays stay on the server
+and are not redistributed in the client ZIP.
+
+## Seed the server from a client campaign
+
+The server needs an existing EOE campaign. Character creation remains a normal
+Bannerlord client task:
+
+1. Start a normal Bannerlord Sandbox game with the exact EOE build.
+2. Create the character and campaign.
+3. Save manually.
+4. Exit Bannerlord completely so the save is stable.
+5. In BCS Tool, open **Server Configuration** and click **Refresh Saves**.
+6. Select the campaign under **Client campaign**.
+7. Click **Import Client Save**.
+8. Click **Save** or **Save & Close** so the imported name becomes the active
+   server campaign.
+
+Source and destination:
 
 ```text
-saveauto1.sav
-saveauto1.json
+%USERPROFILE%\Documents\Mount and Blade II Bannerlord\Game Saves
+%USERPROFILE%\Documents\Mount and Blade II Bannerlord\CoopData\DedicatedServer\Game Saves
 ```
 
-Backup files are stored under:
+Import copies the `.sav` through a staging file, verifies SHA-256, and never
+overwrites an existing server save or unrelated sidecar. Coop creates the
+server-side `.json` sidecar after hosting the imported campaign.
+
+For current operation, use only ASCII letters, digits, and underscores in a
+campaign name, without `.sav`; for example, `EOE_Test4`. Avoid spaces and
+special characters even though Windows itself permits some of them.
+
+Import is a one-time seed. Once hosted, the server copy is the authoritative
+campaign. A client's later local saves are not synchronized back into it.
+
+## Start and connect
+
+1. Confirm all server modules and the active save.
+2. Click **Start**.
+3. Wait for the server to report that it is serving and waiting for clients.
+4. Connect through the supported Coop flow or directly to the host on UDP
+   `4200`.
+
+BCS-managed module-profile launches invoke the engine with:
 
 ```text
-Documents\Mount and Blade II Bannerlord\CoopData\DedicatedServer\Game Saves\BCS Backups
+/dedicatedcustomserver 4200 EU 0
 ```
 
-The **Open Backup Folder** button opens this directory. The folder is created only after BCS Tool successfully creates its first backup.
+Port `4200` is enforced by the managed launch plan; it is not read from
+`server-config.json`. If no `bcs-server-modules.json` exists, BCS Tool uses the
+upstream unmanaged launcher path instead.
 
-Disabling backup rotation stops new backups from being created but does not delete existing backups.
+## Logs and diagnostics
 
-### Manual backup restore
-
-The **Load Backup** button opens a list of available complete backup generations and their modification dates.
-
-A backup can only be loaded while the managed server is **fully stopped**. If the server is starting, running, saving, stopping, restarting, or otherwise not in the normal `Stopped` state, BCS Tool will require the server to be stopped before continuing.
-
-Selecting a backup and pressing **Apply** replaces the current save pair.
-
-For example, loading:
+Enable `logFile` in **Server Configuration**. Managed launches persist the
+complete UTF-8 ConPTY character stream, including ANSI/VT control sequences,
+under:
 
 ```text
-saveauto1.backup3
+%USERPROFILE%\Documents\Mount and Blade II Bannerlord\CoopData\DedicatedServer\logs
 ```
 
-restores:
+Files use this form:
 
 ```text
-saveauto1.backup3.sav  -> saveauto1.sav
-saveauto1.backup3.json -> saveauto1.json
+coop-server-yyyyMMdd-HHmmss[-N].log
 ```
 
-The backup files themselves remain in the backup directory after being loaded.
+Segments roll near 64 MiB and the ten newest files are retained. Output is not
+deduplicated, filtered, or truncated.
 
-BCS Tool stages the selected pair and temporarily preserves the current active pair while applying the restore to reduce the chance of an ordinary file-copy failure leaving the `.sav` and `.json` files mismatched.
-
-> **Note:** The current system provides rotating backups and manual restore. Automatic save-corruption detection and automatic rollback are not currently implemented.
-
-## Automatic Restarts
-
-BCS Tool can periodically restart the server at a configured interval and minute.
-
-Before a scheduled restart, it can:
-
-1. Broadcast countdown warnings
-2. Save the campaign
-3. Stop the server gracefully
-4. Wait for shutdown
-5. Restart the server
-
-Crash recovery can also restart the server automatically if the managed process exits unexpectedly.
-
-## Building from Source
-
-BCS Tool is a WPF application targeting:
+BCS Tool's own lifecycle log is stored under:
 
 ```text
-.NET 10
-Windows x64
+%LOCALAPPDATA%\BCSServerTool\Logs\BCSTool-yyyy-MM-dd.log
 ```
 
-### Visual Studio
+Before sharing logs, remove server passwords, public addresses, Steam IDs, and
+player-identifying information.
 
-1. Install Visual Studio with the **.NET desktop development** workload.
-2. Install the .NET 10 SDK if it is not already available.
-3. Open:
+## Backups, rollback, and safety
 
-```text
-BCSTool.sln
-```
+- Stop Bannerlord and the server before campaign import, preparation, or
+  revert.
+- Preparation re-hashes inputs before writing and aborts if anything changed
+  after preview.
+- **Revert Preparation** uses the recorded backup manifest; do not manually
+  edit that manifest.
+- Do not manually copy Harmony, Coop, game, or mod DLLs into the dedicated
+  server's engine root.
+- Save backups treat `<name>.sav` and `<name>.json` as one pair.
+- One to five rotating generations are kept under
+  `DedicatedServer\Game Saves\BCS Backups`.
+- Manual restore is available only while the managed server is stopped.
+- Automatic corruption detection and automatic rollback are not implemented.
 
-4. Build the solution normally for development.
+## Known limitations
 
-### Publish a standalone EXE
+- Client movement on the world map was still teleporty, sticky, or laggy in
+  the last hand test. New diagnostics can determine whether party
+  disorganization or missing TroopRoster registration contributes, but no
+  speculative movement rewrite has been added.
+- The final `0.6.58` workshop/Bearskin/civilian overlays and client lifecycle
+  fixes have deterministic build and regression coverage but still need a new
+  full hand test.
+- Final-build save/reconnect, late join, long-duration synchronization, and
+  repeated battle acceptance are not complete.
+- Large EOE campaign saves around 100 MiB previously caused multi-second
+  synchronous save stalls.
+- Sixteen EOE firearm `Weapon` schema warnings remain intentionally: the second
+  nodes carry functional alternate melee modes and removing them would break
+  weapons.
+- Manual pause events are not currently classified as server failures.
+- EOE/RF combat AI behavior is owned by EOE and is outside this manager's fix
+  scope.
 
-The project includes:
+## Building from source
 
-```text
-BCSTool\\Publish-SingleExe.ps1
-```
+### Prerequisites
 
-Run it from PowerShell in the project directory:
+- Visual Studio 2026 or Build Tools with **.NET desktop development**
+- .NET 10 SDK
+- .NET 6 SDK/reference pack, used to compile the dedicated-server startup hook
+- Windows PowerShell
+
+From the repository root:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\\Publish-SingleExe.ps1
+dotnet restore .\BCSTool.sln
+dotnet build .\BCSTool.sln -c Release --no-restore
+dotnet run --project .\BCSTool.RegressionTests\BCSTool.RegressionTests.csproj -c Release --no-build
 ```
 
-The resulting standalone executable will be placed in:
+The regression runner currently contains 44 named checks and finishes with:
 
 ```text
-publish\\BCS Tool.exe
+All BCS Tool regression checks passed.
 ```
 
-The publish configuration is:
+### Publish the application
 
-* Release
-* `win-x64`
-* Self-contained
-* Single-file executable
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\BCSTool\Publish-SingleExe.ps1
+```
 
-## Versioning
-
-BCS Tool uses semantic-style version numbers:
+Publish output:
 
 ```text
-0.1.0
+BCSTool\publish\BCS Tool.exe
+BCSTool\publish\BCSTool.RuntimeBootstrap.dll
 ```
 
-The application version is defined in:
+The executable is self-contained for Windows x64. Keep the bootstrap DLL next
+to it. Tagged GitHub release ZIPs also include `LICENSE`, `NOTICE.md`, and
+`README.md`.
+
+### Rebuild the bridge payloads
+
+The application embeds distinct server and client bridge assemblies. They are
+compiled from `BCSTool.CoopBridgeArtifact` against locally installed Bannerlord
+and Coop assemblies; those third-party references are not in this repository.
+
+Example server build:
+
+```powershell
+dotnet build .\BCSTool.CoopBridgeArtifact\BCSTool.CoopBridgeArtifact.csproj `
+  -c Release `
+  -p:BridgeTarget=Server `
+  -p:DebugType=None `
+  -p:DebugSymbols=false `
+  -p:BannerlordBin="<DedicatedServer>\engine\bin\Win64_Shipping_Server" `
+  -p:CoopBin="<DedicatedServer>\engine\Modules\Coop\bin\Win64_Shipping_Server"
+```
+
+Example client build:
+
+```powershell
+dotnet build .\BCSTool.CoopBridgeArtifact\BCSTool.CoopBridgeArtifact.csproj `
+  -c Release `
+  -p:BridgeTarget=Client `
+  -p:DebugType=None `
+  -p:DebugSymbols=false `
+  -p:BannerlordBin="<Bannerlord>\bin\Win64_Shipping_Client" `
+  -p:CoopBin="<Coop module>\bin\Win64_Shipping_Client"
+```
+
+Client compilation targets .NET Framework 4.7.2 and therefore also requires
+the corresponding reference assemblies/developer pack. After replacing the
+two embedded payloads, update their pinned hashes in
+`CoopBridgePackageBuilder.cs` and run the entire regression suite. A changed
+payload intentionally changes the generated bridge identity.
+
+## Repository layout
 
 ```text
-BCSTool.csproj
+BCSTool/                       WPF manager application
+BCSTool.RuntimeBootstrap/      managed dedicated-server assembly resolver
+BCSTool.CoopBridgeArtifact/    server/client compatibility bridge source
+BCSTool.RegressionTests/       deterministic regression and ABI checks
+scripts/                       opt-in local runtime and smoke-test tools
+CONTEXT.md                     compatibility-domain glossary
+NOTICE.md                      provenance and attribution
+LICENSE                        GNU GPL version 3
 ```
 
-For example:
+Runtime smoke scripts require explicit local Bannerlord, Coop, EOE, and server
+paths. They are diagnostic tools and may start or stop game/server processes;
+read each script before running it.
 
-```xml
-<Version>0.1.0</Version>
-```
+## Attribution
 
-The UI reads the compiled application version at runtime, so the project version is the single source of truth for release numbering.
+Bannerlord Coop Manager is a modified derivative of
+[**BCS Tool**](https://github.com/AppleDeath318/BCSTool), originally created by
+**AppleDeath** (`AppleDeath318`). This work is based on upstream commit
+`f7bc05c672dad169663f9c8b245e5b01b5422742` dated August 6, 2026. Original Git
+history is retained, and this derivative is not endorsed by AppleDeath318.
 
-GitHub release tags should use the corresponding `v` prefix:
+Dedicated-server compatibility research was informed by **HexTool V0.2.3 -
+Server Update** (**Hex Tool / HexTool**), including its prior custom-map
+distance-cache and server-module-filtering work. HexTool is separate, is not
+required, and its source or binaries are not included or redistributed here.
+The supplied package did not identify a creator, canonical URL, or license, so
+this repository records the exact verifiable package name without inventing an
+author claim.
 
-```text
-v0.1.0
-v0.1.1
-v0.2.0
-```
-
-## Development Status
-
-BCS Tool is currently an early-stage project.
-
-The `0.x` version number indicates that features, behavior, and configuration handling may continue to change before a stable `1.0.0` release.
-
-If you encounter a reproducible problem, please open a GitHub Issue and include relevant BCS Tool logs and a description of what happened.
+See [`NOTICE.md`](NOTICE.md) for the complete notice.
 
 ## License
 
-BCS Tool is free and open-source software licensed under the **GNU General Public License v3.0 (GPL-3.0-only)**.
+This project is free software distributed under the **GNU General Public
+License version 3 only** (`GPL-3.0-only`). See [`LICENSE`](LICENSE).
 
-You are free to use, study, modify, and redistribute BCS Tool under the terms of the GPLv3. If you distribute a modified version or other derivative work covered by the GPL, you must provide the corresponding source code under the same license terms.
-
-See [`LICENSE`](LICENSE) for the full license text.
+If you distribute a build or modified covered version, provide the complete
+corresponding source under the same license and preserve the required notices.
 
 ## Disclaimer
 
-BCS Tool is an independent community utility and is not an official TaleWorlds product.
-
-Mount \& Blade II: Bannerlord and related names belong to their respective owners.
-
+This is an independent community utility. It is not an official TaleWorlds,
+Bannerlord Coop, EOE, HexTool, or AppleDeath318 product and is not endorsed by
+those projects or authors. All third-party names and assets remain the property
+of their respective owners.

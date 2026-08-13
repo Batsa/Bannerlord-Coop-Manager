@@ -28,6 +28,10 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel;
     private readonly CoopConfigService _coopConfigService;
+    private readonly ModuleScanner _moduleScanner;
+    private readonly DependencyValidator _dependencyValidator;
+    private readonly CoopPlayerListParser _coopPlayerListParser;
+    private readonly ClientSaveImportService _clientSaveImportService;
     private readonly DispatcherTimer _terminalResizeTimer;
 
     private bool _allowClose;
@@ -55,12 +59,20 @@ public partial class MainWindow : Window
 
     public MainWindow(
         MainViewModel viewModel,
-        CoopConfigService coopConfigService)
+        CoopConfigService coopConfigService,
+        ModuleScanner moduleScanner,
+        DependencyValidator dependencyValidator,
+        CoopPlayerListParser coopPlayerListParser,
+        ClientSaveImportService clientSaveImportService)
     {
         InitializeComponent();
 
         _viewModel = viewModel;
         _coopConfigService = coopConfigService;
+        _moduleScanner = moduleScanner;
+        _dependencyValidator = dependencyValidator;
+        _coopPlayerListParser = coopPlayerListParser;
+        _clientSaveImportService = clientSaveImportService;
         DataContext = _viewModel;
 
         // Window resizing can generate dozens of SizeChanged events per
@@ -290,7 +302,8 @@ public partial class MainWindow : Window
         var window =
             new ServerConfigurationWindow(
                 _coopConfigService,
-                _viewModel)
+                _viewModel,
+                _clientSaveImportService)
             {
                 Owner = this
             };
@@ -326,6 +339,93 @@ public partial class MainWindow : Window
             };
 
         window.ShowDialog();
+    }
+
+
+    private void Cheats_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (
+            !EnsureConfigurationFileExists(
+                _coopConfigService.ModConfigPath,
+                "Mod Configuration"))
+        {
+            return;
+        }
+
+        var viewModel =
+            new CheatConsoleViewModel(
+                _viewModel,
+                _coopConfigService,
+                _coopPlayerListParser);
+
+        var window =
+            new CheatConsoleWindow(viewModel)
+            {
+                Owner = this
+            };
+
+        window.ShowDialog();
+    }
+
+
+    /// <summary>
+    /// Opens BCS Tool's dedicated-server module selection and order editor.
+    /// Module state is immutable while the managed server is not fully stopped.
+    /// </summary>
+    private void ServerMods_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (!_viewModel.IsServerFullyStopped)
+        {
+            MessageBox.Show(
+                "Stop the server completely before changing server modules.",
+                "Server Mods",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var moduleManager =
+                new ModuleManager(
+                    _viewModel.Settings.ResolveServerExecutablePath(),
+                    _moduleScanner);
+            var moduleImporter =
+                new ModuleImporter(
+                    moduleManager.ModulesDirectory,
+                    _moduleScanner);
+            var moduleRemovalService =
+                new ModuleRemovalService(
+                    moduleManager,
+                    new WindowsModuleDirectoryRecycler());
+            var viewModel =
+                new ModManagerViewModel(
+                    moduleManager,
+                    moduleImporter,
+                    moduleRemovalService,
+                    _dependencyValidator,
+                    new CoopCompatibilityAnalyzer(),
+                    new CoopCompatibilityPatcher());
+            var window =
+                new ModManagerWindow(viewModel)
+                {
+                    Owner = this
+                };
+
+            window.ShowDialog();
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                exception.Message,
+                "Could Not Open Server Mods",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
     }
 
 

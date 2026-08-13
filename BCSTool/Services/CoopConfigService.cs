@@ -21,6 +21,8 @@ namespace BCSTool.Services;
 /// </summary>
 public sealed class CoopConfigService
 {
+    private readonly string? _coopDataDirectoryOverride;
+
     private static readonly JsonDocumentOptions JsonOptions =
         new()
         {
@@ -31,7 +33,26 @@ public sealed class CoopConfigService
                 true
         };
 
+    public CoopConfigService()
+    {
+    }
+
+    internal CoopConfigService(
+        string coopDataDirectoryOverride)
+    {
+        if (string.IsNullOrWhiteSpace(coopDataDirectoryOverride))
+        {
+            throw new ArgumentException(
+                "Coop data directory cannot be empty.",
+                nameof(coopDataDirectoryOverride));
+        }
+
+        _coopDataDirectoryOverride =
+            Path.GetFullPath(coopDataDirectoryOverride);
+    }
+
     public string CoopDataDirectory =>
+        _coopDataDirectoryOverride ??
         Path.Combine(
             Environment.GetFolderPath(
                 Environment.SpecialFolder.MyDocuments),
@@ -48,6 +69,66 @@ public sealed class CoopConfigService
             CoopDataDirectory,
             "DedicatedServer",
             "server-config.json");
+
+    public string BannerlordDocumentsDirectory =>
+        Path.GetDirectoryName(CoopDataDirectory) ??
+        throw new InvalidOperationException(
+            "Could not determine Bannerlord's Documents directory.");
+
+    public string ClientSaveDirectory =>
+        Path.Combine(
+            BannerlordDocumentsDirectory,
+            "Game Saves");
+
+    public string ServerSaveDirectory =>
+        Path.Combine(
+            CoopDataDirectory,
+            "DedicatedServer",
+            "Game Saves");
+
+    public string ServerLogDirectory =>
+        Path.Combine(
+            CoopDataDirectory,
+            "DedicatedServer",
+            "logs");
+
+    public IReadOnlyList<string> GetServerSaveNames()
+    {
+        if (!Directory.Exists(ServerSaveDirectory))
+            return Array.Empty<string>();
+
+        return Directory
+            .EnumerateFiles(ServerSaveDirectory, "*.sav", SearchOption.TopDirectoryOnly)
+            .Select(path => new FileInfo(path))
+            .Where(file =>
+                !file.Name.Equals(
+                    "default_new_game.sav",
+                    StringComparison.OrdinalIgnoreCase) &&
+                !IsNumberedSaveBackup(file.Name))
+            .OrderByDescending(file => file.LastWriteTimeUtc)
+            .ThenBy(file => file.Name, StringComparer.CurrentCultureIgnoreCase)
+            .Select(file => Path.GetFileNameWithoutExtension(file.Name))
+            .ToArray();
+    }
+
+    private static bool IsNumberedSaveBackup(string fileName)
+    {
+        var saveName =
+            Path.GetFileNameWithoutExtension(fileName);
+        var markerIndex =
+            saveName.LastIndexOf(
+                ".backup",
+                StringComparison.OrdinalIgnoreCase);
+
+        if (markerIndex < 0)
+            return false;
+
+        var backupNumber =
+            saveName[(markerIndex + ".backup".Length)..];
+
+        return backupNumber.Length > 0 &&
+               backupNumber.All(char.IsDigit);
+    }
 
 
     // ========================================================
@@ -233,13 +314,18 @@ public sealed class CoopConfigService
                 ? difficultyElement
                 : default;
 
-        if (
-            !root.TryGetProperty(
+        var hasModOptions =
+            root.TryGetProperty(
                 "modOptions",
-                out var modOptions))
+                out var modOptions);
+
+        if (
+            hasModOptions &&
+            modOptions.ValueKind is not
+                (JsonValueKind.Object or JsonValueKind.Null))
         {
             throw new InvalidDataException(
-                "mod-config.json does not contain a modOptions object.");
+                "mod-config.json modOptions must be an object or null.");
         }
 
         var config =
@@ -408,6 +494,18 @@ public sealed class CoopConfigService
 
         config.AutoAllocateClanMemberPerks =
             autoAllocateClanMemberPerks;
+
+
+        // Bannerlord Coop intentionally treats an absent or explicit null
+        // modOptions block as an all-default ModOptionsData instance. Keep the
+        // editor aligned with that production behavior instead of rejecting a
+        // valid minimal config.
+        if (
+            !hasModOptions ||
+            modOptions.ValueKind == JsonValueKind.Null)
+        {
+            return config;
+        }
 
 
         config.FastForwardEnabled =
@@ -673,104 +771,25 @@ public sealed class CoopConfigService
                 config.AutoAllocateClanMemberPerksOverride);
 
 
-        // Mod options.
-        text =
-            SetRequiredKey(
-                text,
-                "fastForwardEnabled",
-                ToJsonBool(
-                    config.FastForwardEnabled));
+        // Mod options are optional in Bannerlord Coop. Materialize a missing,
+        // null, or partial block before applying the user's values so a valid
+        // minimal config remains fully editable.
+        var modOptionValues =
+            GetModOptionValues(config);
 
         text =
-            SetRequiredKey(
+            EnsureModOptionsKeys(
                 text,
-                "autoPauseEnabled",
-                ToJsonBool(
-                    config.AutoPauseEnabled));
+                modOptionValues);
 
-        text =
-            SetRequiredKey(
-                text,
-                "clientsCanUseCheats",
-                ToJsonBool(
-                    config.ClientsCanUseCheats));
-
-        text =
-            SetRequiredKey(
-                text,
-                "goldFoodInfluenceChangeInSettlements",
-                ToJsonBool(
-                    config.GoldFoodInfluenceChangeInSettlements));
-
-        text =
-            SetRequiredKey(
-                text,
-                "goldFoodInfluenceChangeInBattles",
-                JsonSerializer.Serialize(
-                    config.GoldFoodInfluenceChangeInBattles));
-
-        text =
-            SetRequiredKey(
-                text,
-                "goldFoodInfluenceChangeForDisconnectedPlayers",
-                ToJsonBool(
-                    config.GoldFoodInfluenceChangeForDisconnectedPlayers));
-
-        text =
-            SetRequiredKey(
-                text,
-                "playerBattleAiJoinWindowHours",
-                config.PlayerBattleAiJoinWindowHours.ToString(
-                    CultureInfo.InvariantCulture));
-
-        text =
-            SetRequiredKey(
-                text,
-                "speedLimitWhilePlayersInBattle",
-                ToJsonBool(
-                    config.SpeedLimitWhilePlayersInBattle));
-
-        text =
-            SetRequiredKey(
-                text,
-                "wandererLimit",
-                config.WandererLimit.ToString(
-                    CultureInfo.InvariantCulture));
-
-        text =
-            SetRequiredKey(
-                text,
-                "wandererLimitScalesWithPlayers",
-                ToJsonBool(
-                    config.WandererLimitScalesWithPlayers));
-
-        text =
-            SetRequiredKey(
-                text,
-                "playerKingdomClanTierRequired",
-                config.PlayerKingdomClanTierRequired.ToString(
-                    CultureInfo.InvariantCulture));
-
-        text =
-            SetRequiredKey(
-                text,
-                "smithingStaminaRecoveryOutsideSettlements",
-                ToJsonBool(
-                    config.SmithingStaminaRecoveryOutsideSettlements));
-
-        text =
-            SetRequiredKey(
-                text,
-                "smithingStaminaRecoveryMultiplier",
-                config.SmithingStaminaRecoveryMultiplier.ToString(
-                    CultureInfo.InvariantCulture));
-
-        text =
-            SetRequiredKey(
-                text,
-                "maximumLootersMultiplier",
-                config.MaximumLootersMultiplier.ToString(
-                    CultureInfo.InvariantCulture));
+        foreach (var option in modOptionValues)
+        {
+            text =
+                SetRequiredKey(
+                    text,
+                    option.Key,
+                    option.JsonValue);
+        }
 
 
         SaveWithBackup(
@@ -833,6 +852,316 @@ public sealed class CoopConfigService
             string.Join(
                 newline,
                 lines);
+    }
+
+
+    private static IReadOnlyList<(string Key, string JsonValue)> GetModOptionValues(
+        CoopModConfig config) =>
+        new (string Key, string JsonValue)[]
+        {
+            ("fastForwardEnabled", ToJsonBool(config.FastForwardEnabled)),
+            ("autoPauseEnabled", ToJsonBool(config.AutoPauseEnabled)),
+            ("clientsCanUseCheats", ToJsonBool(config.ClientsCanUseCheats)),
+            (
+                "goldFoodInfluenceChangeInSettlements",
+                ToJsonBool(config.GoldFoodInfluenceChangeInSettlements)),
+            (
+                "goldFoodInfluenceChangeInBattles",
+                JsonSerializer.Serialize(config.GoldFoodInfluenceChangeInBattles)),
+            (
+                "goldFoodInfluenceChangeForDisconnectedPlayers",
+                ToJsonBool(config.GoldFoodInfluenceChangeForDisconnectedPlayers)),
+            (
+                "playerBattleAiJoinWindowHours",
+                config.PlayerBattleAiJoinWindowHours.ToString(CultureInfo.InvariantCulture)),
+            (
+                "speedLimitWhilePlayersInBattle",
+                ToJsonBool(config.SpeedLimitWhilePlayersInBattle)),
+            ("wandererLimit", config.WandererLimit.ToString(CultureInfo.InvariantCulture)),
+            (
+                "wandererLimitScalesWithPlayers",
+                ToJsonBool(config.WandererLimitScalesWithPlayers)),
+            (
+                "playerKingdomClanTierRequired",
+                config.PlayerKingdomClanTierRequired.ToString(CultureInfo.InvariantCulture)),
+            (
+                "smithingStaminaRecoveryOutsideSettlements",
+                ToJsonBool(config.SmithingStaminaRecoveryOutsideSettlements)),
+            (
+                "smithingStaminaRecoveryMultiplier",
+                config.SmithingStaminaRecoveryMultiplier.ToString(CultureInfo.InvariantCulture)),
+            (
+                "maximumLootersMultiplier",
+                config.MaximumLootersMultiplier.ToString(CultureInfo.InvariantCulture))
+        };
+
+
+    private static string EnsureModOptionsKeys(
+        string text,
+        IReadOnlyList<(string Key, string JsonValue)> options)
+    {
+        using var document =
+            JsonDocument.Parse(
+                text,
+                JsonOptions);
+
+        var root =
+            document.RootElement;
+
+        var hasModOptions =
+            root.TryGetProperty(
+                "modOptions",
+                out var modOptions);
+
+        if (
+            hasModOptions &&
+            modOptions.ValueKind is not
+                (JsonValueKind.Object or JsonValueKind.Null))
+        {
+            throw new InvalidDataException(
+                "mod-config.json modOptions must be an object or null.");
+        }
+
+        var lines =
+            new List<string>(
+                SplitLines(
+                    text,
+                    out var newline));
+
+        if (
+            !hasModOptions ||
+            modOptions.ValueKind == JsonValueKind.Null)
+        {
+            InsertCompleteModOptionsObject(
+                lines,
+                options,
+                hasModOptions);
+
+            return string.Join(newline, lines);
+        }
+
+        var missing =
+            options
+                .Where(option =>
+                    !modOptions.TryGetProperty(
+                        option.Key,
+                        out _))
+                .ToArray();
+
+        if (missing.Length == 0)
+            return text;
+
+        var openingIndex =
+            FindSettingLineIndex(
+                lines.ToArray(),
+                "modOptions",
+                includeCommented: false);
+
+        if (openingIndex < 0)
+        {
+            throw new InvalidDataException(
+                "Could not locate the active modOptions object in mod-config.json.");
+        }
+
+        var closingIndex =
+            FindObjectClosingBraceLineIndex(
+                lines,
+                openingIndex);
+
+        if (closingIndex < 0 || closingIndex == openingIndex)
+        {
+            throw new InvalidDataException(
+                "The modOptions object must use the normal multi-line JSONC layout before missing settings can be added safely.");
+        }
+
+        EnsureCommaBeforeInsertion(
+            lines,
+            closingIndex);
+
+        var indentation =
+            GetLeadingWhitespace(lines[closingIndex]) +
+            "  ";
+
+        foreach (var option in missing)
+        {
+            lines.Insert(
+                closingIndex++,
+                $"{indentation}\"{option.Key}\": {option.JsonValue},");
+        }
+
+        return string.Join(newline, lines);
+    }
+
+
+    private static void InsertCompleteModOptionsObject(
+        List<string> lines,
+        IReadOnlyList<(string Key, string JsonValue)> options,
+        bool replaceNullProperty)
+    {
+        var insertionIndex =
+            replaceNullProperty
+                ? FindSettingLineIndex(
+                    lines.ToArray(),
+                    "modOptions",
+                    includeCommented: false)
+                : FindRootClosingBraceIndex(
+                    lines.ToArray());
+
+        if (insertionIndex < 0)
+        {
+            throw new InvalidDataException(
+                "Could not locate where to create modOptions in mod-config.json.");
+        }
+
+        if (!replaceNullProperty)
+        {
+            EnsureCommaBeforeInsertion(
+                lines,
+                insertionIndex);
+        }
+
+        var indentation =
+            replaceNullProperty
+                ? GetLeadingWhitespace(lines[insertionIndex])
+                : GetLeadingWhitespace(lines[insertionIndex]) + "  ";
+
+        var block =
+            new List<string>
+            {
+                $"{indentation}\"modOptions\": {{"
+            };
+
+        block.AddRange(
+            options.Select(option =>
+                $"{indentation}  \"{option.Key}\": {option.JsonValue},"));
+
+        block.Add(
+            $"{indentation}}},");
+
+        if (replaceNullProperty)
+        {
+            lines.RemoveAt(insertionIndex);
+        }
+
+        lines.InsertRange(
+            insertionIndex,
+            block);
+    }
+
+
+    private static int FindObjectClosingBraceLineIndex(
+        IReadOnlyList<string> lines,
+        int openingLineIndex)
+    {
+        var depth = 0;
+        var objectStarted = false;
+        var inString = false;
+        var escaped = false;
+
+        for (var lineIndex = openingLineIndex; lineIndex < lines.Count; lineIndex++)
+        {
+            var line =
+                lines[lineIndex];
+
+            for (var characterIndex = 0; characterIndex < line.Length; characterIndex++)
+            {
+                var character =
+                    line[characterIndex];
+
+                if (escaped)
+                {
+                    escaped = false;
+                    continue;
+                }
+
+                if (inString && character == '\\')
+                {
+                    escaped = true;
+                    continue;
+                }
+
+                if (character == '"')
+                {
+                    inString = !inString;
+                    continue;
+                }
+
+                if (
+                    !inString &&
+                    character == '/' &&
+                    characterIndex + 1 < line.Length &&
+                    line[characterIndex + 1] == '/')
+                {
+                    break;
+                }
+
+                if (inString)
+                    continue;
+
+                if (character == '{')
+                {
+                    objectStarted = true;
+                    depth++;
+                }
+                else if (
+                    character == '}' &&
+                    objectStarted &&
+                    --depth == 0)
+                {
+                    return lineIndex;
+                }
+            }
+        }
+
+        return -1;
+    }
+
+
+    private static void EnsureCommaBeforeInsertion(
+        List<string> lines,
+        int insertionIndex)
+    {
+        for (var index = insertionIndex - 1; index >= 0; index--)
+        {
+            var trimmed =
+                lines[index].Trim();
+
+            if (
+                trimmed.Length == 0 ||
+                trimmed.StartsWith("//", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (
+                trimmed.EndsWith(",", StringComparison.Ordinal) ||
+                trimmed.EndsWith("{", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var commentIndex =
+                lines[index].IndexOf(
+                    "//",
+                    StringComparison.Ordinal);
+
+            if (commentIndex < 0)
+            {
+                lines[index] += ",";
+            }
+            else
+            {
+                lines[index] =
+                    lines[index][..commentIndex].TrimEnd() +
+                    ", " +
+                    lines[index][commentIndex..];
+            }
+
+            return;
+        }
+
+        throw new InvalidDataException(
+            "Could not safely add a property to mod-config.json.");
     }
 
 

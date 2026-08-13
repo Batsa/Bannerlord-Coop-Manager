@@ -236,6 +236,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
             OnPropertyChanged(nameof(ServerStateText));
             OnPropertyChanged(nameof(IsServerRunning));
             OnPropertyChanged(nameof(IsServerFullyStopped));
+            OnPropertyChanged(nameof(CanRunServerCheats));
             CommandManager.InvalidateRequerySuggested();
         }
     }
@@ -291,6 +292,10 @@ public sealed class MainViewModel : BindableBase, IDisposable
         $"Players ({_playerRosterTracker.PlayerCount})";
 
     public bool IsServerRunning => _processManager.IsRunning;
+
+    public bool CanRunServerCheats =>
+        _processManager.IsRunning &&
+        ServerState == ServerState.Ready;
 
     /// <summary>
     /// Manual backup restore is intentionally stricter than merely checking
@@ -394,6 +399,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
 
     public ICommand SaveSettingsCommand { get; }
     public ICommand ResetSettingsCommand { get; }
+    public ICommand ToggleScheduledRestartsCommand { get; }
     public ICommand BrowseServerCommand { get; }
     public ICommand ClearConsoleCommand { get; }
     public ICommand OpenServerLogsCommand { get; }
@@ -455,6 +461,9 @@ public sealed class MainViewModel : BindableBase, IDisposable
                   !_applicationClosing);
 
         SaveSettingsCommand = new AsyncRelayCommand(SaveSettingsAsync);
+
+        ToggleScheduledRestartsCommand =
+            new AsyncRelayCommand(SaveScheduledRestartsEnabledAsync);
 
         // Reset Settings now resets only the controls owned by the Restart
         // Settings panel. The auto-saved server executable path is preserved.
@@ -598,7 +607,9 @@ public sealed class MainViewModel : BindableBase, IDisposable
             if (!started)
             {
                 ServerState = ServerState.Error;
-                StatusMessage = "Server process failed to start.";
+                StatusMessage = string.IsNullOrWhiteSpace(_processManager.LastStartError)
+                    ? "Server process failed to start."
+                    : $"Server process failed to start: {_processManager.LastStartError}";
                 AddToolMessage(StatusMessage);
                 return;
             }
@@ -840,7 +851,9 @@ public sealed class MainViewModel : BindableBase, IDisposable
         if (!started)
         {
             ServerState = ServerState.Error;
-            StatusMessage = "Server process failed to start.";
+            StatusMessage = string.IsNullOrWhiteSpace(_processManager.LastStartError)
+                ? "Server process failed to start."
+                : $"Server process failed to start: {_processManager.LastStartError}";
             return;
         }
 
@@ -966,6 +979,42 @@ public sealed class MainViewModel : BindableBase, IDisposable
             _processManager.SendRawInputAsync(
                 input,
                 _lifetimeCts.Token);
+    }
+
+
+    /// <summary>
+    /// Sends one complete command selected by the server-cheat UI. Only a
+    /// fully-ready managed server may receive it, and embedded newlines are
+    /// rejected so one confirmation can never execute multiple commands.
+    /// </summary>
+    public async Task<bool> ExecuteServerCommandAsync(
+        string command)
+    {
+        if (!CanRunServerCheats)
+            return false;
+
+        command = command.Trim();
+
+        if (
+            command.Length == 0 ||
+            command.Contains('\r') ||
+            command.Contains('\n'))
+        {
+            return false;
+        }
+
+        var sent =
+            await _processManager.SendCommandAsync(
+                command,
+                _lifetimeCts.Token);
+
+        if (sent)
+        {
+            AddToolMessage(
+                $"> {command}");
+        }
+
+        return sent;
     }
 
     /// <summary>
@@ -1120,19 +1169,25 @@ public sealed class MainViewModel : BindableBase, IDisposable
         var validation =
             new List<string>();
 
-        if (Settings.RestartEveryHours is < 1 or > 24)
+        if (
+            Settings.ScheduledRestartsEnabled &&
+            Settings.RestartEveryHours is < 1 or > 24)
         {
             validation.Add(
                 "Restart interval must be between 1 and 24 hours.");
         }
 
-        if (Settings.RestartMinute is < 0 or > 59)
+        if (
+            Settings.ScheduledRestartsEnabled &&
+            Settings.RestartMinute is < 0 or > 59)
         {
             validation.Add(
                 "Restart minute must be between 0 and 59.");
         }
 
-        if (Settings.WarningMinutesBefore is < 0 or > 10)
+        if (
+            Settings.ScheduledRestartsEnabled &&
+            Settings.WarningMinutesBefore is < 0 or > 10)
         {
             validation.Add(
                 "Restart warning lead time must be between 0 and 10 minutes.");
@@ -1166,6 +1221,48 @@ public sealed class MainViewModel : BindableBase, IDisposable
             "Restart settings saved.");
     }
 
+
+    private async Task SaveScheduledRestartsEnabledAsync()
+    {
+        try
+        {
+            await _settingsService.SaveScheduledRestartsEnabledAsync(
+                Settings);
+
+            // ServerSettings is a nested mutable object, so refresh every
+            // control whose enabled state depends on this switch.
+            OnPropertyChanged(
+                nameof(Settings));
+
+            RecalculateNextRestart();
+
+            StatusMessage =
+                Settings.ScheduledRestartsEnabled
+                    ? "Scheduled restarts enabled."
+                    : "Scheduled restarts disabled.";
+
+            AddToolMessage(
+                StatusMessage);
+        }
+        catch (Exception ex)
+        {
+            Settings.ScheduledRestartsEnabled =
+                !Settings.ScheduledRestartsEnabled;
+
+            OnPropertyChanged(
+                nameof(Settings));
+
+            StatusMessage =
+                $"Could not save scheduled restart setting: {ex.Message}";
+
+            MessageBox.Show(
+                StatusMessage,
+                "Restart Settings",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
     /// <summary>
     /// Opens a normal Windows file picker so the user can locate
     /// BannerlordCoopServer.exe without editing JSON manually.
@@ -1191,6 +1288,9 @@ public sealed class MainViewModel : BindableBase, IDisposable
 
         var defaults =
             new ServerSettings();
+
+        Settings.ScheduledRestartsEnabled =
+            defaults.ScheduledRestartsEnabled;
 
         Settings.RestartEveryHours =
             defaults.RestartEveryHours;
@@ -2580,6 +2680,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
                     () => UpdateRuntimeDisplay());
 
                 if (
+                    !Settings.ScheduledRestartsEnabled ||
                     !_serverReady ||
                     ServerState != ServerState.Ready ||
                     _nextRestartAt is null ||
@@ -2669,6 +2770,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
         }
 
         OnPropertyChanged(nameof(IsServerRunning));
+        OnPropertyChanged(nameof(CanRunServerCheats));
         CommandManager.InvalidateRequerySuggested();
     }
 
@@ -2680,6 +2782,14 @@ public sealed class MainViewModel : BindableBase, IDisposable
     /// </summary>
     private void RecalculateNextRestart()
     {
+        if (!Settings.ScheduledRestartsEnabled)
+        {
+            _nextRestartAt = null;
+            _lastWarningKey = null;
+            NextRestartText = "Disabled";
+            return;
+        }
+
         if (!_serverReady || ServerState != ServerState.Ready)
         {
             _nextRestartAt = null;

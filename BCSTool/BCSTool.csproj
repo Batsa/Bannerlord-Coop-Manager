@@ -24,5 +24,44 @@
     <RootNamespace>BCSTool</RootNamespace>
 	<Version>0.2.1</Version>
 	<PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
+	<Authors>AppleDeath; Bannerlord Coop Manager contributors</Authors>
+	<RepositoryUrl>https://github.com/Batsa/Bannerlord-Coop-Manager</RepositoryUrl>
+	<RepositoryType>git</RepositoryType>
   </PropertyGroup>
+
+  <Target Name="BuildRuntimeBootstrap" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <RuntimeBootstrapReference Include="$(NetCoreTargetingPackRoot)\Microsoft.NETCore.App.Ref\6.*\ref\net6.0\*.dll" />
+    </ItemGroup>
+    <MakeDir Directories="$(IntermediateOutputPath)runtime-bootstrap" />
+    <Csc Sources="..\BCSTool.RuntimeBootstrap\StartupHook.cs"
+         References="@(RuntimeBootstrapReference)"
+         OutputAssembly="$(IntermediateOutputPath)runtime-bootstrap\BCSTool.RuntimeBootstrap.dll"
+         TargetType="Library"
+         NoStandardLib="true"
+         Nullable="enable"
+         LangVersion="latest"
+         Deterministic="true" />
+  </Target>
+
+  <Target Name="CopyRuntimeBootstrap" AfterTargets="Build">
+    <Copy SourceFiles="$(IntermediateOutputPath)runtime-bootstrap\BCSTool.RuntimeBootstrap.dll"
+          DestinationFolder="$(TargetDir)" />
+  </Target>
+
+  <Target Name="CopyRuntimeBootstrapToPublish" AfterTargets="Publish">
+    <Copy SourceFiles="$(IntermediateOutputPath)runtime-bootstrap\BCSTool.RuntimeBootstrap.dll"
+          DestinationFolder="$(PublishDir)" />
+  </Target>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\CoopBridge\BCS.CoopBridge.Server.dll"
+                      LogicalName="BCSTool.Assets.CoopBridge.BCS.CoopBridge.Server.dll" />
+    <EmbeddedResource Include="Assets\CoopBridge\BCS.CoopBridge.Client.dll"
+                      LogicalName="BCSTool.Assets.CoopBridge.BCS.CoopBridge.Client.dll" />
+    <EmbeddedResource Include="..\LICENSE"
+                      LogicalName="BCSTool.LICENSE" />
+    <EmbeddedResource Include="..\NOTICE.md"
+                      LogicalName="BCSTool.NOTICE.md" />
+  </ItemGroup>
 </Project>

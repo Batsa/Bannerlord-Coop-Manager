@@ -56,12 +56,20 @@ public partial class App : Application
         var settingsService = new SettingsService();
         var logService = new LogService();
         var portMonitor = new PortMonitor();
-        var processManager = new ServerProcessManager(logService);
+        var moduleScanner = new ModuleScanner();
+        var launchBuilder = new DedicatedServerLaunchBuilder(moduleScanner);
+        var coopConfigService = new CoopConfigService();
+        var processManager = new ServerProcessManager(
+            logService,
+            launchBuilder,
+            coopConfigService);
         var restartScheduler = new RestartScheduler();
         var playerRosterTracker = new PlayerRosterTracker();
         var serverExecutableLocator = new ServerExecutableLocator();
-        var coopConfigService = new CoopConfigService();
+        var clientSaveImportService = new ClientSaveImportService(coopConfigService);
         var saveBackupService = new SaveBackupService(coopConfigService);
+        var dependencyValidator = new DependencyValidator();
+        var coopPlayerListParser = new CoopPlayerListParser();
 
         // MainViewModel coordinates the UI with all server-management logic.
         _viewModel = new MainViewModel(
@@ -76,7 +84,11 @@ public partial class App : Application
 
         var window = new MainWindow(
             _viewModel,
-            coopConfigService);
+            coopConfigService,
+            moduleScanner,
+            dependencyValidator,
+            coopPlayerListParser,
+            clientSaveImportService);
         MainWindow = window;
         window.Show();
     }

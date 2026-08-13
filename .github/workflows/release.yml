@@ -17,10 +17,12 @@ jobs:
       - name: Checkout tagged source
         uses: actions/checkout@v7
 
-      - name: Set up .NET 10
+      - name: Set up .NET SDKs
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: |
+            6.0.x
+            10.0.x
 
       - name: Verify tag matches BCSTool.csproj version
         shell: pwsh
@@ -50,26 +52,49 @@ jobs:
         run: |
           & ".\BCSTool\Publish-SingleExe.ps1"
 
+      - name: Run regression checks
+        shell: pwsh
+        run: |
+          dotnet build ".\BCSTool.RegressionTests\BCSTool.RegressionTests.csproj" `
+            -c Release `
+            --disable-build-servers
+          dotnet ".\BCSTool.RegressionTests\bin\Release\net10.0-windows\BCSTool.RegressionTests.dll"
+
       - name: Verify release executable
         shell: pwsh
         run: |
           $exe = ".\BCSTool\publish\BCS Tool.exe"
+          $bootstrap = ".\BCSTool\publish\BCSTool.RuntimeBootstrap.dll"
 
           if (-not (Test-Path $exe)) {
-              throw "Expected release executable was not produced: $exe"
+            throw "Expected release executable was not produced: $exe"
+          }
+          if (-not (Test-Path $bootstrap)) {
+            throw "Expected runtime bootstrap was not produced: $bootstrap"
           }
 
-          Write-Host "Release executable:"
-          Get-Item $exe | Format-List Name, Length, LastWriteTime
+          Write-Host "Release files:"
+          Get-Item $exe, $bootstrap | Format-Table Name, Length, LastWriteTime
+
+      - name: Package complete application
+        shell: pwsh
+        run: |
+          $archive = ".\BCSTool\publish\Bannerlord-Coop-Manager-${{ github.ref_name }}-win-x64.zip"
+          Compress-Archive `
+            -LiteralPath ".\BCSTool\publish\BCS Tool.exe", ".\BCSTool\publish\BCSTool.RuntimeBootstrap.dll", ".\LICENSE", ".\NOTICE.md", ".\README.md" `
+            -DestinationPath $archive `
+            -CompressionLevel Optimal
+
+          Get-Item $archive | Format-List Name, Length, LastWriteTime
 
       - name: Generate SHA-256 checksum
         shell: pwsh
         run: |
-          $exe = ".\BCSTool\publish\BCS Tool.exe"
-          $checksumFile = "$exe.sha256"
-          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          $archive = ".\BCSTool\publish\Bannerlord-Coop-Manager-${{ github.ref_name }}-win-x64.zip"
+          $checksumFile = "$archive.sha256"
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
 
-          "$hash  BCS Tool.exe" |
+          "$hash  $([IO.Path]::GetFileName($archive))" |
               Set-Content -Path $checksumFile -Encoding ascii
 
           Write-Host "SHA-256:"
@@ -80,9 +105,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $archive = ".\BCSTool\publish\Bannerlord-Coop-Manager-${{ github.ref_name }}-win-x64.zip"
           gh release create "${{ github.ref_name }}" `
-            ".\BCSTool\publish\BCS Tool.exe" `
-            ".\BCSTool\publish\BCS Tool.exe.sha256" `
+            $archive `
+            "$archive.sha256" `
             --verify-tag `
             --generate-notes `
-            --title "BCS Tool ${{ github.ref_name }}"
+            --title "Bannerlord Coop Manager ${{ github.ref_name }}"

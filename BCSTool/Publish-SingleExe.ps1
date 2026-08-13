@@ -40,10 +40,22 @@ dotnet publish $Project `
     /p:DebugType=None `
     /p:DebugSymbols=false
 
+$Executable = Join-Path $PublishDirectory "BCS Tool.exe"
+$RuntimeBootstrap = Join-Path $PublishDirectory "BCSTool.RuntimeBootstrap.dll"
+
+if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
+    throw "Publish did not produce the application executable: $Executable"
+}
+
+if (-not (Test-Path -LiteralPath $RuntimeBootstrap -PathType Leaf)) {
+    throw "Publish did not produce the required runtime bootstrap: $RuntimeBootstrap"
+}
+
 Write-Host ""
 Write-Host "Publish complete:"
 Write-Host "  $PublishDirectory"
-Write-Host "  $(Join-Path $PublishDirectory 'BCS Tool.exe')"
+Write-Host "  $Executable"
+Write-Host "  $RuntimeBootstrap"
 Write-Host ""
 Write-Host "BCS Tool settings are stored in:"
 Write-Host "  HKEY_CURRENT_USER\Software\BCSServerTool"

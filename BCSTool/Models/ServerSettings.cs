@@ -18,6 +18,10 @@ public sealed class ServerSettings
     public string ServerDirectory { get; set; } = "";
     public string ServerExecutable { get; set; } = "BannerlordCoopServer.exe";
 
+    // Existing installations retain scheduled restarts unless the user
+    // explicitly disables them in Restart Settings.
+    public bool ScheduledRestartsEnabled { get; set; } = true;
+
     // Clock-aligned restart interval.
     // Example: 2 => 00:xx, 02:xx, 04:xx, 06:xx...
     public int RestartEveryHours { get; set; } = 2;
@@ -83,14 +87,17 @@ public sealed class ServerSettings
     {
         var errors = new List<string>();
 
-        if (RestartEveryHours is < 1 or > 24)
-            errors.Add("Restart interval must be between 1 and 24 hours.");
+        if (ScheduledRestartsEnabled)
+        {
+            if (RestartEveryHours is < 1 or > 24)
+                errors.Add("Restart interval must be between 1 and 24 hours.");
 
-        if (RestartMinute is < 0 or > 59)
-            errors.Add("Restart minute must be between 0 and 59.");
+            if (RestartMinute is < 0 or > 59)
+                errors.Add("Restart minute must be between 0 and 59.");
 
-        if (WarningMinutesBefore is < 0 or > 10)
-            errors.Add("Restart warning lead time must be between 0 and 10 minutes.");
+            if (WarningMinutesBefore is < 0 or > 10)
+                errors.Add("Restart warning lead time must be between 0 and 10 minutes.");
+        }
 
         if (ServerPort is < 0 or > 65535)
             errors.Add("Server port must be 0 (disabled) or between 1 and 65535.");

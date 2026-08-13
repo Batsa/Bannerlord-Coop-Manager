@@ -1,0 +1,197 @@
+<Window x:Class="BCSTool.CheatConsoleWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Server Cheats - BCS Tool"
+        Width="760"
+        Height="690"
+        MinWidth="680"
+        MinHeight="600"
+        WindowStartupLocation="CenterOwner"
+        Loaded="Window_Loaded"
+        Closed="Window_Closed">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="14">
+            <TextBlock Text="Bannerlord Coop Server Cheats"
+                       FontSize="20"
+                       FontWeight="SemiBold"/>
+
+            <Border Background="#FFF4D6"
+                    BorderBrush="#D7A100"
+                    BorderThickness="1"
+                    Padding="10"
+                    Margin="0,10,0,12">
+                <TextBlock Text="Cheat commands directly mutate the live campaign and may not be reversible. Review the exact command preview before confirming."
+                           TextWrapping="Wrap"/>
+            </Border>
+
+            <GroupBox Header="Client Cheat Access"
+                      Margin="0,0,0,12">
+                <Grid Margin="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="190"/>
+                        <ColumnDefinition Width="150"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Grid.Column="0"
+                               Text="Allow connected-client cheats:"
+                               VerticalAlignment="Center"/>
+                    <ComboBox Grid.Row="0" Grid.Column="1"
+                              ItemsSource="{Binding ClientCheatOptions}"
+                              SelectedItem="{Binding ClientCheatsSelection}"
+                              IsEnabled="{Binding CanEditClientCheats}"/>
+                    <Button Grid.Row="0" Grid.Column="2"
+                            Content="Save Client Setting"
+                            Command="{Binding SaveClientCheatsCommand}"
+                            Margin="10,0,0,0"
+                            Padding="12,3"/>
+
+                    <TextBlock Grid.Row="1" Grid.ColumnSpan="4"
+                               Margin="0,8,0,0"
+                               Foreground="DarkGoldenrod"
+                               TextWrapping="Wrap"
+                               Text="This mod-config.json setting can change only while the server is stopped and applies after restart. Each allowed client must also run config.cheat_mode 1 in its in-game console."/>
+                </Grid>
+            </GroupBox>
+
+            <GroupBox Header="Connected Player"
+                      Margin="0,0,0,12">
+                <Grid Margin="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="190"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Grid.Column="0"
+                               Text="Player:"
+                               VerticalAlignment="Center"/>
+                    <ComboBox Grid.Row="0" Grid.Column="1"
+                              ItemsSource="{Binding Players}"
+                              SelectedItem="{Binding SelectedPlayer}"
+                              DisplayMemberPath="DisplayName"
+                              MinWidth="230"
+                              IsEnabled="{Binding CanRunServerCommands}"/>
+                    <Button Grid.Row="0" Grid.Column="2"
+                            Content="Refresh Players"
+                            Command="{Binding RefreshPlayersCommand}"
+                            Margin="10,0,0,0"
+                            Padding="12,3"/>
+
+                    <TextBlock Grid.Row="1" Grid.ColumnSpan="3"
+                               Margin="0,8,0,0"
+                               FontFamily="Consolas"
+                               FontSize="11"
+                               TextWrapping="Wrap">
+                        <Run Text="Controller: "/><Run Text="{Binding SelectedPlayer.ControllerId}"/>
+                        <LineBreak/>
+                        <Run Text="Hero: "/><Run Text="{Binding SelectedPlayer.HeroId}"/>
+                        <Run Text="    Party: "/><Run Text="{Binding SelectedPlayer.PartyId}"/>
+                        <Run Text="    Clan: "/><Run Text="{Binding SelectedPlayer.ClanId}"/>
+                    </TextBlock>
+                </Grid>
+            </GroupBox>
+
+            <GroupBox Header="Server Command"
+                      Margin="0,0,0,12">
+                <Grid Margin="10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="190"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Grid.Column="0"
+                               Text="Cheat:"
+                               VerticalAlignment="Center"
+                               Margin="0,0,10,8"/>
+                    <ComboBox Grid.Row="0" Grid.Column="1"
+                              ItemsSource="{Binding Commands}"
+                              SelectedItem="{Binding SelectedCommand}"
+                              DisplayMemberPath="DisplayName"
+                              Margin="0,0,0,8"/>
+
+                    <TextBlock Grid.Row="1" Grid.Column="0"
+                               Text="Description:"
+                               Margin="0,0,10,8"/>
+                    <TextBlock Grid.Row="1" Grid.Column="1"
+                               Text="{Binding CommandDescription}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,8"/>
+
+                    <TextBlock Grid.Row="2" Grid.Column="0"
+                               Text="Uses selected player:"
+                               VerticalAlignment="Center"
+                               Margin="0,0,10,8"/>
+                    <CheckBox Grid.Row="2" Grid.Column="1"
+                              IsChecked="{Binding IsPlayerRequired, Mode=OneWay}"
+                              IsHitTestVisible="False"
+                              Focusable="False"
+                              Margin="0,0,0,8"/>
+
+                    <TextBlock Grid.Row="3" Grid.Column="0"
+                               Text="Additional arguments:"
+                               VerticalAlignment="Center"
+                               Margin="0,0,10,8"/>
+                    <TextBox Grid.Row="3" Grid.Column="1"
+                             Text="{Binding AdditionalArguments, UpdateSourceTrigger=PropertyChanged}"
+                             Margin="0,0,0,4"/>
+
+                    <TextBlock Grid.Row="4" Grid.Column="1"
+                               Text="{Binding AdditionalArgumentsHint}"
+                               Foreground="Gray"
+                               FontSize="11"
+                               Margin="0,0,0,10"/>
+
+                    <TextBlock Grid.Row="5" Grid.Column="0"
+                               Text="Exact command:"
+                               Margin="0,0,10,0"/>
+                    <StackPanel Grid.Row="5" Grid.Column="1">
+                        <Border Background="#F2F2F2"
+                                BorderBrush="#B8B8B8"
+                                BorderThickness="1"
+                                Padding="8">
+                            <TextBlock Text="{Binding CommandPreview}"
+                                       FontFamily="Consolas"
+                                       TextWrapping="Wrap"/>
+                        </Border>
+                        <Button Content="Run on Server"
+                                Click="RunCommand_Click"
+                                IsEnabled="{Binding CanRunServerCommands}"
+                                HorizontalAlignment="Right"
+                                Margin="0,10,0,0"
+                                Padding="18,5"/>
+                    </StackPanel>
+                </Grid>
+            </GroupBox>
+
+            <Border Background="#F2F2F2"
+                    BorderBrush="#C8C8C8"
+                    BorderThickness="1"
+                    Padding="10"
+                    Margin="0,0,0,10">
+                <TextBlock TextWrapping="Wrap"
+                           Text="Client-only commands such as coop.unstuck and coop.debug.clan.add_influence must be entered by that player in the in-game console. BCS Tool cannot execute inside a client process."/>
+            </Border>
+
+            <TextBlock Text="{Binding StatusMessage}"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+    </ScrollViewer>
+</Window>

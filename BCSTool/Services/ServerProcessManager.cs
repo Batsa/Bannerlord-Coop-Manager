@@ -38,6 +38,8 @@ public sealed class ServerProcessManager : IDisposable
     private const short MaximumTerminalRows = 120;
 
     private readonly LogService _logService;
+    private readonly DedicatedServerLaunchBuilder _launchBuilder;
+    private readonly CoopConfigService _coopConfigService;
     private readonly SemaphoreSlim _inputLock = new(1, 1);
     private readonly object _resizeSync = new();
 
@@ -55,6 +57,7 @@ public sealed class ServerProcessManager : IDisposable
 
     private CancellationTokenSource? _readerCts;
     private Task? _readerTask;
+    private ServerConsoleLogWriter? _consoleLog;
 
     private volatile bool _expectedExit;
 
@@ -96,10 +99,17 @@ public sealed class ServerProcessManager : IDisposable
 
     public DateTime? StartedAt { get; private set; }
 
+    public string? LastStartError { get; private set; }
 
-    public ServerProcessManager(LogService logService)
+
+    public ServerProcessManager(
+        LogService logService,
+        DedicatedServerLaunchBuilder launchBuilder,
+        CoopConfigService coopConfigService)
     {
         _logService = logService;
+        _launchBuilder = launchBuilder;
+        _coopConfigService = coopConfigService;
 
         _terminal =
             new VirtualTerminalScreen(
@@ -161,6 +171,8 @@ public sealed class ServerProcessManager : IDisposable
         if (!File.Exists(executablePath))
             return Task.FromResult(false);
 
+        LastStartError = null;
+
         CleanupPreviousSession();
 
         _terminal.Clear();
@@ -169,14 +181,22 @@ public sealed class ServerProcessManager : IDisposable
 
         try
         {
+            var launchPlan = _launchBuilder.Build(executablePath, workingDirectory);
+
+            ConfigureManagedEngineConsoleLog(launchPlan);
+
             _session =
                 ConPtySession.Start(
-                    executablePath,
-                    workingDirectory,
+                    launchPlan.ExecutablePath,
+                    launchPlan.WorkingDirectory,
                     _terminalColumns,
-                    _terminalRows);
+                    _terminalRows,
+                    launchPlan.Arguments,
+                    launchPlan.Environment);
 
-            _process = _session.Process;
+            var session = _session;
+
+            _process = session.Process;
             _process.EnableRaisingEvents = true;
 
             _process.Exited += Process_Exited;
@@ -199,11 +219,20 @@ public sealed class ServerProcessManager : IDisposable
             _readerTask =
                 Task.Run(
                     () => ReadTerminalLoop(
+                        session,
+                        _consoleLog,
                         _readerCts.Token),
                     CancellationToken.None);
 
             _logService.Write(
-                $"Started ConPTY server PID {_process.Id}: {executablePath}");
+                $"Started ConPTY server PID {_process.Id}: {launchPlan.ExecutablePath}");
+
+            if (launchPlan.UsesManagedModuleProfile)
+            {
+                _logService.Write(
+                    "Engine module order: " +
+                    string.Join(" -> ", launchPlan.ActiveModuleIds));
+            }
 
             PublishTerminalSnapshot();
 
@@ -211,6 +240,7 @@ public sealed class ServerProcessManager : IDisposable
         }
         catch (Exception ex)
         {
+            LastStartError = ex.Message;
             _logService.Write(
                 $"ConPTY server start failed: {ex}");
 
@@ -519,6 +549,8 @@ public sealed class ServerProcessManager : IDisposable
     /// can be detected without waiting for the next screen snapshot.
     /// </summary>
     private void ReadTerminalLoop(
+        ConPtySession session,
+        ServerConsoleLogWriter? consoleLog,
         CancellationToken cancellationToken)
     {
         var buffer = new char[4096];
@@ -527,15 +559,12 @@ public sealed class ServerProcessManager : IDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                if (_session is null)
-                    return;
-
                 int count;
 
                 try
                 {
                     count =
-                        _session.OutputReader.Read(
+                        session.OutputReader.Read(
                             buffer,
                             0,
                             buffer.Length);
@@ -554,6 +583,11 @@ public sealed class ServerProcessManager : IDisposable
                         buffer,
                         0,
                         count);
+
+                AppendConsoleLog(
+                    consoleLog,
+                    chunk,
+                    cancellationToken);
 
                 // Fast text-level consumers such as readiness detection.
                 OutputReceived?.Invoke(
@@ -579,7 +613,129 @@ public sealed class ServerProcessManager : IDisposable
         }
         finally
         {
+            FlushConsoleLog(
+                consoleLog,
+                cancellationToken);
             PublishTerminalSnapshot();
+        }
+    }
+
+
+    /// <summary>
+    /// The packaged BannerlordCoopServer launcher owns file logging when the
+    /// unmanaged launch path is used. A managed module profile bypasses that
+    /// launcher and starts the engine directly, so BCS Tool must tee ConPTY's
+    /// complete raw character stream itself for logFile to remain effective.
+    /// </summary>
+    private void ConfigureManagedEngineConsoleLog(
+        ServerLaunchPlan launchPlan)
+    {
+        DisposeConsoleLog();
+
+        if (!launchPlan.UsesManagedModuleProfile)
+            return;
+
+        var config =
+            _coopConfigService.LoadServerConfig();
+
+        if (!config.LogFile)
+            return;
+
+        _consoleLog =
+            ServerConsoleLogWriter.Create(
+                _coopConfigService.ServerLogDirectory,
+                DateTime.Now,
+                warning =>
+                    _logService.Write(
+                        "Server console log rotation warning: " +
+                        warning));
+
+        _logService.Write(
+            "Server console output log: " +
+            _consoleLog.FilePath);
+    }
+
+
+    private void AppendConsoleLog(
+        ServerConsoleLogWriter? consoleLog,
+        string chunk,
+        CancellationToken cancellationToken)
+    {
+        if (consoleLog is null)
+            return;
+
+        try
+        {
+            consoleLog.Append(chunk);
+        }
+        catch (Exception ex)
+        {
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                _logService.Write(
+                    "Server console log write failed; live console capture will continue: " +
+                    ex.Message);
+            }
+
+            DisableConsoleLog(consoleLog);
+        }
+    }
+
+
+    private void FlushConsoleLog(
+        ServerConsoleLogWriter? consoleLog,
+        CancellationToken cancellationToken)
+    {
+        if (consoleLog is null)
+            return;
+
+        try
+        {
+            consoleLog.Flush();
+        }
+        catch (Exception ex)
+        {
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                _logService.Write(
+                    "Server console log flush failed: " +
+                    ex.Message);
+            }
+        }
+    }
+
+
+    private void DisableConsoleLog(
+        ServerConsoleLogWriter consoleLog)
+    {
+        if (ReferenceEquals(_consoleLog, consoleLog))
+            _consoleLog = null;
+
+        try
+        {
+            consoleLog.Dispose();
+        }
+        catch
+        {
+        }
+    }
+
+
+    private void DisposeConsoleLog()
+    {
+        try
+        {
+            _consoleLog?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            _logService.Write(
+                "Server console log close failed: " +
+                ex.Message);
+        }
+        finally
+        {
+            _consoleLog = null;
         }
     }
 
@@ -758,6 +914,8 @@ public sealed class ServerProcessManager : IDisposable
         }
 
         _readerCts?.Dispose();
+
+        DisposeConsoleLog();
 
         _readerCts = null;
         _readerTask = null;

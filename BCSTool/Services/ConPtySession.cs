@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -87,7 +88,9 @@ internal sealed class ConPtySession : IDisposable
         string executablePath,
         string workingDirectory,
         short columns,
-        short rows)
+        short rows,
+        IReadOnlyList<string>? arguments = null,
+        IReadOnlyDictionary<string, string?>? environmentOverrides = null)
     {
         IntPtr inputRead = IntPtr.Zero;
         IntPtr inputWrite = IntPtr.Zero;
@@ -95,6 +98,7 @@ internal sealed class ConPtySession : IDisposable
         IntPtr outputWrite = IntPtr.Zero;
         IntPtr pseudoConsole = IntPtr.Zero;
         IntPtr attributeList = IntPtr.Zero;
+        IntPtr environmentBlock = IntPtr.Zero;
 
         try
         {
@@ -213,8 +217,14 @@ internal sealed class ConPtySession : IDisposable
 
             // CreateProcessW requires a mutable command-line buffer.
             // Quoting protects executable paths that contain spaces.
-            var commandLine = new StringBuilder(
-                $"\"{executablePath}\"");
+            var commandLine = new StringBuilder(QuoteArgument(executablePath));
+            foreach (var argument in arguments ?? Array.Empty<string>())
+            {
+                commandLine.Append(' ');
+                commandLine.Append(QuoteArgument(argument));
+            }
+
+            environmentBlock = BuildEnvironmentBlock(environmentOverrides);
 
             var flags =
                 ExtendedStartupInfoPresent |
@@ -227,7 +237,7 @@ internal sealed class ConPtySession : IDisposable
                     lpThreadAttributes: IntPtr.Zero,
                     bInheritHandles: false,
                     dwCreationFlags: flags,
-                    lpEnvironment: IntPtr.Zero,
+                    lpEnvironment: environmentBlock,
                     lpCurrentDirectory: workingDirectory,
                     lpStartupInfo: ref startupInfo,
                     lpProcessInformation: out var processInformation))
@@ -301,6 +311,9 @@ internal sealed class ConPtySession : IDisposable
                 Marshal.FreeHGlobal(attributeList);
             }
 
+            if (environmentBlock != IntPtr.Zero)
+                Marshal.FreeHGlobal(environmentBlock);
+
             if (inputRead != IntPtr.Zero)
                 CloseHandle(inputRead);
 
@@ -315,6 +328,86 @@ internal sealed class ConPtySession : IDisposable
         }
     }
 
+
+
+    internal static string QuoteArgument(string value)
+    {
+        if (value.Length > 0 &&
+            !value.Any(character => char.IsWhiteSpace(character) || character == '"'))
+        {
+            return value;
+        }
+
+        var quoted = new StringBuilder(value.Length + 2);
+        quoted.Append('"');
+        var backslashes = 0;
+
+        foreach (var character in value)
+        {
+            if (character == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+
+            if (character == '"')
+            {
+                quoted.Append('\\', backslashes * 2 + 1);
+                quoted.Append('"');
+                backslashes = 0;
+                continue;
+            }
+
+            quoted.Append('\\', backslashes);
+            backslashes = 0;
+            quoted.Append(character);
+        }
+
+        quoted.Append('\\', backslashes * 2);
+        quoted.Append('"');
+        return quoted.ToString();
+    }
+
+
+    private static IntPtr BuildEnvironmentBlock(
+        IReadOnlyDictionary<string, string?>? overrides)
+    {
+        if (overrides is null || overrides.Count == 0)
+            return IntPtr.Zero;
+
+        var variables = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        {
+            if (entry.Key is string key && entry.Value is string value)
+                variables[key] = value;
+        }
+
+        foreach (var (key, value) in overrides)
+        {
+            if (string.IsNullOrEmpty(key) || key.Contains('=') || key.Contains('\0'))
+                throw new InvalidDataException($"Invalid child environment variable name: '{key}'");
+
+            if (value is null)
+                variables.Remove(key);
+            else if (value.Contains('\0'))
+                throw new InvalidDataException(
+                    $"Child environment variable '{key}' contains a null character.");
+            else
+                variables[key] = value;
+        }
+
+        var block = new StringBuilder();
+        foreach (var (key, value) in variables)
+        {
+            block.Append(key);
+            block.Append('=');
+            block.Append(value);
+            block.Append('\0');
+        }
+
+        block.Append('\0');
+        return Marshal.StringToHGlobalUni(block.ToString());
+    }
 
 
     /// <summary>

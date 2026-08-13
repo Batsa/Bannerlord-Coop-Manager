@@ -44,6 +44,27 @@ public sealed class ServerExecutableLocator
         64;
 
 
+    /// <summary>
+    /// Resolves the installed Bannerlord client without scanning entire drives.
+    /// Compatibility preparation uses this only for version-pinned official
+    /// runtime dependencies that the dedicated-server distribution omits.
+    /// </summary>
+    public static string? FindBannerlordInstallRoot()
+    {
+        foreach (var steamRoot in GetSteamRoots())
+        {
+            foreach (var libraryRoot in GetSteamLibraryRoots(steamRoot))
+            {
+                var bannerlordRoot = ResolveBannerlordInstallRoot(libraryRoot);
+                if (bannerlordRoot is not null && Directory.Exists(bannerlordRoot))
+                    return Path.GetFullPath(bannerlordRoot);
+            }
+        }
+
+        return null;
+    }
+
+
     public Task<ServerExecutableDetectionResult> DetectAsync(
         CancellationToken cancellationToken = default)
     {

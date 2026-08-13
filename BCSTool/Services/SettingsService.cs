@@ -79,6 +79,12 @@ public sealed class SettingsService
                 nameof(ServerSettings.ServerExecutable),
                 settings.ServerExecutable);
 
+        settings.ScheduledRestartsEnabled =
+            ReadBool(
+                key,
+                nameof(ServerSettings.ScheduledRestartsEnabled),
+                settings.ScheduledRestartsEnabled);
+
         settings.RestartEveryHours =
             ReadInt(
                 key,
@@ -235,6 +241,11 @@ public sealed class SettingsService
                 "Could not create or open the BCS Tool Registry settings key.");
         }
 
+        WriteBool(
+            key,
+            nameof(ServerSettings.ScheduledRestartsEnabled),
+            settings.ScheduledRestartsEnabled);
+
         WriteInt(
             key,
             nameof(ServerSettings.RestartEveryHours),
@@ -254,6 +265,33 @@ public sealed class SettingsService
             key,
             nameof(ServerSettings.AutoRestartOnCrash),
             settings.AutoRestartOnCrash);
+
+        return Task.CompletedTask;
+    }
+
+
+    /// <summary>
+    /// Persists the schedule on/off switch immediately. This remains separate
+    /// because every other restart control is disabled while scheduling is off.
+    /// </summary>
+    public Task SaveScheduledRestartsEnabledAsync(
+        ServerSettings settings)
+    {
+        using var key =
+            Registry.CurrentUser.CreateSubKey(
+                RegistryPath,
+                writable: true);
+
+        if (key is null)
+        {
+            throw new InvalidOperationException(
+                "Could not create or open the BCS Tool Registry settings key.");
+        }
+
+        WriteBool(
+            key,
+            nameof(ServerSettings.ScheduledRestartsEnabled),
+            settings.ScheduledRestartsEnabled);
 
         return Task.CompletedTask;
     }
@@ -388,6 +426,11 @@ public sealed class SettingsService
         // Booleans are represented as REG_DWORD:
         // 0 = false
         // 1 = true
+        WriteBool(
+            key,
+            nameof(ServerSettings.ScheduledRestartsEnabled),
+            settings.ScheduledRestartsEnabled);
+
         WriteBool(
             key,
             nameof(ServerSettings.AutoRestartOnCrash),

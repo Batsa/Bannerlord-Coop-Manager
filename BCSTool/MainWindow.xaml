@@ -194,7 +194,8 @@
             <GroupBox Grid.Column="0"
                       Header="Server Settings"
                       Margin="0,0,6,0">
-                <Grid Margin="10">
+                <Grid Margin="10"
+                      IsEnabled="{Binding IsServerFullyStopped}">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
@@ -230,23 +231,22 @@
                                TextWrapping="Wrap"
                                Margin="0,5,0,0"/>
 
-                    <Grid Grid.Row="3"
-                          Margin="0,10,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-
-                        <Button Grid.Column="0"
-                                Content="Server Configuration"
+                    <UniformGrid Grid.Row="3"
+                                 Rows="1"
+                                 Columns="3"
+                                 Margin="0,10,0,0">
+                        <Button Content="Server Configuration"
                                 Click="ServerConfiguration_Click"
                                 Margin="0,0,4,0"/>
 
-                        <Button Grid.Column="1"
-                                Content="Mod Configuration"
+                        <Button Content="Mod Configuration"
                                 Click="ModConfiguration_Click"
+                                Margin="4,0"/>
+
+                        <Button Content="Server Mods"
+                                Click="ServerMods_Click"
                                 Margin="4,0,0,0"/>
-                    </Grid>
+                    </UniformGrid>
                 </Grid>
             </GroupBox>
 
@@ -261,9 +261,19 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <Grid Grid.Row="0"
+                    <CheckBox x:Name="ScheduledRestartsEnabledBox"
+                              Grid.Row="0"
+                              Content="Enable scheduled restarts"
+                              IsChecked="{Binding Settings.ScheduledRestartsEnabled}"
+                              Command="{Binding ToggleScheduledRestartsCommand}"
+                              VerticalAlignment="Center"
+                              Margin="0,0,0,8"/>
+
+                    <Grid Grid.Row="1"
+                          IsEnabled="{Binding Settings.ScheduledRestartsEnabled}"
                           Margin="0,0,0,6">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -281,7 +291,8 @@
                                   VerticalContentAlignment="Center"/>
                     </Grid>
 
-                    <Grid Grid.Row="1"
+                    <Grid Grid.Row="2"
+                          IsEnabled="{Binding Settings.ScheduledRestartsEnabled}"
                           Margin="0,0,0,6">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -299,7 +310,8 @@
                                   VerticalContentAlignment="Center"/>
                     </Grid>
 
-                    <Grid Grid.Row="2"
+                    <Grid Grid.Row="3"
+                          IsEnabled="{Binding Settings.ScheduledRestartsEnabled}"
                           Margin="0,0,0,8">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -317,13 +329,15 @@
                                   VerticalContentAlignment="Center"/>
                     </Grid>
 
-                    <CheckBox Grid.Row="3"
+                    <CheckBox Grid.Row="4"
                               Content="Auto-restart after crash"
                               IsChecked="{Binding Settings.AutoRestartOnCrash}"
+                              IsEnabled="{Binding Settings.ScheduledRestartsEnabled}"
                               VerticalAlignment="Center"
                               Margin="0,0,0,10"/>
 
-                    <Grid Grid.Row="4">
+                    <Grid Grid.Row="5"
+                          IsEnabled="{Binding Settings.ScheduledRestartsEnabled}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="*"/>
@@ -443,6 +457,7 @@
             <Grid Grid.Row="2">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="6*"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="1*"/>
                 </Grid.ColumnDefinitions>
 
@@ -458,6 +473,12 @@
                          Margin="0,0,8,0"/>
 
                 <Button Grid.Column="1"
+                        Content="Cheats..."
+                        Click="Cheats_Click"
+                        MinWidth="100"
+                        Margin="0,0,8,0"/>
+
+                <Button Grid.Column="2"
                         Content="Send"
                         Command="{Binding SendCommandCommand}"/>
             </Grid>

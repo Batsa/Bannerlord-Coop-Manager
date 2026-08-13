@@ -1,0 +1,82 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework Condition="'$(BridgeTarget)' == 'Server'">net6.0</TargetFramework>
+    <TargetFramework Condition="'$(BridgeTarget)' != 'Server'">net472</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>BCS.CoopBridge</AssemblyName>
+    <RootNamespace>BCS.CoopBridge</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <BridgeTarget Condition="'$(BridgeTarget)' == ''">Server</BridgeTarget>
+    <DefineConstants Condition="'$(BridgeTarget)' == 'Server'">$(DefineConstants);BCS_SERVER</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>None</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <PathMap>$(MSBuildProjectDirectory)=/_/BCSTool.CoopBridgeArtifact</PathMap>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="BridgeSmokeHost.cs;AuthoritySmokeFixture.cs;GameVersionSmokeFixture.cs" />
+    <Reference Include="TaleWorlds.MountAndBlade">
+      <HintPath>$(BannerlordBin)\TaleWorlds.MountAndBlade.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="TaleWorlds.Core">
+      <HintPath>$(BannerlordBin)\TaleWorlds.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="TaleWorlds.CampaignSystem">
+      <HintPath>$(BannerlordBin)\TaleWorlds.CampaignSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="TaleWorlds.ObjectSystem">
+      <HintPath>$(BannerlordBin)\TaleWorlds.ObjectSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="TaleWorlds.Localization">
+      <HintPath>$(BannerlordBin)\TaleWorlds.Localization.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="TaleWorlds.Library">
+      <HintPath>$(BannerlordBin)\TaleWorlds.Library.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Common" Condition="'$(BridgeTarget)' == 'Server'">
+      <HintPath>$(CoopBin)\Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="GameInterface" Condition="'$(BridgeTarget)' == 'Server'">
+      <HintPath>$(CoopBin)\GameInterface.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(CoopBin)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="ValidateExternalReferences" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(BannerlordBin)\TaleWorlds.MountAndBlade.dll')"
+           Text="Pass /p:BannerlordBin=&lt;Bannerlord Win64_Shipping_Client bin&gt;." />
+    <Error Condition="!Exists('$(BannerlordBin)\TaleWorlds.Core.dll')"
+           Text="TaleWorlds.Core.dll was not found in $(BannerlordBin)." />
+    <Error Condition="!Exists('$(BannerlordBin)\TaleWorlds.CampaignSystem.dll')"
+           Text="TaleWorlds.CampaignSystem.dll was not found in $(BannerlordBin)." />
+    <Error Condition="!Exists('$(BannerlordBin)\TaleWorlds.ObjectSystem.dll')"
+           Text="TaleWorlds.ObjectSystem.dll was not found in $(BannerlordBin)." />
+    <Error Condition="!Exists('$(BannerlordBin)\TaleWorlds.Localization.dll')"
+           Text="TaleWorlds.Localization.dll was not found in $(BannerlordBin)." />
+    <Error Condition="!Exists('$(BannerlordBin)\TaleWorlds.Library.dll')"
+           Text="TaleWorlds.Library.dll was not found in $(BannerlordBin)." />
+    <Error Condition="'$(BridgeTarget)' == 'Server' and !Exists('$(CoopBin)\Common.dll')"
+           Text="Pass /p:CoopBin=&lt;released Coop Win64_Shipping_Client bin&gt;." />
+    <Error Condition="'$(BridgeTarget)' == 'Server' and !Exists('$(CoopBin)\GameInterface.dll')"
+           Text="Released Coop GameInterface.dll was not found in $(CoopBin)." />
+    <Error Condition="!Exists('$(CoopBin)\0Harmony.dll')"
+           Text="Released Coop 0Harmony.dll was not found in $(CoopBin)." />
+  </Target>
+</Project>

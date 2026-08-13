@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>BCSTool.RegressionTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BCSTool\BCSTool.csproj" />
+    <Compile Include="..\BCSTool.RuntimeBootstrap\StartupHook.cs"
+             Link="RuntimeBootstrap\StartupHook.cs" />
+  </ItemGroup>
+</Project>

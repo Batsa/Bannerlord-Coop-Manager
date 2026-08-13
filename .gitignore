@@ -73,3 +73,18 @@ publish/
 # Windows
 Thumbs.db
 Desktop.ini
+
+# Local compatibility research and generated bridge outputs
+.bridge-build/
+.live-apply-*/
+.scratch-*/
+.serena/
+.gitnexus/
+scripts/.depot-*-files.txt
+HexTool V0.2.3 - Server Update/
+%SystemDrive%/
+System.Management.Automation.Internal.Host.InternalHost
+
+# The suffixed client/server bridge payloads are the release inputs. This
+# unsuffixed scratch artifact is not consumed by the application.
+BCSTool/Assets/CoopBridge/BCS.CoopBridge.dll

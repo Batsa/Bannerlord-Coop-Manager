@@ -94,6 +94,8 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0"
@@ -102,33 +104,67 @@
                                    VerticalAlignment="Center"
                                    Margin="0,0,10,8"/>
 
-                        <TextBox Grid.Row="0"
-                                 Grid.Column="1"
-                                 Text="{Binding SaveName, UpdateSourceTrigger=PropertyChanged}"
-                                 VerticalContentAlignment="Center"
-                                 Margin="0,0,8,8"
-                                 ToolTip="Save to host, without the .sav extension."/>
+                        <ComboBox x:Name="SaveNameComboBox"
+                                  Grid.Row="0"
+                                  Grid.Column="1"
+                                  IsEditable="True"
+                                  IsTextSearchEnabled="True"
+                                  Text="{Binding SaveName, UpdateSourceTrigger=PropertyChanged}"
+                                  VerticalContentAlignment="Center"
+                                  Margin="0,0,8,8"
+                                  ToolTip="Select an existing server save, or type a new campaign name without the .sav extension."/>
 
                         <Button Grid.Row="0"
                                 Grid.Column="2"
                                 Width="130"
-                                Content="Open Save Folder"
-                                Click="OpenSaveFolder_Click"
+                                Content="Refresh Saves"
+                                Click="RefreshSaves_Click"
                                 Margin="0,0,0,8"
-                                ToolTip="Open the Bannerlord Coop dedicated server Game Saves folder."/>
+                                ToolTip="Refresh the list from the dedicated server Game Saves folder."/>
 
                         <TextBlock Grid.Row="1"
+                                   Grid.Column="0"
+                                   Text="Client campaign:"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,10,8"/>
+
+                        <ComboBox x:Name="ClientSaveComboBox"
+                                  Grid.Row="1"
+                                  Grid.Column="1"
+                                  IsTextSearchEnabled="True"
+                                  VerticalContentAlignment="Center"
+                                  Margin="0,0,8,8"
+                                  ToolTip="Campaign saves created by the normal Bannerlord client."/>
+
+                        <Button Grid.Row="1"
+                                Grid.Column="2"
+                                Width="130"
+                                Content="Import Client Save"
+                                Click="ImportClientSave_Click"
+                                Margin="0,0,0,8"
+                                ToolTip="Copy the selected client campaign into the dedicated-server save directory without overwriting existing files."/>
+
+                        <TextBlock Grid.Row="2"
                                    Grid.Column="0"
                                    Text="Autosave interval (minutes):"
                                    VerticalAlignment="Center"
                                    Margin="0,0,10,0"/>
 
-                        <TextBox Grid.Row="1"
+                        <TextBox Grid.Row="2"
                                  Grid.Column="1"
                                  Width="120"
                                  HorizontalAlignment="Left"
                                  Text="{Binding AutosaveMinutes, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="0 disables autosaving."/>
+
+                        <TextBlock Grid.Row="3"
+                                   Grid.Column="0"
+                                   Grid.ColumnSpan="3"
+                                   Margin="0,8,0,0"
+                                   Foreground="Gray"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Text="Select an existing server campaign, or import a campaign created by the Bannerlord client. Client imports never overwrite an existing server save; click Save after importing to use it on the next server start."/>
                     </Grid>
                 </GroupBox>
 

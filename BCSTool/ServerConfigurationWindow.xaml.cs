@@ -19,6 +19,7 @@ public partial class ServerConfigurationWindow : Window
 {
     private readonly CoopConfigService _configService;
     private readonly MainViewModel _viewModel;
+    private readonly ClientSaveImportService _clientSaveImportService;
 
     private DedicatedServerConfig _config =
         new();
@@ -31,7 +32,8 @@ public partial class ServerConfigurationWindow : Window
 
     public ServerConfigurationWindow(
         CoopConfigService configService,
-        MainViewModel viewModel)
+        MainViewModel viewModel,
+        ClientSaveImportService clientSaveImportService)
     {
         InitializeComponent();
 
@@ -40,6 +42,9 @@ public partial class ServerConfigurationWindow : Window
 
         _viewModel =
             viewModel;
+
+        _clientSaveImportService =
+            clientSaveImportService;
 
         ConfigPathText.Text =
             _configService.ServerConfigPath;
@@ -57,6 +62,9 @@ public partial class ServerConfigurationWindow : Window
 
             DataContext =
                 _config;
+
+            RefreshSaveNames(
+                showEmptyMessage: false);
 
             SetPasswordControls(
                 _config.Password);
@@ -236,63 +244,122 @@ public partial class ServerConfigurationWindow : Window
     }
 
 
-    /// <summary>
-    /// Opens Bannerlord Coop's dedicated-server save directory:
-    ///
-    /// Documents\Mount and Blade II Bannerlord\CoopData\DedicatedServer\Game Saves
-    ///
-    /// The base directory is derived from ServerConfigPath so it follows the
-    /// same Documents-folder resolution already used by CoopConfigService.
-    /// </summary>
-    private void OpenSaveFolder_Click(
+    private void RefreshSaves_Click(
         object sender,
         RoutedEventArgs e)
     {
+        RefreshSaveNames(
+            showEmptyMessage: true);
+    }
+
+
+    private void RefreshSaveNames(
+        bool showEmptyMessage)
+    {
         try
         {
-            var dedicatedServerDirectory =
-                Path.GetDirectoryName(
-                    _configService.ServerConfigPath);
+            var saveNames =
+                _configService.GetServerSaveNames();
 
-            if (string.IsNullOrWhiteSpace(dedicatedServerDirectory))
-            {
-                throw new InvalidOperationException(
-                    "Could not determine the DedicatedServer directory.");
-            }
+            var clientSaveNames =
+                _clientSaveImportService.GetClientSaveNames();
 
-            var saveFolder =
-                Path.Combine(
-                    dedicatedServerDirectory,
-                    "Game Saves");
+            SaveNameComboBox.ItemsSource =
+                saveNames;
 
-            if (!Directory.Exists(saveFolder))
+            ClientSaveComboBox.ItemsSource =
+                clientSaveNames;
+
+            if (ClientSaveComboBox.SelectedItem is null && clientSaveNames.Count > 0)
+                ClientSaveComboBox.SelectedIndex = 0;
+
+            if (showEmptyMessage && saveNames.Count == 0 && clientSaveNames.Count == 0)
             {
                 MessageBox.Show(
                     this,
-                    $"The save folder does not exist yet:\n\n{saveFolder}\n\n" +
-                    "Start the server and create or save a game first, then try again.",
-                    "Game Saves",
+                    "No server or client campaign saves were found.\n\n" +
+                    "Server: " + _configService.ServerSaveDirectory + "\n\n" +
+                    "Client: " + _clientSaveImportService.ClientSaveDirectory,
+                    "Select Server Save",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
-
-                return;
             }
-
-            Process.Start(
-                new ProcessStartInfo
-                {
-                    FileName =
-                        saveFolder,
-                    UseShellExecute =
-                        true
-                });
         }
         catch (Exception ex)
         {
             MessageBox.Show(
                 this,
-                $"Could not open the save folder.\n\n{ex.Message}",
-                "Game Saves",
+                $"Could not load the save list.\n\n{ex.Message}",
+                "Select Server Save",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+
+    private void ImportClientSave_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (!_viewModel.IsServerFullyStopped)
+        {
+            MessageBox.Show(
+                this,
+                "The server must be fully stopped before importing a client campaign.",
+                "Import Client Save",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        if (ClientSaveComboBox.SelectedItem is not string selectedSave ||
+            string.IsNullOrWhiteSpace(selectedSave))
+        {
+            MessageBox.Show(
+                this,
+                "Create and save a Bannerlord campaign first, then click Refresh Saves.",
+                "Import Client Save",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var result =
+                _clientSaveImportService.Import(selectedSave);
+
+            _config.SaveName =
+                result.SaveName;
+
+            RefreshSaveNames(
+                showEmptyMessage: false);
+
+            SaveNameComboBox.Text =
+                result.SaveName;
+
+            var detail = result.AlreadyPresent
+                ? "The same campaign was already present in the server save directory."
+                : "The client campaign was copied into the server save directory.";
+            if (result.RenamedForCollision)
+            {
+                detail += "\n\nAn existing server save was preserved, so the imported copy is named " +
+                          result.SaveName + ".";
+            }
+
+            MessageBox.Show(
+                this,
+                detail + "\n\nClick Save or Save & Close to make it the server's active campaign.",
+                "Client Save Imported",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                this,
+                "Could not import the client campaign.\n\n" + ex.Message,
+                "Import Client Save",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }

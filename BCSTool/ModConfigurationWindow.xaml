@@ -99,14 +99,7 @@
                           Margin="0,0,0,10">
                     <StackPanel Margin="10">
 
-                        <CheckBox x:Name="OverrideAllBox"
-                                  Content="Override all"
-                                  FontWeight="SemiBold"
-                                  Checked="OverrideAll_Checked"
-                                  Unchecked="OverrideAll_Unchecked"
-                                  Margin="0,0,0,4"/>
-
-                        <TextBlock Text="Unchecked = keep save/host setting."
+                        <TextBlock Text="Selected values are written to mod-config.json when you save."
                                    Foreground="Gray"
                                    TextWrapping="Wrap"
                                    Margin="0,0,0,10"/>
@@ -122,17 +115,12 @@
                             <TextBlock Grid.Column="0"
                                        Text="Player received damage"
                                        VerticalAlignment="Center"/>
-                            <CheckBox x:Name="PlayerReceivedDamageOverrideBox"
-                                      Grid.Column="1"
-                                      Content="Override"
-                                      IsChecked="{Binding PlayerReceivedDamageOverride}"
-                                      Click="IndividualOverride_Click"
-                                      VerticalAlignment="Center"/>
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="1"
+                                      Grid.ColumnSpan="2"
+                                      Width="160"
+                                      HorizontalAlignment="Left"
                                       ItemsSource="{StaticResource DifficultyLevels}"
-                                      SelectedItem="{Binding PlayerReceivedDamage}"
-                                      IsEnabled="{Binding IsChecked, ElementName=PlayerReceivedDamageOverrideBox}"
-                                      Margin="6,0,0,0"/>
+                                      SelectedItem="{Binding PlayerReceivedDamage}"/>
                         </Grid>
 
                         <Grid Margin="0,0,0,6">
@@ -146,17 +134,12 @@
                             <TextBlock Grid.Column="0"
                                        Text="Player troops received damage"
                                        VerticalAlignment="Center"/>
-                            <CheckBox x:Name="PlayerTroopsReceivedDamageOverrideBox"
-                                      Grid.Column="1"
-                                      Content="Override"
-                                      IsChecked="{Binding PlayerTroopsReceivedDamageOverride}"
-                                      Click="IndividualOverride_Click"
-                                      VerticalAlignment="Center"/>
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="1"
+                                      Grid.ColumnSpan="2"
+                                      Width="160"
+                                      HorizontalAlignment="Left"
                                       ItemsSource="{StaticResource DifficultyLevels}"
-                                      SelectedItem="{Binding PlayerTroopsReceivedDamage}"
-                                      IsEnabled="{Binding IsChecked, ElementName=PlayerTroopsReceivedDamageOverrideBox}"
-                                      Margin="6,0,0,0"/>
+                                      SelectedItem="{Binding PlayerTroopsReceivedDamage}"/>
                         </Grid>
 
                         <Grid Margin="0,0,0,6">
@@ -170,17 +153,12 @@
                             <TextBlock Grid.Column="0"
                                        Text="Combat AI difficulty"
                                        VerticalAlignment="Center"/>
-                            <CheckBox x:Name="CombatAIOverrideBox"
-                                      Grid.Column="1"
-                                      Content="Override"
-                                      IsChecked="{Binding CombatAIDifficultyOverride}"
-                                      Click="IndividualOverride_Click"
-                                      VerticalAlignment="Center"/>
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="1"
+                                      Grid.ColumnSpan="2"
+                                      Width="160"
+                                      HorizontalAlignment="Left"
                                       ItemsSource="{StaticResource DifficultyLevels}"
-                                      SelectedItem="{Binding CombatAIDifficulty}"
-                                      IsEnabled="{Binding IsChecked, ElementName=CombatAIOverrideBox}"
-                                      Margin="6,0,0,0"/>
+                                      SelectedItem="{Binding CombatAIDifficulty}"/>
                         </Grid>
 
                         <Grid Margin="0,0,0,6">
@@ -194,17 +172,12 @@
                             <TextBlock Grid.Column="0"
                                        Text="Recruitment difficulty"
                                        VerticalAlignment="Center"/>
-                            <CheckBox x:Name="RecruitmentOverrideBox"
-                                      Grid.Column="1"
-                                      Content="Override"
-                                      IsChecked="{Binding RecruitmentDifficultyOverride}"
-                                      Click="IndividualOverride_Click"
-                                      VerticalAlignment="Center"/>
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="1"
+                                      Grid.ColumnSpan="2"
+                                      Width="160"
+                                      HorizontalAlignment="Left"
                                       ItemsSource="{StaticResource DifficultyLevels}"
-                                      SelectedItem="{Binding RecruitmentDifficulty}"
-                                      IsEnabled="{Binding IsChecked, ElementName=RecruitmentOverrideBox}"
-                                      Margin="6,0,0,0"/>
+                                      SelectedItem="{Binding RecruitmentDifficulty}"/>
                         </Grid>
 
                         <Grid Margin="0,0,0,6">
@@ -218,17 +191,12 @@
                             <TextBlock Grid.Column="0"
                                        Text="Player map movement speed"
                                        VerticalAlignment="Center"/>
-                            <CheckBox x:Name="MovementOverrideBox"
-                                      Grid.Column="1"
-                                      Content="Override"
-                                      IsChecked="{Binding PlayerMapMovementSpeedOverride}"
-                                      Click="IndividualOverride_Click"
-                                      VerticalAlignment="Center"/>
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="1"
+                                      Grid.ColumnSpan="2"
+                                      Width="160"
+                                      HorizontalAlignment="Left"
                                       ItemsSource="{StaticResource DifficultyLevels}"
-                                      SelectedItem="{Binding PlayerMapMovementSpeed}"
-                                      IsEnabled="{Binding IsChecked, ElementName=MovementOverrideBox}"
-                                      Margin="6,0,0,0"/>
+                                      SelectedItem="{Binding PlayerMapMovementSpeed}"/>
                         </Grid>
 
                         <Grid Margin="0,0,0,6">
@@ -242,17 +210,12 @@
                             <TextBlock Grid.Column="0"
                                        Text="Stealth / disguise difficulty"
                                        VerticalAlignment="Center"/>
-                            <CheckBox x:Name="StealthOverrideBox"
-                                      Grid.Column="1"
-                                      Content="Override"
-                                      IsChecked="{Binding StealthAndDisguiseDifficultyOverride}"
-                                      Click="IndividualOverride_Click"
-                                      VerticalAlignment="Center"/>
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="1"
+                                      Grid.ColumnSpan="2"
+                                      Width="160"
+                                      HorizontalAlignment="Left"
                                       ItemsSource="{StaticResource DifficultyLevels}"
-                                      SelectedItem="{Binding StealthAndDisguiseDifficulty}"
-                                      IsEnabled="{Binding IsChecked, ElementName=StealthOverrideBox}"
-                                      Margin="6,0,0,0"/>
+                                      SelectedItem="{Binding StealthAndDisguiseDifficulty}"/>
                         </Grid>
 
                         <Grid Margin="0,0,0,6">
@@ -266,17 +229,12 @@
                             <TextBlock Grid.Column="0"
                                        Text="Persuasion success chance"
                                        VerticalAlignment="Center"/>
-                            <CheckBox x:Name="PersuasionOverrideBox"
-                                      Grid.Column="1"
-                                      Content="Override"
-                                      IsChecked="{Binding PersuasionSuccessChanceOverride}"
-                                      Click="IndividualOverride_Click"
-                                      VerticalAlignment="Center"/>
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="1"
+                                      Grid.ColumnSpan="2"
+                                      Width="160"
+                                      HorizontalAlignment="Left"
                                       ItemsSource="{StaticResource DifficultyLevels}"
-                                      SelectedItem="{Binding PersuasionSuccessChance}"
-                                      IsEnabled="{Binding IsChecked, ElementName=PersuasionOverrideBox}"
-                                      Margin="6,0,0,0"/>
+                                      SelectedItem="{Binding PersuasionSuccessChance}"/>
                         </Grid>
 
                         <Grid Margin="0,0,0,6">
@@ -290,17 +248,12 @@
                             <TextBlock Grid.Column="0"
                                        Text="Clan member death chance"
                                        VerticalAlignment="Center"/>
-                            <CheckBox x:Name="ClanDeathOverrideBox"
-                                      Grid.Column="1"
-                                      Content="Override"
-                                      IsChecked="{Binding ClanMemberDeathChanceOverride}"
-                                      Click="IndividualOverride_Click"
-                                      VerticalAlignment="Center"/>
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="1"
+                                      Grid.ColumnSpan="2"
+                                      Width="160"
+                                      HorizontalAlignment="Left"
                                       ItemsSource="{StaticResource DifficultyLevels}"
-                                      SelectedItem="{Binding ClanMemberDeathChance}"
-                                      IsEnabled="{Binding IsChecked, ElementName=ClanDeathOverrideBox}"
-                                      Margin="6,0,0,0"/>
+                                      SelectedItem="{Binding ClanMemberDeathChance}"/>
                         </Grid>
 
                         <Grid Margin="0,0,0,6">
@@ -314,17 +267,12 @@
                             <TextBlock Grid.Column="0"
                                        Text="Battle death"
                                        VerticalAlignment="Center"/>
-                            <CheckBox x:Name="BattleDeathOverrideBox"
-                                      Grid.Column="1"
-                                      Content="Override"
-                                      IsChecked="{Binding BattleDeathOverride}"
-                                      Click="IndividualOverride_Click"
-                                      VerticalAlignment="Center"/>
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="1"
+                                      Grid.ColumnSpan="2"
+                                      Width="160"
+                                      HorizontalAlignment="Left"
                                       ItemsSource="{StaticResource DifficultyLevels}"
-                                      SelectedItem="{Binding BattleDeath}"
-                                      IsEnabled="{Binding IsChecked, ElementName=BattleDeathOverrideBox}"
-                                      Margin="6,0,0,0"/>
+                                      SelectedItem="{Binding BattleDeath}"/>
                         </Grid>
 
                         <Separator Margin="0,6,0,10"/>
@@ -340,17 +288,12 @@
                             <TextBlock Grid.Column="0"
                                        Text="Birth and death"
                                        VerticalAlignment="Center"/>
-                            <CheckBox x:Name="BirthDeathOverrideBox"
-                                      Grid.Column="1"
-                                      Content="Override"
-                                      IsChecked="{Binding BirthAndDeathOverride}"
-                                      Click="IndividualOverride_Click"
-                                      VerticalAlignment="Center"/>
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="1"
+                                      Grid.ColumnSpan="2"
+                                      Width="160"
+                                      HorizontalAlignment="Left"
                                       ItemsSource="{StaticResource EnabledDisabledOptions}"
-                                      SelectedItem="{Binding BirthAndDeath, Converter={StaticResource BooleanEnabledDisabledConverter}, Mode=TwoWay}"
-                                      IsEnabled="{Binding IsChecked, ElementName=BirthDeathOverrideBox}"
-                                      Margin="6,0,0,0"/>
+                                      SelectedItem="{Binding BirthAndDeath, Converter={StaticResource BooleanEnabledDisabledConverter}, Mode=TwoWay}"/>
                             <TextBlock Grid.Column="3"
                                        Text="Not synced in Coop currently; keep this Disabled for now."
                                        Foreground="DarkGoldenrod"
@@ -370,17 +313,12 @@
                             <TextBlock Grid.Column="0"
                                        Text="Auto-allocate clan member perks"
                                        VerticalAlignment="Center"/>
-                            <CheckBox x:Name="AutoPerksOverrideBox"
-                                      Grid.Column="1"
-                                      Content="Override"
-                                      IsChecked="{Binding AutoAllocateClanMemberPerksOverride}"
-                                      Click="IndividualOverride_Click"
-                                      VerticalAlignment="Center"/>
-                            <ComboBox Grid.Column="2"
+                            <ComboBox Grid.Column="1"
+                                      Grid.ColumnSpan="2"
+                                      Width="160"
+                                      HorizontalAlignment="Left"
                                       ItemsSource="{StaticResource EnabledDisabledOptions}"
-                                      SelectedItem="{Binding AutoAllocateClanMemberPerks, Converter={StaticResource BooleanEnabledDisabledConverter}, Mode=TwoWay}"
-                                      IsEnabled="{Binding IsChecked, ElementName=AutoPerksOverrideBox}"
-                                      Margin="6,0,0,0"/>
+                                      SelectedItem="{Binding AutoAllocateClanMemberPerks, Converter={StaticResource BooleanEnabledDisabledConverter}, Mode=TwoWay}"/>
                         </Grid>
                     </StackPanel>
                 </GroupBox>

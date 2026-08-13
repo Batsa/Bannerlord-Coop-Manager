@@ -1,0 +1,168 @@
+<Window x:Class="BCSTool.ModManagerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Server Mods - BCS Tool"
+        Width="920"
+        Height="720"
+        MinWidth="760"
+        MinHeight="560"
+        WindowStartupLocation="CenterOwner"
+        Loaded="Window_Loaded"
+        Closing="Window_Closing">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="MinHeight" Value="32"/>
+            <Setter Property="Padding" Value="12,5"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel>
+                <TextBlock Text="Server Mods" FontSize="22" FontWeight="SemiBold"/>
+                <TextBlock Margin="0,5,0,0" Foreground="Gray" TextWrapping="Wrap">
+                    <Run Text="Installed: "/><Run Text="{Binding InstalledCount, Mode=OneWay}" FontWeight="SemiBold"/>
+                    <Run Text="   Active: "/><Run Text="{Binding ActiveCount, Mode=OneWay}" FontWeight="SemiBold"/>
+                </TextBlock>
+                <TextBlock Text="{Binding ServerRoot}" Foreground="Gray" FontSize="11"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding ServerRoot}"/>
+            </StackPanel>
+
+            <Button Grid.Column="1" Content="Rescan" Command="{Binding RescanCommand}"
+                    MinWidth="100" VerticalAlignment="Center"/>
+        </Grid>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <ListBox x:Name="ModuleList"
+                     Grid.Column="0"
+                     ItemsSource="{Binding Modules}"
+                     SelectedItem="{Binding SelectedModule}"
+                     HorizontalContentAlignment="Stretch"
+                     ToolTip="Drop module folders from File Explorer here to import them"
+                     AllowDrop="True"
+                     PreviewMouseLeftButtonDown="ModuleList_PreviewMouseLeftButtonDown"
+                     PreviewMouseMove="ModuleList_PreviewMouseMove"
+                     DragOver="ModuleList_DragOver"
+                     DragLeave="ModuleList_DragLeave"
+                     Drop="ModuleList_Drop">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem">
+                        <Setter Property="Cursor" Value="SizeAll"/>
+                        <Setter Property="ToolTip" Value="Drag to change load order"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasWarnings}" Value="True">
+                                <Setter Property="Background" Value="#FDECEC"/>
+                                <Setter Property="BorderBrush" Value="#C62828"/>
+                                <Setter Property="BorderThickness" Value="4,0,0,0"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ListBox.ItemContainerStyle>
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <CheckBox Grid.Column="0" Margin="0,0,10,0"
+                                      Cursor="Arrow"
+                                      ToolTip="{Binding ToggleHelpText}"
+                                      IsChecked="{Binding Enabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                      IsEnabled="{Binding CanToggle}"
+                                      VerticalAlignment="Center"/>
+
+                            <StackPanel Grid.Column="1">
+                                <TextBlock FontWeight="SemiBold" Text="{Binding Name}"/>
+                                <TextBlock Foreground="Gray" FontSize="11">
+                                    <Run Text="{Binding Id}"/>
+                                    <Run Text="   "/>
+                                    <Run Text="{Binding Version}"/>
+                                </TextBlock>
+                                <TextBlock Text="{Binding WarningText}" Foreground="DarkOrange"
+                                           FontSize="11" TextWrapping="Wrap"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="2" Margin="12,0,4,0"
+                                        VerticalAlignment="Center">
+                                <TextBlock Text="{Binding StateText}"
+                                           FontWeight="SemiBold" HorizontalAlignment="Right"/>
+                                <TextBlock Text="⚠ ISSUE" Foreground="#C62828" FontSize="11"
+                                           FontWeight="SemiBold" HorizontalAlignment="Right">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HasWarnings}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
+                <Button Content="↑ Move Up" Command="{Binding MoveUpCommand}"
+                        MinWidth="115" Margin="0,0,0,8"/>
+                <Button Content="↓ Move Down" Command="{Binding MoveDownCommand}"
+                        MinWidth="115" Margin="0,0,0,12"/>
+                <Button Content="Analyze for Coop" Command="{Binding AnalyzeCommand}"
+                        MinWidth="135" Margin="0,0,0,8"
+                        ToolTip="Read-only static inspection; does not execute or modify the selected module"/>
+                <Button Content="Prepare for Coop" Command="{Binding PrepareCommand}"
+                        MinWidth="135" Margin="0,0,0,8"
+                        ToolTip="Preview and apply a version-pinned, backed-up server transformation"/>
+                <Button Content="Revert Preparation" Command="{Binding RevertPreparationCommand}"
+                        MinWidth="135" Margin="0,0,0,8"
+                        ToolTip="Restore exact files from the latest BCS compatibility backup"/>
+                <Button Content="Delete Module" Command="{Binding DeleteCommand}"
+                        MinWidth="135" Foreground="#B71C1C"
+                        ToolTip="Send the selected non-core module folder to the Windows Recycle Bin"/>
+                <TextBlock Margin="2,12,2,0" MaxWidth="125"
+                           Foreground="Gray" FontSize="11" TextWrapping="Wrap"
+                           Text="Analyze is read-only. Prepare only accepts known-safe transformations and always backs up changes. Drag rows to reorder or drop module folders to import. Blue line shows insertion point. Red rows need attention."/>
+            </StackPanel>
+        </Grid>
+
+        <GroupBox Grid.Row="2" Header="Dependency and Load-Order Validation" Margin="0,10,0,10">
+            <ScrollViewer MaxHeight="105" VerticalScrollBarVisibility="Auto">
+                <TextBlock Text="{Binding ValidationSummary}" TextWrapping="Wrap" Margin="8"/>
+            </ScrollViewer>
+        </GroupBox>
+
+        <Grid Grid.Row="3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap"
+                       VerticalAlignment="Center" Margin="0,0,12,0"/>
+            <Button Grid.Column="1" Content="Save Load Order" Command="{Binding SaveCommand}"
+                    MinWidth="150"/>
+        </Grid>
+    </Grid>
+</Window>
