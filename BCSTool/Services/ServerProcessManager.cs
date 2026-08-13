@@ -184,6 +184,9 @@ public sealed class ServerProcessManager : IDisposable
 
         try
         {
+            CoopSaveNamePolicy.EnsureValid(
+                _coopConfigService.LoadServerConfig().SaveName);
+
             var bridgeRepair = _bridgeInstallationService.RepairForStart(executablePath);
             if (bridgeRepair.ChangesApplied)
             {

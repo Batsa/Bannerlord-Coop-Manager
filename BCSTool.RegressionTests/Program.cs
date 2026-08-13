@@ -497,6 +497,8 @@ Run("EOE optional server DLLs follow active manifest declarations", TestEurope17
 Run("compatibility rules accept only verified Coop releases", TestSupportedReleasedCoopVersions);
 Run("campaign save discovery uses live client saves and hides backups", TestCampaignSaveDiscovery);
 Run("client campaign imports never overwrite server saves", TestClientSaveImport);
+Run("Coop save names stay safe across config and startup", TestCoopSafeServerSaveNames);
+Run("Coop port guard distinguishes UDP from TCP", TestCoopUdpPortGuard);
 
 if (failures.Count > 0)
 {
@@ -918,33 +920,43 @@ void TestClientSaveImport()
 
     try
     {
-        File.WriteAllBytes(Path.Combine(clientDirectory, "EOE Seed.sav"), [1, 2, 3, 4]);
+        File.WriteAllBytes(Path.Combine(clientDirectory, "EOE Seed #1.sav"), [1, 2, 3, 4]);
         File.WriteAllBytes(Path.Combine(clientDirectory, "default_new_game.sav"), [9]);
         var importer = new ClientSaveImportService(clientDirectory, serverDirectory);
 
-        Assert(importer.GetClientSaveNames().SequenceEqual(["EOE Seed"]),
+        Assert(importer.GetClientSaveNames().SequenceEqual(["EOE Seed #1"]),
             "Client save discovery did not exclude the default template.");
 
-        var first = importer.Import("EOE Seed");
-        Assert(!first.AlreadyPresent && !first.RenamedForCollision,
-            "First client save import was not treated as a new exact-name copy.");
+        var first = importer.Import("EOE Seed #1");
+        Assert(!first.AlreadyPresent && first.RenamedForCompatibility &&
+               !first.RenamedForCollision &&
+               first.SaveName == "EOE_Seed_1",
+            "First client save import did not receive a Coop-safe destination name.");
         Assert(File.ReadAllBytes(first.DestinationPath).SequenceEqual(new byte[] { 1, 2, 3, 4 }),
             "Imported client save bytes changed.");
 
-        var repeated = importer.Import("EOE Seed.sav");
-        Assert(repeated.AlreadyPresent && repeated.SaveName == "EOE Seed",
+        var repeated = importer.Import("EOE Seed #1.sav");
+        Assert(repeated.AlreadyPresent && repeated.RenamedForCompatibility &&
+               !repeated.RenamedForCollision && repeated.SaveName == "EOE_Seed_1",
             "Identical client save import created a duplicate.");
 
-        File.WriteAllBytes(Path.Combine(clientDirectory, "EOE Seed.sav"), [5, 6, 7]);
-        var collision = importer.Import("EOE Seed");
-        Assert(!collision.AlreadyPresent && collision.RenamedForCollision &&
-               collision.SaveName == "EOE Seed_client",
+        File.WriteAllBytes(Path.Combine(clientDirectory, "EOE Seed #1.sav"), [5, 6, 7]);
+        var collision = importer.Import("EOE Seed #1");
+        Assert(!collision.AlreadyPresent && collision.RenamedForCompatibility &&
+               collision.RenamedForCollision &&
+               collision.SaveName == "EOE_Seed_1_client",
             "Different client save did not receive a collision-free name.");
-        Assert(File.ReadAllBytes(Path.Combine(serverDirectory, "EOE Seed.sav"))
+        Assert(File.ReadAllBytes(Path.Combine(serverDirectory, "EOE_Seed_1.sav"))
                 .SequenceEqual(new byte[] { 1, 2, 3, 4 }),
             "Existing server save was overwritten during a collision.");
         Assert(File.ReadAllBytes(collision.DestinationPath).SequenceEqual(new byte[] { 5, 6, 7 }),
             "Collision-safe client save copy has incorrect bytes.");
+
+        File.WriteAllBytes(Path.Combine(clientDirectory, "###.sav"), [7, 7]);
+        var fallback = importer.Import("###");
+        Assert(fallback.SaveName == "Imported_Save" &&
+               fallback.RenamedForCompatibility && !fallback.RenamedForCollision,
+            "All-special client save name did not receive deterministic fallback name.");
 
         File.WriteAllText(Path.Combine(serverDirectory, "SidecarOnly.json"), "{}");
         File.WriteAllBytes(Path.Combine(clientDirectory, "SidecarOnly.sav"), [8, 8]);
@@ -957,7 +969,7 @@ void TestClientSaveImport()
         var rejectedTraversal = false;
         try
         {
-            importer.Import("..\\EOE Seed");
+            importer.Import("..\\EOE Seed #1");
         }
         catch (InvalidDataException)
         {
@@ -973,6 +985,136 @@ void TestClientSaveImport()
     {
         Directory.Delete(root, recursive: true);
     }
+}
+
+void TestCoopSafeServerSaveNames()
+{
+    var root = Path.Combine(
+        Path.GetTempPath(),
+        "bcs-save-name-policy-regression-" + Guid.NewGuid().ToString("N"));
+    var coopDataDirectory = Path.Combine(root, "CoopData");
+    var dedicatedServerDirectory = Path.Combine(coopDataDirectory, "DedicatedServer");
+    Directory.CreateDirectory(dedicatedServerDirectory);
+    var configPath = Path.Combine(dedicatedServerDirectory, "server-config.json");
+
+    void WriteServerConfig(string saveName) => File.WriteAllText(
+        configPath,
+        $$"""
+        {
+          "saveName": {{JsonSerializer.Serialize(saveName)}},
+          "autosaveMinutes": 5,
+          "password": "",
+          "logFile": true,
+          "steam": true
+        }
+        """);
+
+    try
+    {
+        var configService = new CoopConfigService(coopDataDirectory);
+        WriteServerConfig("EOE Seed");
+        var loaded = configService.LoadServerConfig();
+        Assert(loaded.SaveName == "EOE Seed",
+            "Unsafe legacy save name could not be loaded for correction.");
+
+        var saveRejected = false;
+        try
+        {
+            configService.SaveServerConfig(loaded);
+        }
+        catch (InvalidOperationException exception)
+        {
+            saveRejected = exception.Message.Contains(
+                "letters, digits, and underscores",
+                StringComparison.OrdinalIgnoreCase);
+        }
+        Assert(saveRejected,
+            "Manual server configuration accepted an unsafe Coop save name.");
+
+        loaded.SaveName = "EOE_Seed_1";
+        configService.SaveServerConfig(loaded);
+        Assert(configService.LoadServerConfig().SaveName == "EOE_Seed_1",
+            "Safe server save name did not persist.");
+
+        WriteServerConfig("EOE Seed");
+        var executablePath = Path.Combine(root, "BannerlordCoopServer.exe");
+        File.WriteAllBytes(executablePath, [1]);
+        using var processManager = new ServerProcessManager(
+            new LogService(),
+            new DedicatedServerLaunchBuilder(
+                new ModuleScanner(),
+                Path.Combine(root, "BCSTool.RuntimeBootstrap.dll")),
+            configService,
+            new BridgeInstallationService(
+                new ModuleScanner(),
+                new CoopCompatibilityPatcher()));
+        var started = processManager.StartAsync(
+                executablePath,
+                root,
+                CancellationToken.None)
+            .GetAwaiter()
+            .GetResult();
+        Assert(!started && processManager.LastStartError?.Contains(
+                "letters, digits, and underscores",
+                StringComparison.OrdinalIgnoreCase) == true,
+            "Server startup did not reject an unsafe configured save name before launch.");
+
+        var backupService = new SaveBackupService(configService);
+        var backupRejected = false;
+        try
+        {
+            _ = backupService.CreateBackupAsync(1, CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (InvalidOperationException exception)
+        {
+            backupRejected = exception.Message.Contains(
+                "letters, digits, and underscores",
+                StringComparison.OrdinalIgnoreCase);
+        }
+        Assert(backupRejected,
+            "Save backup preflight did not reject an unsafe configured save name.");
+
+        WriteServerConfig(" EOE_Seed ");
+        backupRejected = false;
+        try
+        {
+            _ = backupService.CreateBackupAsync(1, CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (InvalidOperationException exception)
+        {
+            backupRejected = exception.Message.Contains(
+                "letters, digits, and underscores",
+                StringComparison.OrdinalIgnoreCase);
+        }
+        Assert(backupRejected,
+            "Save backup preflight silently trimmed an unsafe configured save name.");
+    }
+    finally
+    {
+        Directory.Delete(root, recursive: true);
+    }
+}
+
+void TestCoopUdpPortGuard()
+{
+    using var tcp = new System.Net.Sockets.TcpListener(
+        System.Net.IPAddress.Loopback,
+        0);
+    tcp.Start();
+    var tcpPort = ((System.Net.IPEndPoint)tcp.LocalEndpoint).Port;
+    var monitor = new PortMonitor();
+    Assert(!monitor.IsUdpPortInUse(tcpPort),
+        "TCP-only listener was incorrectly treated as an occupied Coop UDP port.");
+
+    using var udp = new System.Net.Sockets.UdpClient(
+        new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
+    var udpPort = ((System.Net.IPEndPoint)udp.Client.LocalEndPoint!).Port;
+    Assert(monitor.IsUdpPortInUse(udpPort),
+        "UDP listener was not detected by the Coop port guard.");
 }
 
 void TestCampaignSaveDiscovery()
@@ -1064,6 +1206,20 @@ void TestEurope1700TrebuchetPrefabRepair()
     document.LoadXml(text);
     Assert(document.SelectNodes("/prefabs/variable")?.Count == 4,
         "EOE repaired trebuchet prefab did not remain structurally intact.");
+    var secondPass = CoopCompatibilityPatcher.TransformEurope1700TrebuchetPrefabForHeadless(
+        transformed);
+    Assert(secondPass.SequenceEqual(transformed),
+        "EOE trebuchet repair was not byte-for-byte idempotent.");
+
+    const string projectilePrefix = "<variable name=\"ProjectileSpeed\" value=\"53.500\"";
+    var firstProjectile = malformed.IndexOf(projectilePrefix, StringComparison.Ordinal);
+    var mixed = malformed[..firstProjectile] +
+                projectilePrefix + "/>" +
+                malformed[(firstProjectile + projectilePrefix.Length)..];
+    AssertThrowsInvalidData(
+        () => CoopCompatibilityPatcher.TransformEurope1700TrebuchetPrefabForHeadless(
+            System.Text.Encoding.UTF8.GetBytes(mixed)),
+        "EOE trebuchet repair accepted mixed repaired/malformed input.");
 }
 
 void TestEurope1700OptionalServerDllSelection()
@@ -1776,8 +1932,18 @@ void TestManagedModuleLaunchPlan()
                 "Engine module token did not move the generated bridge behind all gameplay modules.");
             Assert(
                 plan.Arguments[2] == "/dedicatedcustomserver" &&
-                plan.Arguments[3] == "4200",
+                DedicatedServerLaunchBuilder.CoopServerPort == 4200 &&
+                plan.Arguments[3] == DedicatedServerLaunchBuilder.CoopServerPort.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture),
                 "Managed dedicated server did not bind Coop's required UDP port 4200.");
+            var settingsWithLegacyPort = new ServerSettings
+            {
+                ServerPort = int.MaxValue
+            };
+            Assert(
+                !settingsWithLegacyPort.Validate().Any(error =>
+                    error.Contains("port", StringComparison.OrdinalIgnoreCase)),
+                "Retired ServerPort setting still affected runtime settings validation.");
             Assert(
                 plan.Environment["DOTNET_STARTUP_HOOKS"] == bootstrap,
                 "BCS runtime bootstrap was not isolated to the server child process.");

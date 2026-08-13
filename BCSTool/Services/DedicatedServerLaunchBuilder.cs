@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 
@@ -11,7 +12,7 @@ namespace BCSTool.Services;
 /// </summary>
 public sealed class DedicatedServerLaunchBuilder
 {
-    private const string CoopServerPort = "4200";
+    public const int CoopServerPort = 4200;
     private const string RuntimeBootstrapFileName = "BCSTool.RuntimeBootstrap.dll";
     internal const string ManagedDependencyProfileFileName =
         "bcs-managed-dependencies.json";
@@ -118,7 +119,7 @@ public sealed class DedicatedServerLaunchBuilder
                 Path.GetFileName(starterPath),
                 token,
                 "/dedicatedcustomserver",
-                CoopServerPort,
+                CoopServerPort.ToString(CultureInfo.InvariantCulture),
                 "EU",
                 "0"
             ],

@@ -112,7 +112,7 @@
                                   Text="{Binding SaveName, UpdateSourceTrigger=PropertyChanged}"
                                   VerticalContentAlignment="Center"
                                   Margin="0,0,8,8"
-                                  ToolTip="Select an existing server save, or type a new campaign name without the .sav extension."/>
+                                  ToolTip="Select an existing server save, or type a name using only ASCII letters, digits, and underscores (without .sav)."/>
 
                         <Button Grid.Row="0"
                                 Grid.Column="2"

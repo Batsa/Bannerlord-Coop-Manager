@@ -39,6 +39,24 @@ public sealed class PortMonitor
     }
 
     /// <summary>
+    /// Checks only UDP listeners. Managed Coop servers bind UDP 4200; an
+    /// unrelated TCP listener on the same number does not conflict.
+    /// </summary>
+    public bool IsUdpPortInUse(int port)
+    {
+        try
+        {
+            return IPGlobalProperties.GetIPGlobalProperties()
+                .GetActiveUdpListeners()
+                .Any(endpoint => endpoint.Port == port);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Polls until a port becomes free or the timeout expires.
     /// </summary>
     public async Task<bool> WaitForPortFreeAsync(
@@ -49,6 +67,28 @@ public sealed class PortMonitor
         var deadline = DateTime.UtcNow + timeout;
 
         while (IsPortInUse(port))
+        {
+            if (DateTime.UtcNow >= deadline)
+                return false;
+
+            await Task.Delay(500, cancellationToken);
+        }
+
+        return true;
+    }
+
+
+    /// <summary>
+    /// Polls until a UDP port becomes free or the timeout expires.
+    /// </summary>
+    public async Task<bool> WaitForUdpPortFreeAsync(
+        int port,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (IsUdpPortInUse(port))
         {
             if (DateTime.UtcNow >= deadline)
                 return false;

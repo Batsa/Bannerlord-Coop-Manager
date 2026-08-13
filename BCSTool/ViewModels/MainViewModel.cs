@@ -570,19 +570,14 @@ public sealed class MainViewModel : BindableBase, IDisposable
                 return;
             }
 
-            // Optional network-port guard.
-            //
-            // ServerPort = 0 disables this check. This is safer than assuming
-            // that an arbitrary port shown in server console output is the
-            // server's exclusive listening port.
-            if (
-                Settings.ServerPort > 0 &&
-                _portMonitor.IsPortInUse(Settings.ServerPort))
+            // Managed Coop launches always bind UDP 4200. Guard the same port
+            // that DedicatedServerLaunchBuilder passes to Bannerlord.
+            if (_portMonitor.IsUdpPortInUse(DedicatedServerLaunchBuilder.CoopServerPort))
             {
                 ServerState = ServerState.PortBlocked;
                 StatusMessage =
-                    $"Port {Settings.ServerPort} is already in use. " +
-                    "BCS Tool will not start another server while that configured port is occupied.";
+                    $"Port {DedicatedServerLaunchBuilder.CoopServerPort} is already in use. " +
+                    "BCS Tool will not start another server while the Coop port is occupied.";
                 AddToolMessage(StatusMessage);
                 return;
             }
@@ -756,40 +751,34 @@ public sealed class MainViewModel : BindableBase, IDisposable
             ServerPidText = "-";
             UptimeText = "-";
 
-            // If an actual exclusive server port is configured, wait for it
-            // to become free before starting the next instance.
-            //
-            // ServerPort = 0 disables this optional guard.
-            if (Settings.ServerPort > 0)
+            // Wait for the same fixed Coop port used by managed launch.
+            var portFree = await _portMonitor.WaitForUdpPortFreeAsync(
+                DedicatedServerLaunchBuilder.CoopServerPort,
+                TimeSpan.FromSeconds(Settings.PortReleaseTimeoutSeconds),
+                _lifetimeCts.Token);
+
+            if (!portFree)
             {
-                var portFree = await _portMonitor.WaitForPortFreeAsync(
-                    Settings.ServerPort,
+                AddToolMessage(
+                    $"Port {DedicatedServerLaunchBuilder.CoopServerPort} stayed occupied after graceful stop. " +
+                    "Cleaning the managed process tree.");
+
+                // This is the abnormal fallback. Normal restarts should
+                // never need a force cleanup because "stop" is graceful.
+                _processManager.ForceCleanupManagedTree();
+
+                portFree = await _portMonitor.WaitForUdpPortFreeAsync(
+                    DedicatedServerLaunchBuilder.CoopServerPort,
                     TimeSpan.FromSeconds(Settings.PortReleaseTimeoutSeconds),
                     _lifetimeCts.Token);
+            }
 
-                if (!portFree)
-                {
-                    AddToolMessage(
-                        $"Port {Settings.ServerPort} stayed occupied after graceful stop. " +
-                        "Cleaning the managed process tree.");
-
-                    // This is the abnormal fallback. Normal restarts should
-                    // never need a force cleanup because "stop" is graceful.
-                    _processManager.ForceCleanupManagedTree();
-
-                    portFree = await _portMonitor.WaitForPortFreeAsync(
-                        Settings.ServerPort,
-                        TimeSpan.FromSeconds(Settings.PortReleaseTimeoutSeconds),
-                        _lifetimeCts.Token);
-                }
-
-                if (!portFree)
-                {
-                    ServerState = ServerState.PortBlocked;
-                    StatusMessage =
-                        $"Port {Settings.ServerPort} is still occupied. Restart paused.";
-                    return;
-                }
+            if (!portFree)
+            {
+                ServerState = ServerState.PortBlocked;
+                StatusMessage =
+                    $"Port {DedicatedServerLaunchBuilder.CoopServerPort} is still occupied. Restart paused.";
+                return;
             }
 
             ServerState = ServerState.Restarting;
@@ -825,13 +814,11 @@ public sealed class MainViewModel : BindableBase, IDisposable
         var executablePath = Settings.ResolveServerExecutablePath();
         var workingDirectory = Settings.ResolveServerDirectory();
 
-        if (
-            Settings.ServerPort > 0 &&
-            _portMonitor.IsPortInUse(Settings.ServerPort))
+        if (_portMonitor.IsUdpPortInUse(DedicatedServerLaunchBuilder.CoopServerPort))
         {
             ServerState = ServerState.PortBlocked;
             StatusMessage =
-                $"Port {Settings.ServerPort} is still in use. Server not started.";
+                $"Port {DedicatedServerLaunchBuilder.CoopServerPort} is still in use. Server not started.";
             return;
         }
 
@@ -2627,13 +2614,12 @@ public sealed class MainViewModel : BindableBase, IDisposable
             _processManager.ForceCleanupManagedTree();
 
             while (
-                Settings.ServerPort > 0 &&
-                _portMonitor.IsPortInUse(Settings.ServerPort) &&
+                _portMonitor.IsUdpPortInUse(DedicatedServerLaunchBuilder.CoopServerPort) &&
                 !_applicationClosing)
             {
                 ServerState = ServerState.PortBlocked;
                 StatusMessage =
-                    $"Waiting for port {Settings.ServerPort} to become free...";
+                    $"Waiting for port {DedicatedServerLaunchBuilder.CoopServerPort} to become free...";
 
                 await Task.Delay(2000, _lifetimeCts.Token);
             }

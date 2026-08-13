@@ -65,6 +65,7 @@ public sealed class ClientSaveImportService
     public ClientSaveImportResult Import(string saveName)
     {
         var sourceName = NormalizeSaveName(saveName);
+        var destinationBaseName = CoopSaveNamePolicy.SanitizeForServer(sourceName);
         var sourcePath = ResolveDirectChild(
             _clientSaveDirectory,
             sourceName + SaveExtension,
@@ -82,7 +83,7 @@ public sealed class ClientSaveImportService
         EnsureUnlinkedDirectory(_clientSaveDirectory, "Client save directory");
         EnsureUnlinkedDirectory(_serverSaveDirectory, "Server save directory");
         var sourceHash = HashFile(sourcePath);
-        var destination = FindDestination(sourceName, sourceHash);
+        var destination = FindDestination(sourceName, destinationBaseName, sourceHash);
         if (destination.AlreadyPresent)
         {
             return new ClientSaveImportResult(
@@ -90,8 +91,11 @@ public sealed class ClientSaveImportService
                 sourcePath,
                 destination.Path,
                 AlreadyPresent: true,
-                RenamedForCollision: !destination.SaveName.Equals(
+                RenamedForCompatibility: !destinationBaseName.Equals(
                     sourceName,
+                    StringComparison.OrdinalIgnoreCase),
+                RenamedForCollision: !destination.SaveName.Equals(
+                    destinationBaseName,
                     StringComparison.OrdinalIgnoreCase));
         }
 
@@ -134,20 +138,26 @@ public sealed class ClientSaveImportService
             sourcePath,
             destination.Path,
             AlreadyPresent: false,
-            RenamedForCollision: !destination.SaveName.Equals(
+            RenamedForCompatibility: !destinationBaseName.Equals(
                 sourceName,
+                StringComparison.OrdinalIgnoreCase),
+            RenamedForCollision: !destination.SaveName.Equals(
+                destinationBaseName,
                 StringComparison.OrdinalIgnoreCase));
     }
 
-    private SaveDestination FindDestination(string sourceName, string sourceHash)
+    private SaveDestination FindDestination(
+        string sourceName,
+        string destinationBaseName,
+        string sourceHash)
     {
         for (var suffix = 0; suffix < 10000; suffix++)
         {
             var candidateName = suffix switch
             {
-                0 => sourceName,
-                1 => sourceName + "_client",
-                _ => sourceName + "_client_" + suffix
+                0 => destinationBaseName,
+                1 => destinationBaseName + "_client",
+                _ => destinationBaseName + "_client_" + suffix
             };
             var candidatePath = ResolveDirectChild(
                 _serverSaveDirectory,
@@ -242,4 +252,5 @@ public sealed record ClientSaveImportResult(
     string SourcePath,
     string DestinationPath,
     bool AlreadyPresent,
+    bool RenamedForCompatibility,
     bool RenamedForCollision);

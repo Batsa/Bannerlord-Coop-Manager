@@ -39,12 +39,8 @@ public sealed class ServerSettings
     public int CrashRecoverySettleSeconds { get; set; } = 10;
     public int PortReleaseTimeoutSeconds { get; set; } = 30;
 
-    // Optional network-port safety guard.
-    //
-    // 0 = disabled (recommended unless you know the server's actual,
-    // exclusive listening port).
-    //
-    // Do NOT guess this value from unrelated console forwarding messages.
+    // Legacy persisted setting retained so existing Registry data can still be
+    // read. Managed Coop launches and runtime guards always use UDP 4200.
     public int ServerPort { get; set; } = 0;
 
     // The first server launch is always manual. Opening BCS Tool never
@@ -98,9 +94,6 @@ public sealed class ServerSettings
             if (WarningMinutesBefore is < 0 or > 10)
                 errors.Add("Restart warning lead time must be between 0 and 10 minutes.");
         }
-
-        if (ServerPort is < 0 or > 65535)
-            errors.Add("Server port must be 0 (disabled) or between 1 and 65535.");
 
         if (SaveBackupCount is < 1 or > 5)
             errors.Add("Save backup count must be between 1 and 5.");

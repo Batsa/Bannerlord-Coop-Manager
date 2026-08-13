@@ -1432,27 +1432,33 @@ public sealed class CoopCompatibilityPatcher
         const string malformed = "<variable name=\"ProjectileSpeed\" value=\"53.500\"";
         const string repaired = "<variable name=\"ProjectileSpeed\" value=\"53.500\"/>";
         var source = Utf8NoBom.GetString(sourceBytes);
-        var occurrences = 0;
-        for (var index = 0;;)
+        var repairedOccurrences = CountOccurrences(source, repaired);
+        var malformedOccurrences = CountOccurrences(source, malformed) - repairedOccurrences;
+        if (malformedOccurrences == 0 && repairedOccurrences == 4)
         {
-            index = source.IndexOf(malformed, index, StringComparison.Ordinal);
-            if (index < 0)
-                break;
-            occurrences++;
-            index += malformed.Length;
+            ValidateEurope1700TrebuchetPrefab(sourceBytes);
+            return sourceBytes;
         }
-        if (occurrences != 4)
+        if (malformedOccurrences != 4 || repairedOccurrences != 0)
         {
             throw new InvalidDataException(
-                $"EOE trebuchet prefab contains {occurrences} malformed ProjectileSpeed elements; expected 4.");
+                "EOE trebuchet prefab must contain either four malformed or four repaired " +
+                $"ProjectileSpeed elements; found {malformedOccurrences} malformed and " +
+                $"{repairedOccurrences} repaired.");
         }
 
         var transformed = Utf8NoBom.GetBytes(source.Replace(
             malformed,
             repaired,
             StringComparison.Ordinal));
+        ValidateEurope1700TrebuchetPrefab(transformed);
+        return transformed;
+    }
+
+    private static void ValidateEurope1700TrebuchetPrefab(byte[] bytes)
+    {
         var document = new XmlDocument { XmlResolver = null };
-        using var stream = new MemoryStream(transformed, writable: false);
+        using var stream = new MemoryStream(bytes, writable: false);
         using var reader = XmlReader.Create(stream, new XmlReaderSettings
         {
             DtdProcessing = DtdProcessing.Prohibit,
@@ -1462,7 +1468,6 @@ public sealed class CoopCompatibilityPatcher
         document.Load(reader);
         if (document.DocumentElement?.LocalName != "prefabs")
             throw new InvalidDataException("Unexpected EOE trebuchet-prefab root.");
-        return transformed;
     }
 
     private static bool IsValidEurope1700TrebuchetPrefab(string path)

@@ -463,28 +463,8 @@ public sealed class SaveBackupService
             _configService.LoadServerConfig();
 
         var saveName =
-            config.SaveName.Trim();
-
-        if (saveName.EndsWith(
-                ".sav",
-                StringComparison.OrdinalIgnoreCase))
-        {
-            saveName =
-                saveName[..^4];
-        }
-
-        if (
-            string.IsNullOrWhiteSpace(saveName) ||
-            !string.Equals(
-                Path.GetFileName(saveName),
-                saveName,
-                StringComparison.Ordinal) ||
-            saveName.IndexOfAny(
-                Path.GetInvalidFileNameChars()) >= 0)
-        {
-            throw new InvalidOperationException(
-                "The configured save name is not a valid file name.");
-        }
+            config.SaveName;
+        CoopSaveNamePolicy.EnsureValid(saveName);
 
         return
             new ActiveSavePair(

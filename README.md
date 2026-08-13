@@ -10,7 +10,7 @@ client bridge packaging, client-save import, persistent server
 logging, and a version-scoped compatibility path for **Empires of Europe 1700
 (EOE)**.
 
-> Current application version: `0.3.0-beta.3`
+> Current application version: `0.3.0-beta.4`
 >
 > Current generated bridge runtime: `0.6.60`
 >
@@ -84,7 +84,7 @@ No installer, .NET SDK, or source build is required.
 
 1. Open [GitHub Releases](https://github.com/Batsa/Bannerlord-Coop-Manager/releases).
 2. Under the newest release's **Assets**, download the file named like
-   `Bannerlord-Coop-Manager-v0.3.0-beta.3-win-x64.zip`. Do not download the
+   `Bannerlord-Coop-Manager-v0.3.0-beta.4-win-x64.zip`. Do not download the
    automatically generated **Source code** archives.
 3. Right-click the downloaded ZIP and select **Extract All**. Extract it to a
    normal writable folder, such as `Documents\Bannerlord Coop Manager`.
@@ -335,7 +335,12 @@ player-identifying information.
 - Final-build save/reconnect, late join, long-duration synchronization, and
   repeated battle acceptance are not complete.
 - Large EOE campaign saves around 100 MiB previously caused multi-second
-  synchronous save stalls.
+  synchronous save stalls. Measured join data was about 102.4 MiB raw and
+  10.5 MiB compressed on the wire, plus a 1.2 MiB one-time party baseline.
+- EOE contains 1,628 total settlements (236 towns), not 1,628 towns. The last
+  test logged 4,762 heroes and 3,042 parties; a claim of more than 2,000 lords
+  was not confirmed. Sustained Play_1x CPU/network saturation still needs a
+  timed live capture because the measured client session remained paused.
 - Sixteen EOE firearm `Weapon` schema warnings remain intentionally: the second
   nodes carry functional alternate melee modes and removing them would break
   weapons.
@@ -360,7 +365,7 @@ dotnet build .\BCSTool.sln -c Release --no-restore
 dotnet run --project .\BCSTool.RegressionTests\BCSTool.RegressionTests.csproj -c Release --no-build
 ```
 
-The regression runner currently contains 51 named checks and finishes with:
+The regression runner currently contains 53 named checks and finishes with:
 
 ```text
 All BCS Tool regression checks passed.

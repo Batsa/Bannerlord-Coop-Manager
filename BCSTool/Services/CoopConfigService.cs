@@ -206,11 +206,7 @@ public sealed class CoopConfigService
     public void SaveServerConfig(
         DedicatedServerConfig config)
     {
-        if (string.IsNullOrWhiteSpace(config.SaveName))
-        {
-            throw new InvalidOperationException(
-                "Save name cannot be empty.");
-        }
+        CoopSaveNamePolicy.EnsureValid(config.SaveName);
 
         if (config.AutosaveMinutes < 0)
         {

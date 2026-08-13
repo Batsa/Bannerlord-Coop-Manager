@@ -341,6 +341,11 @@ public partial class ServerConfigurationWindow : Window
             var detail = result.AlreadyPresent
                 ? "The same campaign was already present in the server save directory."
                 : "The client campaign was copied into the server save directory.";
+            if (result.RenamedForCompatibility)
+            {
+                detail += "\n\nIts name was adjusted to use only letters, digits, and underscores: " +
+                          result.SaveName + ".";
+            }
             if (result.RenamedForCollision)
             {
                 detail += "\n\nAn existing server save was preserved, so the imported copy is named " +
