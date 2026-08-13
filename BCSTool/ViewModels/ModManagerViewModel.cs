@@ -18,14 +18,14 @@ public sealed class ModManagerViewModel : BindableBase
     private readonly ModuleRemovalService _moduleRemovalService;
     private readonly DependencyValidator _validator;
     private readonly CoopCompatibilityAnalyzer _compatibilityAnalyzer;
-    private readonly CoopCompatibilityPatcher _compatibilityPatcher;
+    private readonly BridgeInstallationService _bridgeInstallationService;
     private BannerlordModule? _selectedModule;
     private string _statusMessage = "Ready to scan dedicated-server modules.";
     private string _validationSummary = string.Empty;
     private bool _isBusy;
     private bool _isDirty;
     private bool _hasValidationErrors;
-    private bool _hasRevertablePreparation;
+    private bool _hasRevertableBridgeInstallation;
 
     public ModManagerViewModel(
         ModuleManager moduleManager,
@@ -33,14 +33,14 @@ public sealed class ModManagerViewModel : BindableBase
         ModuleRemovalService moduleRemovalService,
         DependencyValidator validator,
         CoopCompatibilityAnalyzer compatibilityAnalyzer,
-        CoopCompatibilityPatcher compatibilityPatcher)
+        BridgeInstallationService bridgeInstallationService)
     {
         _moduleManager = moduleManager;
         _moduleImporter = moduleImporter;
         _moduleRemovalService = moduleRemovalService;
         _validator = validator;
         _compatibilityAnalyzer = compatibilityAnalyzer;
-        _compatibilityPatcher = compatibilityPatcher;
+        _bridgeInstallationService = bridgeInstallationService;
 
         RescanCommand = new AsyncRelayCommand(RescanAsync, () => !IsBusy);
         SaveCommand = new AsyncRelayCommand(
@@ -50,10 +50,12 @@ public sealed class ModManagerViewModel : BindableBase
         MoveDownCommand = new RelayCommand(MoveDown, CanMoveDown);
         DeleteCommand = new AsyncRelayCommand(DeleteSelectedAsync, CanDeleteSelected);
         AnalyzeCommand = new AsyncRelayCommand(AnalyzeSelectedAsync, CanAnalyzeSelected);
-        PrepareCommand = new AsyncRelayCommand(PrepareSelectedAsync, CanPrepareSelected);
-        RevertPreparationCommand = new AsyncRelayCommand(
-            RevertLatestPreparationAsync,
-            () => !IsBusy && !IsDirty && HasRevertablePreparation);
+        InstallOrUpdateBridgeCommand = new AsyncRelayCommand(
+            InstallOrUpdateBridgeAsync,
+            CanInstallOrUpdateBridge);
+        RevertBridgeInstallationCommand = new AsyncRelayCommand(
+            RevertLatestBridgeInstallationAsync,
+            () => !IsBusy && !IsDirty && HasRevertableBridgeInstallation);
     }
 
     public ObservableCollection<BannerlordModule> Modules { get; } = new();
@@ -116,12 +118,12 @@ public sealed class ModManagerViewModel : BindableBase
         }
     }
 
-    public bool HasRevertablePreparation
+    public bool HasRevertableBridgeInstallation
     {
-        get => _hasRevertablePreparation;
+        get => _hasRevertableBridgeInstallation;
         private set
         {
-            if (SetProperty(ref _hasRevertablePreparation, value))
+            if (SetProperty(ref _hasRevertableBridgeInstallation, value))
                 CommandManager.InvalidateRequerySuggested();
         }
     }
@@ -132,8 +134,8 @@ public sealed class ModManagerViewModel : BindableBase
     public ICommand MoveDownCommand { get; }
     public ICommand DeleteCommand { get; }
     public ICommand AnalyzeCommand { get; }
-    public ICommand PrepareCommand { get; }
-    public ICommand RevertPreparationCommand { get; }
+    public ICommand InstallOrUpdateBridgeCommand { get; }
+    public ICommand RevertBridgeInstallationCommand { get; }
 
     /// <summary>
     /// Window lifetime remains in the view. The view model only publishes the
@@ -177,8 +179,16 @@ public sealed class ModManagerViewModel : BindableBase
             var imported = await Task.Run(() => _moduleImporter.Import(candidates));
             var scanned = await Task.Run(_moduleManager.Load);
             ReplaceModules(scanned);
-            StatusMessage =
-                $"Imported {imported.Count} module folder(s). Enable the wanted modules, then save.";
+            var importedEoe = imported.FirstOrDefault(
+                _bridgeInstallationService.IsKnownRecipe);
+            if (importedEoe is not null)
+            {
+                SelectedModule = Modules.FirstOrDefault(module =>
+                    module.Id.Equals(importedEoe.Id, StringComparison.OrdinalIgnoreCase));
+            }
+            StatusMessage = importedEoe is null
+                ? $"Imported {imported.Count} module folder(s). Enable the wanted modules, then save."
+                : "Imported Empires of Europe 1700 and selected it. Choose Install/Update Bridge.";
         }
         catch (Exception exception)
         {
@@ -359,63 +369,58 @@ public sealed class ModManagerViewModel : BindableBase
             CompatibilityReportReady?.Invoke(report);
     }
 
-    private async Task PrepareSelectedAsync()
+    private async Task InstallOrUpdateBridgeAsync()
     {
         var module = SelectedModule;
-        if (module is null || !CanPrepareSelected())
+        if (module is null || !CanInstallOrUpdateBridge())
             return;
 
         IsBusy = true;
-        StatusMessage = $"Building a reversible Coop preparation plan for {module.Name}...";
+        StatusMessage = $"Building the bridge installation for {module.Name}...";
         try
         {
             var snapshot = Modules.ToArray();
-            var plan = await Task.Run(() =>
-                _compatibilityPatcher.CreatePlan(module, snapshot, ServerRoot));
-            if (!plan.CanApply)
-            {
-                StatusMessage = $"Could not prepare {module.Name}: {plan.Blockers.Count} blocker(s).";
-                MessageBox.Show(
-                    plan.Summary,
-                    "Coop Preparation Blocked",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                return;
-            }
-
             var answer = MessageBox.Show(
-                plan.Summary + Environment.NewLine + Environment.NewLine +
-                "Apply this reversible server transformation and generate its matching client package now? " +
-                "Every changed file will be backed up.",
-                "Prepare Module for Coop",
+                "Install or update the generated EOE Coop bridge, required EOE server projections, " +
+                "headless XML overlays, load order, and matching client ZIP?" +
+                Environment.NewLine + Environment.NewLine +
+                "Every changed file is backed up and the server will repair missing bridge-owned files before start.",
+                "Install/Update Bridge",
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning);
             if (answer != MessageBoxResult.Yes)
             {
-                StatusMessage = "Coop preparation was cancelled; no files were changed.";
+                StatusMessage = "Bridge installation was cancelled; no files were changed.";
                 return;
             }
 
-            var result = await Task.Run(() => _compatibilityPatcher.Apply(plan));
-            var clientPackage = plan.Changes
-                .Select(change => change.TargetPath)
-                .FirstOrDefault(path =>
-                    path.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) &&
-                    path.Contains("bcs-client-packages", StringComparison.OrdinalIgnoreCase));
-            StatusMessage =
-                $"Prepared {string.Join(", ", result.ModuleIds)}. " +
-                (clientPackage is null ? string.Empty : $"Client package: {clientPackage}. ") +
-                $"Backup: {result.BackupDirectory}";
+            var result = await Task.Run(() =>
+                _bridgeInstallationService.InstallOrUpdate(
+                    module,
+                    snapshot,
+                    ServerRoot));
+            StatusMessage = result.ChangesApplied
+                ? "Bridge installed/updated. " +
+                  (result.ClientPackagePath is null
+                      ? string.Empty
+                      : $"Client package: {result.ClientPackagePath}. ") +
+                  $"Backup: {result.BackupDirectory}"
+                : "Bridge installation is already current; no repair was needed.";
             MessageBox.Show(
-                "Preparation applied and backed up. This is not runtime compatibility proof." +
-                (clientPackage is null
+                (result.ChangesApplied
+                    ? "Bridge installed/updated and backed up."
+                    : "Bridge installation is already current.") +
+                " This is not runtime compatibility proof." +
+                (result.ClientPackagePath is null
                     ? string.Empty
                     : Environment.NewLine + Environment.NewLine +
                       "Install this exact bridge package on every client:" +
-                      Environment.NewLine + clientPackage) +
-                Environment.NewLine + Environment.NewLine +
-                "Reversible backup:" + Environment.NewLine + result.BackupDirectory,
-                "Coop Preparation Applied",
+                      Environment.NewLine + result.ClientPackagePath) +
+                (result.BackupDirectory is null
+                    ? string.Empty
+                    : Environment.NewLine + Environment.NewLine +
+                      "Reversible backup:" + Environment.NewLine + result.BackupDirectory),
+                "Bridge Installation",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
             ReplaceModules(await Task.Run(_moduleManager.Load));
@@ -425,57 +430,58 @@ public sealed class ModManagerViewModel : BindableBase
             StatusMessage = exception.Message;
             MessageBox.Show(
                 exception.Message,
-                "Could Not Prepare Module",
+                "Could Not Install/Update Bridge",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
         finally
         {
             IsBusy = false;
-            RefreshPreparationState();
+            RefreshBridgeInstallationState();
         }
     }
 
-    private async Task RevertLatestPreparationAsync()
+    private async Task RevertLatestBridgeInstallationAsync()
     {
-        var manifest = _compatibilityPatcher.FindLatestBackupManifest(ServerRoot);
+        var manifest = _bridgeInstallationService.FindLatestInstallationBackup(ServerRoot);
         if (manifest is null)
         {
-            RefreshPreparationState();
+            RefreshBridgeInstallationState();
             return;
         }
 
         var answer = MessageBox.Show(
             "Restore every file from the latest BCS compatibility backup?" +
             Environment.NewLine + Environment.NewLine + manifest,
-            "Revert Coop Preparation",
+            "Revert Bridge Installation",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
         if (answer != MessageBoxResult.Yes)
             return;
 
         IsBusy = true;
-        StatusMessage = "Verifying and reverting the latest Coop preparation...";
+        StatusMessage = "Verifying and reverting the latest bridge installation...";
         try
         {
-            var result = await Task.Run(() => _compatibilityPatcher.Revert(manifest));
+            var result = await Task.Run(() =>
+                _bridgeInstallationService.RevertInstallation(manifest));
             ReplaceModules(await Task.Run(_moduleManager.Load));
             StatusMessage =
-                $"Reverted Coop preparation {result.PlanId}; exact original files were restored.";
+                $"Reverted bridge installation {result.PlanId}; exact original files were restored.";
         }
         catch (Exception exception)
         {
             StatusMessage = exception.Message;
             MessageBox.Show(
                 exception.Message,
-                "Could Not Revert Preparation",
+                "Could Not Revert Bridge Installation",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
         finally
         {
             IsBusy = false;
-            RefreshPreparationState();
+            RefreshBridgeInstallationState();
         }
     }
 
@@ -559,15 +565,11 @@ public sealed class ModManagerViewModel : BindableBase
         SelectedModule is { IsInstalled: true } module &&
         !string.IsNullOrWhiteSpace(module.Path);
 
-    private bool CanPrepareSelected() =>
+    private bool CanInstallOrUpdateBridge() =>
         !IsBusy &&
         !IsDirty &&
-        SelectedModule is
-        {
-            IsInstalled: true,
-            IsRequired: false,
-            IsServerCompatible: true
-        } module &&
+        _bridgeInstallationService.IsKnownRecipe(SelectedModule) &&
+        SelectedModule is { IsServerCompatible: true } module &&
         !string.IsNullOrWhiteSpace(module.Path);
 
     private void Module_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -616,12 +618,12 @@ public sealed class ModManagerViewModel : BindableBase
         SelectedModule = Modules.FirstOrDefault();
         IsDirty = false;
         Revalidate();
-        RefreshPreparationState();
+        RefreshBridgeInstallationState();
     }
 
-    private void RefreshPreparationState()
+    private void RefreshBridgeInstallationState()
     {
-        HasRevertablePreparation =
-            _compatibilityPatcher.FindLatestBackupManifest(ServerRoot) is not null;
+        HasRevertableBridgeInstallation =
+            _bridgeInstallationService.FindLatestInstallationBackup(ServerRoot) is not null;
     }
 }

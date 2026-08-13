@@ -5,14 +5,14 @@ dedicated server. The current executable and user interface retain the upstream
 name **BCS Tool**.
 
 This repository publishes a **preview Windows build**. It extends BCS Tool
-with dedicated-server module management, reversible Coop compatibility
-preparation, client bridge packaging, client-save import, persistent server
-logging, and an exact, fingerprint-pinned compatibility path for **Empires of
-Europe 1700 (EOE)**.
+with dedicated-server module management, reversible Coop bridge installation,
+client bridge packaging, client-save import, persistent server
+logging, and a version-scoped compatibility path for **Empires of Europe 1700
+(EOE)**.
 
-> Current application version: `0.3.0-beta.1`
+> Current application version: `0.3.0-beta.2`
 >
-> Current generated bridge runtime: `0.6.58`
+> Current generated bridge runtime: `0.6.60`
 >
 > Upstream base: [`AppleDeath318/BCSTool@f7bc05c`](https://github.com/AppleDeath318/BCSTool/commit/f7bc05c672dad169663f9c8b245e5b01b5422742)
 
@@ -26,12 +26,12 @@ release**.
 | GUI server lifecycle, configuration, backups, and console | Implemented and regression-tested |
 | Dedicated-server module profile and enforced UDP port `4200` | Implemented and regression-tested |
 | Client campaign import into the server | Implemented and regression-tested |
-| Fingerprinted server/client bridge generation | Implemented and regression-tested |
-| EOE `1.4.7.1` dedicated-server preparation | Exact source/hash-pinned implementation |
+| Version-scoped server/client bridge generation | Implemented and regression-tested |
+| EOE `1.4.7.1` dedicated-server bridge installation | Version/file/signature validated implementation |
 | EOE server startup and client join | Demonstrated in the prior hand test |
 | EOE 1696x1696 map/weather correction | Hand-tested; observed weather/MapEvent index failures stopped |
 | Ordinary Coop battles | Multiple battles completed in the prior hand test |
-| Final bridge `0.6.58` overlays and client lifecycle fixes | Built and regression/ABI-tested; final live retest pending |
+| Bridge `0.6.60` overlays, lifecycle fixes, and version-scoped compatibility | Built and regression-tested; live hand retest pending |
 | World-map client movement | Still under investigation; teleporting/stalls were observed |
 | Save/reconnect, late join, and long-duration acceptance | Not yet proven on the final build |
 
@@ -42,7 +42,7 @@ they receive their own complete runtime test matrix.
 
 ## Supported development snapshot
 
-The currently pinned EOE path was developed and tested against:
+The current EOE path was developed and tested against:
 
 | Component | Version |
 |---|---:|
@@ -50,17 +50,18 @@ The currently pinned EOE path was developed and tested against:
 | Bannerlord Coop | `0.1.2` |
 | Empires of Europe 1700 | `1.4.7.1` |
 | Dedicated-server game runtime | `1.4.7` |
-| Generated bridge | `0.6.58` |
+| Generated bridge | `0.6.60` |
 
-These are exact compatibility inputs, not floating minimum versions. The
-preparation step validates versions and hashes and fails closed when an
-installed package differs. A game or Workshop update requires a new
-**Analyze → Prepare → reinstall client ZIP** cycle.
+These are supported compatibility versions, not floating minimum versions. The
+bridge installation validates versions, required files, paths, assembly identities,
+and required method signatures. It does not reject compatible files merely
+because their bytes or hashes differ. A game or Workshop update requires a new
+**Install/Update Bridge → reinstall client ZIP** cycle.
 
 The current EOE server profile does **not** require separate Harmony, ButterLib,
 UIExtenderEx, or Mod Configuration Menu modules. Coop supplies the Harmony
 runtime used by the bridge. StoryMode is not enabled as a server module and is
-not a bridge manifest dependency; preparation only locates and pins the
+not a bridge manifest dependency; bridge installation only locates the
 official local `StoryMode.dll` needed by EOE artillery code. That official DLL
 is never redistributed by this project.
 
@@ -70,7 +71,7 @@ is never redistributed by this project.
 - A full Steam installation of Mount & Blade II: Bannerlord `1.4.8`
 - Bannerlord Coop `0.1.2`, including its dedicated-server package
 - Empires of Europe 1700 `1.4.7.1`
-- Steam Workshop updates completed before preparation
+- Steam Workshop updates completed before bridge installation
 - UDP port `4200` available; direct Internet hosting normally requires an
   inbound firewall rule and router port forward
 - The same Bannerlord, Coop, EOE, and generated bridge versions on every client
@@ -83,7 +84,7 @@ No installer, .NET SDK, or source build is required.
 
 1. Open [GitHub Releases](https://github.com/Batsa/Bannerlord-Coop-Manager/releases).
 2. Under the newest release's **Assets**, download the file named like
-   `Bannerlord-Coop-Manager-v0.3.0-beta.1-win-x64.zip`. Do not download the
+   `Bannerlord-Coop-Manager-v0.3.0-beta.2-win-x64.zip`. Do not download the
    automatically generated **Source code** archives.
 3. Right-click the downloaded ZIP and select **Extract All**. Extract it to a
    normal writable folder, such as `Documents\Bannerlord Coop Manager`.
@@ -126,20 +127,27 @@ Coop configuration paths:
 BCS Tool preserves the existing JSON-with-comments layout where supported and
 creates a sibling `.bak` before replacing a configuration file.
 
-## Prepare EOE for Coop
+## Install or update the EOE bridge
 
-Preparation is deliberately previewed, hash-bound, reversible, and narrower
+Bridge installation is deliberately validated, reversible, and narrower
 than ordinary mod conversion.
 
 1. Stop the server completely.
 2. Open **Server Mods**.
 3. If EOE is not present in the dedicated-server module directory, drag its
    module folder—the folder containing `SubModule.xml`—onto the module list.
-4. Enable EOE and save the module profile.
-5. Select EOE and click **Analyze for Coop**. Read the evidence and blockers.
-6. Click **Prepare for Coop**.
-7. Inspect the complete preview. Apply only if no blocker remains.
-8. Record the generated bridge ID and client ZIP path shown by the tool.
+4. Select EOE and click **Analyze for Coop** if you want the read-only report.
+5. Click **Install/Update Bridge**.
+6. Confirm the single backed-up install/update operation. It enables EOE and
+   writes the required load order as part of the same action.
+7. Record the generated bridge ID and client ZIP path shown by the tool.
+
+There is no separate Prepare step. The same bridge operation owns EOE DLL
+projections under `Europe1700\bin\Win64_Shipping_Server`, the
+`conf_clans_resource_adder.xml` projection beside `ClansResourceAdder.dll`,
+headless XML overlays, the server load-order profile, the generated bridge
+module, and its matching client ZIP. Start runs the same recipe as a preflight
+and repairs missing bridge-owned projections before launching Bannerlord.
 
 The resulting enabled order is:
 
@@ -150,26 +158,27 @@ SandBoxCore
 Sandbox
 Coop
 Europe1700
-BCS.CoopBridge.<fingerprint>
+BCS.CoopBridge.<identity>
 ```
 
 The bridge loads last. Its manifest dependencies are exactly Coop and
 Europe1700.
 
-Preparation can create or update:
+Bridge installation can create or update:
 
 ```text
 <DedicatedServer>\bcs-server-modules.json
-<DedicatedServer>\bcs-client-packages\BCS.CoopBridge.<fingerprint>.zip
+<DedicatedServer>\bcs-client-packages\BCS.CoopBridge.<identity>.zip
 <DedicatedServer>\bcs-compatibility-backups\<plan-id>\
-<DedicatedServer>\engine\Modules\BCS.CoopBridge.<fingerprint>\
+<DedicatedServer>\engine\Modules\BCS.CoopBridge.<identity>\
 ```
 
-EOE source files and protected Coop files are not rewritten in place. Exact
-bridge-owned overlays and projections are recorded in the backup manifest.
-**Revert Preparation** restores the latest recorded preparation.
+The Steam Workshop EOE source and protected Coop files are untouched. The
+imported dedicated-server EOE copy receives backed-up manifest/headless-file
+transformations; bridge-owned overlays and projections are recorded in the backup manifest.
+**Revert Bridge Install** restores the latest recorded installation.
 
-### What the EOE preparation currently addresses
+### What the EOE bridge installation currently addresses
 
 - The dedicated server's incorrect 848x848 terrain size for EOE's 1696x1696
   world map
@@ -178,7 +187,7 @@ bridge-owned overlays and projections are recorded in the backup manifest.
 - Headless action/action-type and malformed trebuchet XML adaptation
 - Exact workshop recipe repair for EOE's populated ranged-weapon tier
 - Invalid Bearskin Cape references and legacy civilian equipment attributes
-- Direct XSLT-load redirection through Bannerlord's pinned `ApplyXslt` path
+- Direct XSLT-load redirection through Bannerlord's required `ApplyXslt` path
 - Narrow client MapEvent removal authority and troop-upgrade after-load repair
 - Bounded diagnostics for disorganization and missing TroopRoster sequencing
 
@@ -187,10 +196,10 @@ Coop as the campaign authority.
 
 ## Install the matching client bridge
 
-Every client needs the ZIP generated by the same preparation:
+Every client needs the ZIP generated by the same bridge installation:
 
 ```text
-<DedicatedServer>\bcs-client-packages\BCS.CoopBridge.<fingerprint>.zip
+<DedicatedServer>\bcs-client-packages\BCS.CoopBridge.<identity>.zip
 ```
 
 1. Exit Bannerlord.
@@ -199,17 +208,17 @@ Every client needs the ZIP generated by the same preparation:
 3. Do not extract it into `Modules` if that would create
    `Modules\Modules\...`.
 4. Remove or disable older `BCS.CoopBridge.*` module IDs.
-5. Enable the exact Coop, Europe1700, and fingerprinted bridge modules in this
+5. Enable the matching Coop, Europe1700, and generated bridge modules in this
    order:
 
 ```text
 Coop
 Europe1700
-BCS.CoopBridge.<fingerprint>
+BCS.CoopBridge.<identity>
 ```
 
-If EOE, Coop, or the game updates, rerun preparation and distribute the newly
-fingerprinted ZIP. BCS Tool does not download or silently update Workshop mods.
+If EOE, Coop, or the game updates, rerun **Install/Update Bridge** and distribute the newly
+generated ZIP. BCS Tool does not download or silently update Workshop mods.
 The ZIP contains the bridge runtimes, manifest, configuration, GPL notice, and
 attribution. Server-only transformed EOE XML/XSLT overlays stay on the server
 and are not redistributed in the client ZIP.
@@ -295,11 +304,11 @@ player-identifying information.
 
 ## Backups, rollback, and safety
 
-- Stop Bannerlord and the server before campaign import, preparation, or
+- Stop Bannerlord and the server before campaign import, bridge installation, or
   revert.
-- Preparation re-hashes inputs before writing and aborts if anything changed
-  after preview.
-- **Revert Preparation** uses the recorded backup manifest; do not manually
+- Bridge installation re-checks inputs before writing and aborts if anything changed
+  while its installation plan is being applied.
+- **Revert Bridge Install** uses the recorded backup manifest; do not manually
   edit that manifest.
 - Do not manually copy Harmony, Coop, game, or mod DLLs into the dedicated
   server's engine root.
@@ -315,7 +324,7 @@ player-identifying information.
   the last hand test. New diagnostics can determine whether party
   disorganization or missing TroopRoster registration contributes, but no
   speculative movement rewrite has been added.
-- The final `0.6.58` workshop/Bearskin/civilian overlays and client lifecycle
+- The `0.6.60` workshop/Bearskin/civilian overlays and client lifecycle
   fixes have deterministic build and regression coverage but still need a new
   full hand test.
 - Final-build save/reconnect, late join, long-duration synchronization, and
@@ -346,7 +355,7 @@ dotnet build .\BCSTool.sln -c Release --no-restore
 dotnet run --project .\BCSTool.RegressionTests\BCSTool.RegressionTests.csproj -c Release --no-build
 ```
 
-The regression runner currently contains 44 named checks and finishes with:
+The regression runner currently contains 50 named checks and finishes with:
 
 ```text
 All BCS Tool regression checks passed.
@@ -404,7 +413,7 @@ dotnet build .\BCSTool.CoopBridgeArtifact\BCSTool.CoopBridgeArtifact.csproj `
 
 Client compilation targets .NET Framework 4.7.2 and therefore also requires
 the corresponding reference assemblies/developer pack. After replacing the
-two embedded payloads, update their pinned hashes in
+two embedded payloads, update their integrity hashes in
 `CoopBridgePackageBuilder.cs` and run the entire regression suite. A changed
 payload intentionally changes the generated bridge identity.
 

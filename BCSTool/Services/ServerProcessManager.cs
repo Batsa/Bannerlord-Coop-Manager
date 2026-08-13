@@ -40,6 +40,7 @@ public sealed class ServerProcessManager : IDisposable
     private readonly LogService _logService;
     private readonly DedicatedServerLaunchBuilder _launchBuilder;
     private readonly CoopConfigService _coopConfigService;
+    private readonly BridgeInstallationService _bridgeInstallationService;
     private readonly SemaphoreSlim _inputLock = new(1, 1);
     private readonly object _resizeSync = new();
 
@@ -105,11 +106,13 @@ public sealed class ServerProcessManager : IDisposable
     public ServerProcessManager(
         LogService logService,
         DedicatedServerLaunchBuilder launchBuilder,
-        CoopConfigService coopConfigService)
+        CoopConfigService coopConfigService,
+        BridgeInstallationService bridgeInstallationService)
     {
         _logService = logService;
         _launchBuilder = launchBuilder;
         _coopConfigService = coopConfigService;
+        _bridgeInstallationService = bridgeInstallationService;
 
         _terminal =
             new VirtualTerminalScreen(
@@ -181,6 +184,14 @@ public sealed class ServerProcessManager : IDisposable
 
         try
         {
+            var bridgeRepair = _bridgeInstallationService.RepairForStart(executablePath);
+            if (bridgeRepair.ChangesApplied)
+            {
+                _logService.Write(
+                    "Repaired bridge-owned server projections before startup: " +
+                    string.Join(", ", bridgeRepair.ModuleIds));
+            }
+
             var launchPlan = _launchBuilder.Build(executablePath, workingDirectory);
 
             ConfigureManagedEngineConsoleLog(launchPlan);

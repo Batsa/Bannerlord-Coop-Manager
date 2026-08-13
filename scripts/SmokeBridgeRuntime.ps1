@@ -173,7 +173,7 @@ try {
     $clientBridgeBin = Join-Path $bridgeRoot 'bin\Win64_Shipping_Client'
     [System.IO.Directory]::CreateDirectory($serverBridgeBin) | Out-Null
     [System.IO.Directory]::CreateDirectory($clientBridgeBin) | Out-Null
-    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.58"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
+    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.60"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
     [System.IO.File]::WriteAllText((Join-Path $bridgeRoot 'SubModule.xml'), $bridgeManifest, $utf8)
     [System.IO.File]::WriteAllBytes((Join-Path $bridgeRoot 'bcs-coop-bridge.config'), $configBytes)
     Copy-Item -LiteralPath $serverBridgeAssemblySource -Destination (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll')

@@ -291,8 +291,8 @@ public sealed class CoopCompatibilityAnalyzer
                     CompatibilityFindingSeverity.Information,
                     "Dependencies",
                     $"Client-only dependency '{dependencyId}' will not be enabled on the dedicated server.",
-                    "BCS preparation removes this dependency from the server-side manifest only.",
-                    "Keep the dependency installed on clients; review the preparation preview before applying.");
+                    "Install/Update Bridge removes this dependency from the server-side manifest only.",
+                    "Keep the dependency installed on clients; review the bridge installation preview before applying.");
                 continue;
             }
 
@@ -613,7 +613,7 @@ public sealed class CoopCompatibilityAnalyzer
                 "Runtime proof",
                 "Executable managed code requires real Coop testing.",
                 $"Managed assemblies inspected: {inventory.ManagedAssemblyCount}",
-                "Test server load, client join, new game, save, reconnect, battle, and restart with exact artifact hashes.");
+                "Test server load, client join, new game, save, reconnect, battle, and restart with the exact module versions being distributed.");
         }
         else if (inventory.NativeAssemblyCount == 0)
         {

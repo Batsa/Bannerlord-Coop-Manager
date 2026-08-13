@@ -48,7 +48,7 @@ _Avoid_: Compatibility adaptation, registration
 Static audit found no EOE-owned persistent field in normal campaign play that needs a custom network message:
 
 * `ClansResourceAdder` writes vanilla `Clan.Influence` and `Hero.Gold`; Coop already transports those values. The bridge only prevents duplicate client-side execution.
-* `CustomizableClanTier` replaces a vanilla model from pinned configuration and owns no campaign state.
+* `CustomizableClanTier` replaces a vanilla model from its module configuration and owns no campaign state.
 * `BannerColorPersistence` finishes through `Clan.UpdateBannerColor`; Coop's banner handler replays that same call on client mirrors.
 * EOE artillery and RF battle AI are mission-host logic over Bannerlord mission objects. They remain owned by EOE/Bannerlord and must be proven through a real Coop battle test, not duplicated by bridge messages.
 * EOE custom-battle/debug mode is outside normal Coop campaign scope.

@@ -32,6 +32,7 @@ public partial class MainWindow : Window
     private readonly DependencyValidator _dependencyValidator;
     private readonly CoopPlayerListParser _coopPlayerListParser;
     private readonly ClientSaveImportService _clientSaveImportService;
+    private readonly BridgeInstallationService _bridgeInstallationService;
     private readonly DispatcherTimer _terminalResizeTimer;
 
     private bool _allowClose;
@@ -63,7 +64,8 @@ public partial class MainWindow : Window
         ModuleScanner moduleScanner,
         DependencyValidator dependencyValidator,
         CoopPlayerListParser coopPlayerListParser,
-        ClientSaveImportService clientSaveImportService)
+        ClientSaveImportService clientSaveImportService,
+        BridgeInstallationService bridgeInstallationService)
     {
         InitializeComponent();
 
@@ -73,6 +75,7 @@ public partial class MainWindow : Window
         _dependencyValidator = dependencyValidator;
         _coopPlayerListParser = coopPlayerListParser;
         _clientSaveImportService = clientSaveImportService;
+        _bridgeInstallationService = bridgeInstallationService;
         DataContext = _viewModel;
 
         // Window resizing can generate dozens of SizeChanged events per
@@ -409,7 +412,7 @@ public partial class MainWindow : Window
                     moduleRemovalService,
                     _dependencyValidator,
                     new CoopCompatibilityAnalyzer(),
-                    new CoopCompatibilityPatcher());
+                    _bridgeInstallationService);
             var window =
                 new ModManagerWindow(viewModel)
                 {

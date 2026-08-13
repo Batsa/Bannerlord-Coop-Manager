@@ -11,26 +11,26 @@ namespace BCSTool.Services;
 
 /// <summary>
 /// Builds a deterministic, mod-agnostic bridge module. The bridge does not
-/// claim to invent synchronization semantics for arbitrary mod code; it pins
-/// the exact module/DLL set and exposes one public Coop handler-discovery seam.
+/// claim to invent synchronization semantics for arbitrary mod code; it records
+/// module identities and exposes one public Coop handler-discovery seam.
 /// </summary>
 public sealed class CoopBridgePackageBuilder
 {
     public const string BridgeIdPrefix = "BCS.CoopBridge.";
-    public const string BridgeVersion = "v0.6.58";
+    public const string BridgeVersion = "v0.6.60";
     private const string ProjectUrl =
         "https://github.com/Batsa/Bannerlord-Coop-Manager";
 
     private const string ServerBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Server.dll";
     private const string ServerBridgeAssemblyHash =
-        "C76241AD085DFAB85F075D615F318AF9DE92F44D10F4B99550FE408F94E82E42";
+        "6156313216D8E342E2EA63AEB8B47706922B23D375146AD01F303C5E62091591";
     private const string ClientBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Client.dll";
     private const string LicenseResource = "BCSTool.LICENSE";
     private const string NoticeResource = "BCSTool.NOTICE.md";
     private const string ClientBridgeAssemblyHash =
-        "066F9DDEC602A01C7CF09A1E884A3761FAA3368BEDF61619D148DFEA0122CECC";
+        "1AB981E4D4EB13E6C16E298A9F4CAEDDF474ED411220147078F8F889487D21FF";
     private static readonly UTF8Encoding Utf8NoBom = new(false, true);
 
     public CoopBridgePackage Build(
@@ -71,7 +71,9 @@ public sealed class CoopBridgePackageBuilder
             if (!module.IsInstalled || string.IsNullOrWhiteSpace(module.Path))
                 throw new InvalidDataException($"Bridge module is not installed: {module.Id}");
             if (module.Id.StartsWith(BridgeIdPrefix, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("A generated BCS bridge cannot fingerprint another generated bridge.");
+                throw new InvalidDataException("A generated BCS bridge cannot depend on another generated bridge.");
+
+            ValidateModuleDirectoryChain(module.Path, module.Path, "module root");
 
             var declaredDlls = ReadDeclaredDlls(Path.Combine(module.Path, "SubModule.xml"));
             var preferClient = projectedModuleIds?.Contains(
@@ -79,12 +81,12 @@ public sealed class CoopBridgePackageBuilder
                 StringComparer.OrdinalIgnoreCase) == true;
             var assemblies = module.Id.Equals("Coop", StringComparison.OrdinalIgnoreCase)
                 ? EnumerateReleasedCoopAssemblies(module.Path, preferClient)
-                : EnumerateAssemblies(module.Path, preferClient);
+                : ResolveDeclaredAssemblies(module.Path, preferClient, declaredDlls);
             foreach (var declaredDll in declaredDlls)
             {
                 if (!assemblies.ContainsKey(declaredDll))
                     throw new FileNotFoundException(
-                        $"Declared assembly was not found for bridge fingerprinting: {module.Id}/{declaredDll}");
+                        $"Declared assembly was not found for bridge packaging: {module.Id}/{declaredDll}");
             }
 
             if (assemblies.Count == 0)
@@ -95,16 +97,11 @@ public sealed class CoopBridgePackageBuilder
                     module.Id,
                     module.Version,
                     assemblyEntry.Key,
-                    Hash(File.ReadAllBytes(assemblyEntry.Value))));
+                    string.Empty));
             }
             contentRecords.Add(new BridgeContentRecord(
                 module.Id,
-                BuildContentFingerprint(
-                    module.Id,
-                    module.Path,
-                    exclusionsByModule.TryGetValue(module.Id, out var exclusions)
-                        ? exclusions
-                        : new HashSet<string>(StringComparer.OrdinalIgnoreCase))));
+                string.Empty));
         }
 
         authorityRules ??= Array.Empty<BridgeAuthorityRule>();
@@ -156,16 +153,16 @@ public sealed class CoopBridgePackageBuilder
             $"Module: {bridgeId} {BridgeVersion}\r\n" +
             "\r\n" +
             "Copy the Modules folder into the Bannerlord client installation.\r\n" +
-            "Enable this exact bridge build and every fingerprinted mod on every client.\r\n" +
-            "The package validates local module versions and declared DLL hashes at startup.\r\n" +
+            "Enable this bridge build and the same module IDs and versions on every client.\r\n" +
+            "The package validates module versions, required files, safe paths, and required method signatures.\r\n" +
             $"Server-authority rules: {authorityRules.Count}.\r\n" +
             $"Allowed server-only visual files: {contentExclusions.Count}.\r\n" +
             $"Server file redirects: {serverFileRedirects.Count}.\r\n" +
             $"Server XML overlays: {serverXmlOverlays.Count}.\r\n" +
             "Campaign intervention: none.\r\n" +
-            $"Pinned Bannerlord game-version compatibility: {gameVersionCompatibility is not null}.\r\n" +
-            $"Pinned client assembly resolvers: {clientAssemblyResolves.Count}.\r\n" +
-            $"Pinned server map terrain sizes: {serverMapTerrainSizes.Count}.\r\n" +
+            $"Bannerlord game-version compatibility: {gameVersionCompatibility is not null}.\r\n" +
+            $"Client assembly resolvers: {clientAssemblyResolves.Count}.\r\n" +
+            $"Server map terrain sizes: {serverMapTerrainSizes.Count}.\r\n" +
             "It is a compatibility/authority extension point, not proof that arbitrary custom gameplay state is synchronized.\r\n" +
             "\r\n" +
             "License: GNU GPL version 3 only (GPL-3.0-only).\r\n" +
@@ -220,8 +217,8 @@ public sealed class CoopBridgePackageBuilder
             builder.Append("GAME_VERSION_COMPAT|")
                 .Append(Encode(gameVersionCompatibility.ServerVersion)).Append('|')
                 .Append(Encode(gameVersionCompatibility.ClientVersion)).Append('|')
-                .Append(gameVersionCompatibility.ServerRuntimeSha256).Append('|')
-                .Append(gameVersionCompatibility.ClientRuntimeSha256)
+                .Append(string.Empty).Append('|')
+                .Append(string.Empty)
                 .Append('\n');
         }
         foreach (var resolver in clientAssemblyResolves
@@ -231,7 +228,7 @@ public sealed class CoopBridgePackageBuilder
             builder.Append("CLIENT_ASSEMBLY_RESOLVE|")
                 .Append(Encode(resolver.ModuleId)).Append('|')
                 .Append(Encode(resolver.RelativePath)).Append('|')
-                .Append(resolver.Sha256)
+                .Append(string.Empty)
                 .Append('\n');
         }
         foreach (var record in records)
@@ -240,7 +237,7 @@ public sealed class CoopBridgePackageBuilder
                 .Append(Encode(record.ModuleId)).Append('|')
                 .Append(Encode(record.Version)).Append('|')
                 .Append(Encode(record.DllName)).Append('|')
-                .Append(record.Sha256)
+                .Append(string.Empty)
                 .Append('\n');
         }
         foreach (var exclusion in contentExclusions
@@ -256,7 +253,7 @@ public sealed class CoopBridgePackageBuilder
         {
             builder.Append("CONTENT|")
                 .Append(Encode(record.ModuleId)).Append('|')
-                .Append(record.Sha256)
+                .Append(string.Empty)
                 .Append('\n');
         }
         foreach (var redirect in serverFileRedirects
@@ -266,7 +263,7 @@ public sealed class CoopBridgePackageBuilder
             builder.Append("SERVER_FILE_REDIRECT|")
                 .Append(Encode(redirect.ModuleId)).Append('|')
                 .Append(Encode(redirect.RelativePath)).Append('|')
-                .Append(redirect.Sha256)
+                .Append(string.Empty)
                 .Append('\n');
         }
         foreach (var overlay in serverXmlOverlays
@@ -276,9 +273,9 @@ public sealed class CoopBridgePackageBuilder
             builder.Append("SERVER_XML_OVERLAY|")
                 .Append(Encode(overlay.ModuleId)).Append('|')
                 .Append(Encode(overlay.RelativePath)).Append('|')
-                .Append(overlay.SourceSha256).Append('|')
+                .Append(string.Empty).Append('|')
                 .Append(Encode(overlay.OverlayRelativePath)).Append('|')
-                .Append(overlay.OverlaySha256)
+                .Append(string.Empty)
                 .Append('\n');
         }
         foreach (var terrainSize in serverMapTerrainSizes
@@ -288,13 +285,13 @@ public sealed class CoopBridgePackageBuilder
             builder.Append("SERVER_MAP_TERRAIN_SIZE|")
                 .Append(Encode(terrainSize.ModuleId)).Append('|')
                 .Append(Encode(terrainSize.RelativePath)).Append('|')
-                .Append(terrainSize.Sha256).Append('|')
+                .Append(string.Empty).Append('|')
                 .Append(terrainSize.Width.ToString("R", CultureInfo.InvariantCulture)).Append('|')
                 .Append(terrainSize.Height.ToString("R", CultureInfo.InvariantCulture)).Append('|')
                 .Append(Encode(terrainSize.LoaderAssemblyName)).Append('|')
-                .Append(terrainSize.LoaderAssemblySha256).Append('|')
+                .Append(string.Empty).Append('|')
                 .Append(Encode(terrainSize.TargetAssemblyName)).Append('|')
-                .Append(terrainSize.TargetAssemblySha256)
+                .Append(string.Empty)
                 .Append('\n');
         }
         foreach (var rule in authorityRules
@@ -345,7 +342,7 @@ public sealed class CoopBridgePackageBuilder
                 (File.GetAttributes(resolver.SourcePath) & FileAttributes.ReparsePoint) != 0)
             {
                 throw new FileNotFoundException(
-                    "Pinned client assembly resolver source is missing or linked.",
+                    "Client assembly resolver source is missing or linked.",
                     resolver.SourcePath);
             }
             if (!Path.GetFileName(resolver.SourcePath).Equals(
@@ -354,13 +351,6 @@ public sealed class CoopBridgePackageBuilder
             {
                 throw new InvalidDataException(
                     "Client assembly resolver source name does not match its module-relative path.");
-            }
-            var actualHash = Hash(File.ReadAllBytes(resolver.SourcePath));
-            if (!actualHash.Equals(resolver.Sha256, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    "Client assembly resolver fingerprint mismatch for " +
-                    resolver.ModuleId + "/" + relative + ".");
             }
             var assemblyName = AssemblyName.GetAssemblyName(resolver.SourcePath).Name;
             if (!string.Equals(
@@ -389,7 +379,7 @@ public sealed class CoopBridgePackageBuilder
         {
             if (!moduleIds.Contains(exclusion.ModuleId))
                 throw new InvalidDataException(
-                    $"Content exclusion targets an unpinned module: {exclusion.ModuleId}");
+                    $"Content exclusion targets an unknown module: {exclusion.ModuleId}");
             var relative = exclusion.RelativePath.Replace('\\', '/');
             if (string.IsNullOrWhiteSpace(relative) ||
                 Path.IsPathRooted(relative) ||
@@ -426,7 +416,7 @@ public sealed class CoopBridgePackageBuilder
         foreach (var rule in authorityRules)
         {
             if (!moduleIds.Contains(rule.ModuleId))
-                throw new InvalidDataException($"Authority rule targets an unpinned module: {rule.ModuleId}");
+                throw new InvalidDataException($"Authority rule targets an unknown module: {rule.ModuleId}");
             if (string.IsNullOrWhiteSpace(rule.DllName) ||
                 !Path.GetFileName(rule.DllName).Equals(rule.DllName, StringComparison.Ordinal) ||
                 !Path.GetExtension(rule.DllName).Equals(".dll", StringComparison.OrdinalIgnoreCase))
@@ -438,7 +428,7 @@ public sealed class CoopBridgePackageBuilder
                     record.DllName.Equals(rule.DllName, StringComparison.OrdinalIgnoreCase)))
             {
                 throw new InvalidDataException(
-                    $"Authority rule targets an unpinned assembly: {rule.ModuleId}/{rule.DllName}");
+                    $"Authority rule targets an undeclared assembly: {rule.ModuleId}/{rule.DllName}");
             }
             if (string.IsNullOrWhiteSpace(rule.TypeName) ||
                 string.IsNullOrWhiteSpace(rule.MethodName) ||
@@ -475,7 +465,7 @@ public sealed class CoopBridgePackageBuilder
             if (!byId.TryGetValue(redirect.ModuleId, out var module))
             {
                 throw new InvalidDataException(
-                    $"Server file redirect targets an unpinned module: {redirect.ModuleId}");
+                    $"Server file redirect targets an unknown module: {redirect.ModuleId}");
             }
             var relative = redirect.RelativePath.Replace('\\', '/');
             if (string.IsNullOrWhiteSpace(relative) ||
@@ -498,11 +488,6 @@ public sealed class CoopBridgePackageBuilder
                     $"Server file redirect is missing, linked, or outside its module: " +
                     $"{redirect.ModuleId}/{relative}");
             }
-            if (!redirect.Sha256.Equals(Hash(File.ReadAllBytes(target)), StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    $"Server file redirect hash mismatch: {redirect.ModuleId}/{relative}");
-            }
             if (!fileNames.Add(Path.GetFileName(target)))
                 throw new InvalidDataException("Duplicate server file redirect target name.");
         }
@@ -519,7 +504,7 @@ public sealed class CoopBridgePackageBuilder
         {
             if (!byId.TryGetValue(overlay.ModuleId, out var module))
                 throw new InvalidDataException(
-                    $"Server XML overlay targets an unpinned module: {overlay.ModuleId}");
+                    $"Server XML overlay targets an unknown module: {overlay.ModuleId}");
             var sourceRelative = ValidateSafeRelativePath(
                 overlay.RelativePath,
                 "server XML overlay source");
@@ -542,18 +527,10 @@ public sealed class CoopBridgePackageBuilder
                     $"Server XML overlay source is missing, linked, or outside its module: " +
                     $"{overlay.ModuleId}/{sourceRelative}");
             }
-            if (!IsSha256(overlay.SourceSha256) ||
-                !overlay.SourceSha256.Equals(Hash(File.ReadAllBytes(sourcePath)), StringComparison.Ordinal))
+            if (overlay.Content is null || overlay.Content.Length == 0)
             {
                 throw new InvalidDataException(
-                    $"Server XML overlay source hash mismatch: {overlay.ModuleId}/{sourceRelative}");
-            }
-            if (overlay.Content is null ||
-                !IsSha256(overlay.OverlaySha256) ||
-                !overlay.OverlaySha256.Equals(Hash(overlay.Content), StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    $"Server XML overlay payload hash mismatch: {overlay.OverlayRelativePath}");
+                    $"Server XML overlay payload is empty: {overlay.OverlayRelativePath}");
             }
             if (!sources.Add(overlay.ModuleId + "|" + sourceRelative) ||
                 !destinations.Add(overlayRelative))
@@ -578,7 +555,7 @@ public sealed class CoopBridgePackageBuilder
             if (!byId.TryGetValue(terrainSize.ModuleId, out var module))
             {
                 throw new InvalidDataException(
-                    $"Server map terrain size targets an unpinned module: {terrainSize.ModuleId}");
+                    $"Server map terrain size targets an unknown module: {terrainSize.ModuleId}");
             }
 
             var relative = ValidateSafeRelativePath(
@@ -622,23 +599,11 @@ public sealed class CoopBridgePackageBuilder
                     break;
             }
 
-            if (!IsUppercaseSha256(terrainSize.Sha256) ||
-                !terrainSize.Sha256.Equals(HashFile(sourcePath), StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    $"Server map terrain size source hash mismatch: {terrainSize.ModuleId}/{relative}");
-            }
             if (!IsSafeAssemblySimpleName(terrainSize.LoaderAssemblyName) ||
                 !IsSafeAssemblySimpleName(terrainSize.TargetAssemblyName))
             {
                 throw new InvalidDataException(
                     "Server map terrain size loader and target assembly names must be safe simple names.");
-            }
-            if (!IsUppercaseSha256(terrainSize.LoaderAssemblySha256) ||
-                !IsUppercaseSha256(terrainSize.TargetAssemblySha256))
-            {
-                throw new InvalidDataException(
-                    "Server map terrain size loader and target assembly fingerprints must be canonical SHA-256 values.");
             }
             if (!float.IsFinite(terrainSize.Width) ||
                 !float.IsFinite(terrainSize.Height) ||
@@ -669,15 +634,6 @@ public sealed class CoopBridgePackageBuilder
         return relative;
     }
 
-    private static bool IsSha256(string value) =>
-        value.Length == 64 && value.All(Uri.IsHexDigit);
-
-    private static bool IsUppercaseSha256(string value) =>
-        value is not null &&
-        value.Length == 64 &&
-        value.All(character =>
-            character is >= '0' and <= '9' or >= 'A' and <= 'F');
-
     private static bool IsSafeAssemblySimpleName(string value) =>
         value is not null &&
         value.Length is > 0 and <= 128 &&
@@ -701,18 +657,6 @@ public sealed class CoopBridgePackageBuilder
         {
             throw new InvalidDataException(
                 "Game-version compatibility requires two different non-empty Bannerlord versions.");
-        }
-        foreach (var digest in new[]
-                 {
-                     rule.ServerRuntimeSha256,
-                     rule.ClientRuntimeSha256
-                 })
-        {
-            if (digest.Length != 64 || digest.Any(character => !Uri.IsHexDigit(character)))
-            {
-                throw new InvalidDataException(
-                    "Game-version compatibility runtime fingerprints must be SHA-256 hashes.");
-            }
         }
     }
 
@@ -892,13 +836,58 @@ public sealed class CoopBridgePackageBuilder
             var directory = Path.Combine(moduleRoot, "bin", bin);
             if (!Directory.Exists(directory))
                 continue;
-            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidDataException($"Linked module bin is not safe to package: {directory}");
+            ValidateModuleDirectoryChain(moduleRoot, directory, "module bin");
             foreach (var file in Directory.EnumerateFiles(directory, "*.dll", SearchOption.TopDirectoryOnly))
             {
-                if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
-                    throw new InvalidDataException($"Linked assembly is not safe to package: {file}");
+                if (!TryValidateManagedAssemblyFile(file))
+                    continue;
                 result.TryAdd(Path.GetFileName(file), file);
+            }
+        }
+        return result;
+    }
+
+    private static IReadOnlyDictionary<string, string> ResolveDeclaredAssemblies(
+        string moduleRoot,
+        bool preferClient,
+        IReadOnlyList<string> declaredDlls)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (declaredDlls.Count == 0)
+            return result;
+
+        var bins = preferClient
+            ? new[]
+            {
+                "Win64_Shipping_Client",
+                "Gaming.Desktop.x64_Shipping_Client",
+                "Win64_Shipping_Server"
+            }
+            : new[]
+            {
+                "Win64_Shipping_Server",
+                "Win64_Shipping_Client",
+                "Gaming.Desktop.x64_Shipping_Client"
+            };
+        foreach (var bin in bins)
+        {
+            var directory = Path.Combine(moduleRoot, "bin", bin);
+            if (!Directory.Exists(directory))
+                continue;
+            ValidateModuleDirectoryChain(moduleRoot, directory, "module bin");
+            foreach (var declaredDll in declaredDlls)
+            {
+                if (result.ContainsKey(declaredDll))
+                    continue;
+                var file = Path.Combine(directory, declaredDll);
+                if (!File.Exists(file))
+                    continue;
+                if (!TryValidateManagedAssemblyFile(file))
+                {
+                    throw new InvalidDataException(
+                        $"Declared module DLL is not a readable managed assembly: {file}");
+                }
+                result.Add(declaredDll, file);
             }
         }
         return result;
@@ -922,14 +911,12 @@ public sealed class CoopBridgePackageBuilder
             return EnumerateAssemblies(moduleRoot, preferClient);
         }
 
-        var server = EnumerateAssemblyDirectory(Path.Combine(
+        var server = EnumerateAssemblyDirectory(
             moduleRoot,
-            "bin",
-            "Win64_Shipping_Server"));
-        var client = EnumerateAssemblyDirectory(Path.Combine(
+            Path.Combine(moduleRoot, "bin", "Win64_Shipping_Server"));
+        var client = EnumerateAssemblyDirectory(
             releaseRoot,
-            "bin",
-            "Win64_Shipping_Client"));
+            Path.Combine(releaseRoot, "bin", "Win64_Shipping_Client"));
         if (server.Count == 0 || client.Count == 0)
             return EnumerateAssemblies(moduleRoot, preferClient);
 
@@ -941,13 +928,6 @@ public sealed class CoopBridgePackageBuilder
             if (serverAssembly.Key.Equals("0Harmony.dll", StringComparison.OrdinalIgnoreCase))
                 continue;
 
-            var serverHash = Hash(File.ReadAllBytes(serverAssembly.Value));
-            var clientHash = Hash(File.ReadAllBytes(clientPath));
-            if (!serverHash.Equals(clientHash, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    $"Released Coop assembly differs between server and client roles: {serverAssembly.Key}");
-            }
             result.Add(serverAssembly.Key, serverAssembly.Value);
         }
 
@@ -956,83 +936,86 @@ public sealed class CoopBridgePackageBuilder
         return result;
     }
 
-    private static IReadOnlyDictionary<string, string> EnumerateAssemblyDirectory(string directory)
+    private static IReadOnlyDictionary<string, string> EnumerateAssemblyDirectory(
+        string moduleRoot,
+        string directory)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (!Directory.Exists(directory))
             return result;
-        if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
-            throw new InvalidDataException($"Linked module bin is not safe to package: {directory}");
+        ValidateModuleDirectoryChain(moduleRoot, directory, "module bin");
         foreach (var file in Directory.EnumerateFiles(directory, "*.dll", SearchOption.TopDirectoryOnly))
         {
-            if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidDataException($"Linked assembly is not safe to package: {file}");
+            if (!TryValidateManagedAssemblyFile(file))
+                continue;
             result.Add(Path.GetFileName(file), file);
         }
         return result;
     }
 
-    private static string BuildContentFingerprint(
-        string moduleId,
+    private static void ValidateModuleDirectoryChain(
         string moduleRoot,
-        IReadOnlySet<string> ignoredRelativePaths)
+        string directory,
+        string description)
     {
-        var files = new List<string>();
-        var pending = new Stack<string>();
-        pending.Push(moduleRoot);
-        while (pending.Count > 0)
+        var canonicalRoot = Path.GetFullPath(moduleRoot).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+        var canonicalDirectory = Path.GetFullPath(directory).TrimEnd(
+            Path.DirectorySeparatorChar,
+            Path.AltDirectorySeparatorChar);
+        if (!string.Equals(canonicalDirectory, canonicalRoot, StringComparison.OrdinalIgnoreCase) &&
+            !canonicalDirectory.StartsWith(
+                canonicalRoot + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase))
         {
-            var directory = pending.Pop();
-            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
-            {
-                var relative = Path.GetRelativePath(moduleRoot, entry).Replace('\\', '/');
-                var attributes = File.GetAttributes(entry);
-                if ((attributes & FileAttributes.ReparsePoint) != 0)
-                    throw new InvalidDataException($"Linked module content is not safe to fingerprint: {entry}");
-                if ((attributes & FileAttributes.Directory) != 0)
-                {
-                    if (IsCoopRoleSpecificDirectory(moduleId, relative))
-                        continue;
-                    pending.Push(entry);
-                    continue;
-                }
+            throw new InvalidDataException($"Bridge {description} escaped its module: {directory}");
+        }
 
-                if (relative.Equals("SubModule.xml", StringComparison.OrdinalIgnoreCase))
-                    continue;
-                if (ignoredRelativePaths.Contains(relative))
-                    continue;
-                var extension = Path.GetExtension(entry);
-                if (extension.Equals(".xml", StringComparison.OrdinalIgnoreCase) ||
-                    extension.Equals(".xslt", StringComparison.OrdinalIgnoreCase) ||
-                    extension.Equals(".xsl", StringComparison.OrdinalIgnoreCase) ||
-                    extension.Equals(".json", StringComparison.OrdinalIgnoreCase))
-                {
-                    files.Add(entry);
-                }
+        for (var current = new DirectoryInfo(canonicalDirectory); current is not null; current = current.Parent)
+        {
+            if (!current.Exists || (current.Attributes & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException($"Linked bridge {description} is not safe to package: {current.FullName}");
+            if (string.Equals(
+                    current.FullName.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                    canonicalRoot,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return;
             }
         }
 
-        using var payload = new MemoryStream();
-        foreach (var file in files.OrderBy(
-                     path => Path.GetRelativePath(moduleRoot, path).Replace('\\', '/'),
-                     StringComparer.Ordinal))
-        {
-            var relative = Path.GetRelativePath(moduleRoot, file).Replace('\\', '/');
-            var relativeBytes = Utf8NoBom.GetBytes(relative);
-            payload.Write(relativeBytes, 0, relativeBytes.Length);
-            payload.WriteByte(0);
-            using var input = File.OpenRead(file);
-            var fileHash = SHA256.HashData(input);
-            payload.Write(fileHash, 0, fileHash.Length);
-        }
-        return Hash(payload.ToArray());
+        throw new InvalidDataException($"Bridge {description} escaped its module: {directory}");
     }
 
-    private static bool IsCoopRoleSpecificDirectory(string moduleId, string relativePath) =>
-        moduleId.Equals("Coop", StringComparison.OrdinalIgnoreCase) &&
-        !relativePath.Contains('/') &&
-        (relativePath.Equals("DedicatedServer", StringComparison.OrdinalIgnoreCase) ||
-         relativePath.Equals("GUI", StringComparison.OrdinalIgnoreCase));
+    private static bool TryValidateManagedAssemblyFile(string file)
+    {
+        if (!File.Exists(file) || (File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException($"Linked or missing assembly is not safe to package: {file}");
+
+        string? assemblyName;
+        try
+        {
+            assemblyName = AssemblyName.GetAssemblyName(file).Name;
+        }
+        catch (BadImageFormatException)
+        {
+            return false;
+        }
+        catch (FileLoadException)
+        {
+            return false;
+        }
+
+        var expectedName = Path.GetFileNameWithoutExtension(file);
+        if (string.IsNullOrWhiteSpace(assemblyName) ||
+            !assemblyName.Equals(expectedName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                $"Module DLL identity does not match its file name: {file}. Found {assemblyName ?? "<null>"}.");
+        }
+        return true;
+    }
 
     private static string Encode(string value) =>
         Convert.ToBase64String(Utf8NoBom.GetBytes(value ?? string.Empty));
@@ -1040,11 +1023,6 @@ public sealed class CoopBridgePackageBuilder
     private static string Hash(byte[] bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes));
 
-    private static string HashFile(string path)
-    {
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexString(SHA256.HashData(stream));
-    }
 }
 
 public sealed record BridgeModuleRecord(

@@ -12,43 +12,11 @@ using BCSTool.Models;
 namespace BCSTool.Services;
 
 /// <summary>
-/// Creates and applies conservative, version-pinned dedicated-server
+/// Creates and applies conservative, version-scoped dedicated-server
 /// transformations. It never modifies client modules or protected Coop files.
 /// </summary>
 public sealed class CoopCompatibilityPatcher
 {
-    private const string RealmOfThronesCoreHash =
-        "DF180D15E32CBFF6E214B21AC44175C52A9C1E37FD604470519A8E9F18A43971";
-    private const string Europe1700CollisionInfoHash =
-        "312BA930B7F69055D4281349F265360AB8C2EA816BF72B1AC75BE5BBD5EB8C2B";
-    private const string Europe1700HeadlessCollisionInfoHash =
-        "2BC170CAC45816B6677A4534B4E468D6675EB793178937AFCA07044DF7D09C9B";
-    private const string Europe1700ActionSetHash =
-        "07D348E56FD150C116CF3F519A844F2A143AB66016452E5DE1B8927AB8D238AE";
-    private const string Europe1700HeadlessActionSetHash =
-        "F3F67856257312DFC350A363425DAF1855A706FF8B7EC2B946C6A4FC495F3705";
-    private const string Europe1700ActionTypesHash =
-        "99078F94188AF2C73B5AC0A1784ECEBA3B187458178C472CA3F83B1204F96622";
-    private const string Europe1700HeadlessActionTypesHash =
-        "AFB7131B7B352422F75089BB3F5FEB34CB5942C350F2CFD89536C6B523E7349D";
-    private const string Europe1700TrebuchetPrefabHash =
-        "477F82C489404ACC519EDD348287A5918B37F3F6B997D5DA67521ABF51B20326";
-    private const string Europe1700HeadlessTrebuchetPrefabHash =
-        "AF7142933FEC082EAAA348CB1F65809A1D253269BD75BF63F7486092ABDBACC3";
-    private const string Europe1700StoryModePreReleaseHash =
-        "6149BAFFE6FAC3C53360006D2C7C601970515FC4587CB380373E0896E8BBE778";
-    private const string Europe1700StoryModePublicReleaseHash =
-        "CC205186BCA26EA04197C543F06BFD14EC7CA8A94B559A3A2753921C4BB27EF0";
-    private const string Europe1700ClansResourceConfigHash =
-        "635C85B86F25357820FB12321E4556730B5E5DBA47C4FD1377B193F443741416";
-    private const string Europe1700DistanceCacheHash =
-        "000C4AC651BA625539E47A0DDD34B850D8233BE15A57FA6E03378C56FE671EE9";
-    private const string Europe1700MainMapSceneHash =
-        "87052201579167AB4346EA63D16B5FAB5E1E1CF41382806035F707902BF6D58C";
-    private const string Europe1700DedicatedServerCoreHash =
-        "CEDA1C7D700260BC39D43A628F7A6AC0FD68316E63805931718213F54FEB9210";
-    private const string Europe1700ServerSandBoxHash =
-        "BFE8D098A425A71C7FE43F80560F07E1DA75C4F14EF5577CF5F7BB5D0E3C1776";
     private const string RealmOfThronesRule = "realm-of-thrones-8.1.7-server-v2";
     private const string Europe1700Rule = "europe-1700-1.4.7.1-server-v55";
     private const string ContentOnlyRule = "content-only-server-v1";
@@ -62,13 +30,6 @@ public sealed class CoopCompatibilityPatcher
         {
             "v0.1.1",
             "v0.1.2"
-        };
-
-    private static readonly HashSet<string> Europe1700StoryModeHashes =
-        new(StringComparer.Ordinal)
-        {
-            Europe1700StoryModePreReleaseHash,
-            Europe1700StoryModePublicReleaseHash
         };
 
     private static readonly HashSet<string> ProtectedModuleIds =
@@ -92,7 +53,7 @@ public sealed class CoopCompatibilityPatcher
     private static readonly string[] RealmOfThronesModuleIds =
         ["ROT-Core", "ROT-Content", "ROT-Dragon", "ROT_Map"];
 
-    private static readonly string[] GameRuntimeFingerprintFiles =
+    private static readonly string[] RequiredGameRuntimeFiles =
     [
         "TaleWorlds.CampaignSystem.dll",
         "TaleWorlds.Core.dll",
@@ -126,23 +87,19 @@ public sealed class CoopCompatibilityPatcher
             "Sandbox"
         };
 
-    private static readonly IReadOnlyDictionary<string, string> Europe1700AssemblyHashes =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["EOE.CustomBattlePatch.dll"] = "C6C8D5A422496FA0B3AC29E00BA8026786F18BF8D4AC88521E6044D3E7E4EBE6",
-            ["RF_BattleAI.dll"] = "6BE1630A901418E4F2F2BAA5533CBC2336C987A2FF7F6939E2C041863521C074",
-            ["XMLMeleePatch.dll"] = "5F06A86EBCB4A3444495B2CD4BA0A05CAE73E7B2AE6D7C329C26F7D8496B6FD5",
-            ["BattleArtilleryReworked.dll"] = "513AACED244E2521AF191D353E3A09E7C797AD86E698107928552974F1A37DBA",
-            ["Europe1700.dll"] = "7FAA1415EA01D2F2A38CBB811B163F4A3C07727E618EC1FDD187E93701203861",
-            ["Bannerlord.EOEPatches.dll"] = "71BDD49B9459E9FF1A4C975EB3717A3E8491A566C15322F9F1FC93EF53AEB456",
-            ["BannerColorPersistence.dll"] = "CF443CAC7E7E21704B8DE07E9BB6A2FE12D3A44BD68E7B4E23C27A891EA500D3",
-            ["ClansResourceAdder.dll"] = "339D5C2FF7D1E01823B063135E41F31B79B8EDC0B9ECFD75AB1CD648AB78F93A",
-            ["CustomizableClanTier.dll"] = "2C6392730CEBAB850CAAF92DE7DBE0E9E3CB3F7E599C78F4A9AA851A1673670D"
-        };
+    private static readonly string[] Europe1700RequiredAssemblies =
+    [
+        "XMLMeleePatch.dll",
+        "BattleArtilleryReworked.dll",
+        "Europe1700.dll",
+        "Bannerlord.EOEPatches.dll",
+        "BannerColorPersistence.dll",
+        "ClansResourceAdder.dll",
+        "CustomizableClanTier.dll"
+    ];
 
     private static readonly string[] Europe1700ServerDlls =
     [
-        "RF_BattleAI.dll",
         "XMLMeleePatch.dll",
         "BattleArtilleryReworked.dll",
         "Europe1700.dll",
@@ -206,129 +163,87 @@ public sealed class CoopCompatibilityPatcher
         new(
             "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_western_npcs.xml",
             Europe1700SchemaRepairKind.EquipmentElementCase,
-            461,
-            "9D83684D7FCABF9A7926D31AE406ADA00BD2C17284CA4646239D94904170718F",
-            "EC4AFE65C4A6A48BE334C5E8FC8B046CBE30201233FD89FA31210B002FDE42C3"),
+            461),
         new(
             "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_muslim_npcs.xml",
             Europe1700SchemaRepairKind.EquipmentElementCase,
-            412,
-            "FC72BD2FA17C45B1EEF8A063C7652B207D68232A4F0D968FF9080841E1C578A7",
-            "E71E140A5668755A084CD1FF611B0FAB30ABD3145B96FBF177015434B5A58585"),
+            412),
         new(
             "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_turkic_npcs.xml",
             Europe1700SchemaRepairKind.EquipmentElementCase,
-            444,
-            "B6549D40453D29E46FFBD8A22F11774E9AF9C9FCFB6764AC8573B25DA5503397",
-            "7C1A2A202ECDB1BF2484804A578B8342DF6DC21DC5AECE207172A5405202DAE9"),
+            444),
         new(
             "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_northern_npcs.xml",
             Europe1700SchemaRepairKind.EquipmentElementCase,
-            455,
-            "EFAA6B875CC61D044674A8B889770E57F1C89AB20280AEA8B71CD18238996B29",
-            "49C84E9DD4573BEA50AED840D3EF35D1C5620BC1370667B66AC5C5F7E734F178"),
+            455),
         new(
             "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_eastern_npcs.xml",
             Europe1700SchemaRepairKind.EquipmentElementCase,
-            383,
-            "81B47EBD1055DBC729107F3AB2FC00D10DE2C6E9573C0BC22456397347F99672",
-            "98906E13042162163CCF68A608EC0E907653927F5BD8A07C3383370A808D2978"),
+            383),
         new(
             "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_lords_aserai.xml",
             Europe1700SchemaRepairKind.EquipmentElementCase,
-            69,
-            "BC638DA98CD88ECE3C0248EDA0F1BA17B390E57024B71BE6D490E043EB3E9FFA",
-            "048AE0162521712268FCD330D59AD69BA1BBC1D94538468F6CE13BD488B825B6"),
+            69),
         new(
             "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_lords_italian.xml",
             Europe1700SchemaRepairKind.EquipmentElementCase,
-            11,
-            "1CD90EC72C221D3F647A52227281725884CDE2E6DF5E7F0D183A7944F2A5B3C4",
-            "56AA9A6D7D805070188145ABD9635058472BAD438B96B7562ACA3FF7156075F1"),
+            11),
         new(
             "ModuleData/lord_equipment_sets/sandboxcore_equipment_sets_lords_khuzait.xml",
             Europe1700SchemaRepairKind.EquipmentElementCase,
-            63,
-            "5BEB2A993AA1E3C9B39913127E98C6202A4538A414014ADA382E59F99248D007",
-            "AF431846B3D6C7C1CB7A6A12A4347A5F7E237835131C2D562D1BC817A6752C3C"),
+            63),
         new(
             "ModuleData/lords_main/lords_ottoman_extra.xml",
             Europe1700SchemaRepairKind.TraitsElementCase,
-            24,
-            "5707225DBB97EECF7C1FCA4163F56CA6EB3BF03AA1BD4735B3CA2B338AE57EE8",
-            "5661ADDF408A8A328E4A810FB7420CF33F14DFDEE1B1884F55E2A8FC0E11233F"),
+            24),
         new(
             "ModuleData/npccharacters/spnpccharacters_scottish.xml",
             Europe1700SchemaRepairKind.StrayElementTerminator,
-            1,
-            "99AFEE9A811600F6F15565AC032DD88308A17B2C3C4F33A06899A4DD4AD4E07C",
-            "44BD72C4B4DB2AD9106761C0BBB74066D69BB49060702AD11A6DDE92A0177E99"),
+            1),
         new(
             "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets.xslt",
             Europe1700SchemaRepairKind.MergedBearskinEquipmentXslt,
-            1,
-            "C4614A14B3E9D9ABFBA2FC6AE5ECFF85451FA8ED9CE29F5D24550649513B8744",
-            "3ADAA2C4245858CB51B336CE43F98202E6BF38D75757BEB2790915B9D7EA5349"),
+            1),
         new(
             "ModuleData/trooptrees/spnpccharacters.xslt",
             Europe1700SchemaRepairKind.MergedNpcCompatibilityXslt,
-            1,
-            "C7BCA70A3E4A01995F1EFE59DA8DA59FDA91A14C0188422574C6F1D81266FDA9",
-            "D882D4F8667CEEDA21DF5C9AA15B2E14C573CA2E349BA9D100C46A9D18504C1E"),
+            1),
         new(
             "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_baltic.xml",
             Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
-            1,
-            "2A1AEC92C47CF9F377ACD9193877C79E2B82065E769AC5D79AF3ECEAC93B2E27",
-            "4A7D088B24BD42FA0108AC6AA549BE7553DD747DE1E677CB268A5B6243ABB425"),
+            1),
         new(
             "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_battania.xml",
             Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
-            9,
-            "2DBAE07DD8D82E8C63FB3EE574A1091A8D62F0D47423697DF79A3359CE51F540",
-            "962E82C999A0B70E641C97E13958C8B5BA5ABD8EA7C9675CCA649C3B3DF40F0E"),
+            9),
         new(
             "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_cossack.xml",
             Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
-            1,
-            "79A965AD84DAFCC52055D8584F83D1F950B2E303BB81039280A0721AEA0E1ED9",
-            "7B67D3A8564E5E70FBFC76B1FF58741F0C9C5DD0E93825CECC176BFE2AF822CD"),
+            1),
         new(
             "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_finnic.xml",
             Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
-            1,
-            "901E59D91B18060FE5E3B8961CD20D1594A35621DD591EF8F2DE5B646C30C639",
-            "B79CCDD099C446E75AAD17D816C1F91A7A40DE7CCFBF90E611A5385D438E50FB"),
+            1),
         new(
             "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_rus.xml",
             Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
-            1,
-            "67B22F5F58B5B1F724A125DE4EFA166E46C1859919CF9E474845A7048109AE83",
-            "14C57892C6A4E5B4891CD53D9DDB9B9E6634F5BE2BE648AF66878234EEF923C0"),
+            1),
         new(
             "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_scottish.xml",
             Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
-            9,
-            "2738B3EC5BD3FACC253782E763EBAB898F512D4CF1213D3D7C965518426AD44A",
-            "7D7B3FB52B50C182D4DA1F673A35637867873D7661F8B3142F73C7677F5FF358"),
+            9),
         new(
             "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_sturgia.xml",
             Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
-            1,
-            "F098EC4B395CB4959371D13A930B1E9FFCB1D6F8303503377A1AFD1042624A01",
-            "2F006631CD8178A5A475F40C02556CC7731482DDC28E42DAA4B2C80C4FF39269"),
+            1),
         new(
             "ModuleData/sandbox_core_equipment_sets/sandboxcore_equipment_sets_welsh.xml",
             Europe1700SchemaRepairKind.InvalidBearskinCapeEquipment,
-            9,
-            "22F22B148F40B70D264C5A05D4D20FDEED95114BDA78B3ABB27EB29D9CE2B146",
-            "56A463721DD2CD04900588543F0A8B2E9AA3F6FC773016EB6A04522C823FD08E"),
+            9),
         new(
             "ModuleData/spworkshops.xml",
             Europe1700SchemaRepairKind.WorkshopRangedOutputCategory,
-            5,
-            "A997ADC9F61FFFF35E2CB535C8A141C4696765AEA78684527508747CD979A62C",
-            "4E30BEA00743D223B9446C8B5B054B5FA689CD02901353CD3BC0D0386A71AEC1")
+            5)
     ];
 
     private static readonly BridgeServerFileRedirect[] Europe1700ServerFileRedirects =
@@ -336,7 +251,7 @@ public sealed class CoopCompatibilityPatcher
         new(
             "Europe1700",
             "ModuleData/DistanceCaches/settlements_distance_cache_Default.bin",
-            Europe1700DistanceCacheHash)
+            string.Empty)
     ];
 
     private static readonly BridgeServerMapTerrainSize[] Europe1700ServerMapTerrainSizes =
@@ -344,13 +259,13 @@ public sealed class CoopCompatibilityPatcher
         new(
             "Europe1700",
             "SceneObj/Main_map/scene.xscene",
-            Europe1700MainMapSceneHash,
+            string.Empty,
             1696f,
             1696f,
             "DedicatedServer.Core",
-            Europe1700DedicatedServerCoreHash,
+            string.Empty,
             "SandBox",
-            Europe1700ServerSandBoxHash)
+            string.Empty)
     ];
 
     private static readonly IReadOnlyDictionary<string, Europe1700AnimationProjection>
@@ -386,6 +301,8 @@ public sealed class CoopCompatibilityPatcher
     private readonly Dictionary<string, PendingPlan> _pendingPlans =
         new(StringComparer.Ordinal);
     private readonly CoopBridgePackageBuilder _bridgePackageBuilder = new();
+
+    internal int PendingPlanCount => _pendingPlans.Count;
 
     public CoopPreparationPlan CreatePlan(
         BannerlordModule selected,
@@ -504,15 +421,15 @@ public sealed class CoopCompatibilityPatcher
             if (authorityRules.Count > 0)
             {
                 warnings.Add(
-                    $"BCS generated {authorityRules.Count} fingerprint-bound server settings fallback rule(s) " +
+                    $"BCS generated {authorityRules.Count} module-bound server settings fallback rule(s) " +
                     "for MCM-backed module lifecycle methods.");
             }
 
             warnings.Add(hasExecutableCode
-                ? "BCS generated a generic, fingerprint-pinned Coop bridge and server projection. " +
+                ? "BCS generated a generic, version-scoped Coop bridge and server projection. " +
                   "It does not invent synchronization for private mod state; authority adapters are still " +
                   "required when runtime tests expose custom state divergence."
-                : "Content XML and a parity-pinned bridge package will be loaded by the server, but a real " +
+                : "Content XML and a version-matched bridge package will be loaded by the server, but a real " +
                   "client join and campaign round-trip are still required before calling the module compatible.");
         }
 
@@ -530,13 +447,14 @@ public sealed class CoopCompatibilityPatcher
             Changes = proposed.Select(change => change.PublicChange).ToArray()
         };
 
-        _pendingPlans[planId] = new PendingPlan(publicPlan, proposed);
+        if (publicPlan.CanApply)
+            _pendingPlans[planId] = new PendingPlan(publicPlan, proposed);
         return publicPlan;
     }
 
     /// <summary>
     /// Removes Windows internet-zone metadata from managed assemblies in the
-    /// enabled prepared module set. Unblocking an alternate data stream must
+    /// enabled bridge-managed module set. Unblocking an alternate data stream must
     /// never alter assembly bytes, so every file is hashed before and after.
     /// </summary>
     public int UnblockPreparedModuleAssemblies(
@@ -555,7 +473,7 @@ public sealed class CoopCompatibilityPatcher
             .Scan(modulesRoot)
             .ToDictionary(module => module.Id, StringComparer.OrdinalIgnoreCase);
 
-        var unblocked = 0;
+        var blockedAssemblies = new List<BlockedAssemblyMarker>();
         foreach (var moduleId in enabledModuleIds.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (string.IsNullOrWhiteSpace(moduleId))
@@ -572,31 +490,89 @@ public sealed class CoopCompatibilityPatcher
                 throw new DirectoryNotFoundException($"Enabled module was not found: {moduleRoot}");
             if ((File.GetAttributes(moduleRoot) & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidDataException($"Linked enabled module is not safe to unblock: {moduleRoot}");
-
             foreach (var assemblyPath in Directory.EnumerateFiles(
                          moduleRoot,
                          "*.dll",
-                         SearchOption.AllDirectories))
+                         SearchOption.AllDirectories)
+                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
             {
-                if ((File.GetAttributes(assemblyPath) & FileAttributes.ReparsePoint) != 0)
+                if (!IsRegularUnlinkedFileWithin(assemblyPath, moduleRoot))
                     throw new InvalidDataException($"Linked assembly is not safe to unblock: {assemblyPath}");
 
                 var zoneIdentifier = assemblyPath + ":Zone.Identifier";
                 if (!File.Exists(zoneIdentifier))
                     continue;
 
-                var before = HashFile(assemblyPath);
-                File.Delete(zoneIdentifier);
-                if (File.Exists(zoneIdentifier))
-                    throw new IOException($"Windows did not remove the blocked-file marker: {assemblyPath}");
-                var after = HashFile(assemblyPath);
-                if (!after.Equals(before, StringComparison.Ordinal))
-                    throw new IOException($"Assembly bytes changed while unblocking: {assemblyPath}");
-                unblocked++;
+                blockedAssemblies.Add(new BlockedAssemblyMarker(
+                    assemblyPath,
+                    HashFile(assemblyPath),
+                    zoneIdentifier,
+                    File.ReadAllBytes(zoneIdentifier)));
             }
         }
 
-        return unblocked;
+        var removedMarkers = new List<BlockedAssemblyMarker>();
+        try
+        {
+            foreach (var blockedAssembly in blockedAssemblies)
+            {
+                if (!File.Exists(blockedAssembly.ZoneIdentifierPath))
+                {
+                    throw new IOException(
+                        $"Blocked-file marker changed during validation: {blockedAssembly.AssemblyPath}");
+                }
+
+                File.Delete(blockedAssembly.ZoneIdentifierPath);
+                if (File.Exists(blockedAssembly.ZoneIdentifierPath))
+                {
+                    throw new IOException(
+                        $"Windows did not remove the blocked-file marker: {blockedAssembly.AssemblyPath}");
+                }
+
+                removedMarkers.Add(blockedAssembly);
+                var after = HashFile(blockedAssembly.AssemblyPath);
+                if (!after.Equals(blockedAssembly.AssemblySha256, StringComparison.Ordinal))
+                {
+                    throw new IOException(
+                        $"Assembly bytes changed while unblocking: {blockedAssembly.AssemblyPath}");
+                }
+            }
+
+            return removedMarkers.Count;
+        }
+        catch (Exception unblockException)
+        {
+            var restoreErrors = new List<Exception>();
+            foreach (var removedMarker in removedMarkers.AsEnumerable().Reverse())
+            {
+                try
+                {
+                    File.WriteAllBytes(
+                        removedMarker.ZoneIdentifierPath,
+                        removedMarker.ZoneIdentifierBytes);
+                    if (!File.Exists(removedMarker.ZoneIdentifierPath) ||
+                        !File.ReadAllBytes(removedMarker.ZoneIdentifierPath)
+                            .SequenceEqual(removedMarker.ZoneIdentifierBytes))
+                    {
+                        throw new IOException(
+                            $"Blocked-file marker bytes were not restored: {removedMarker.AssemblyPath}");
+                    }
+                }
+                catch (Exception restoreException)
+                {
+                    restoreErrors.Add(restoreException);
+                }
+            }
+
+            if (restoreErrors.Count > 0)
+            {
+                throw new AggregateException(
+                    "Assembly unblocking failed and one or more blocked-file markers could not be restored.",
+                    new[] { unblockException }.Concat(restoreErrors));
+            }
+
+            throw;
+        }
     }
 
     public CoopPreparationResult Apply(CoopPreparationPlan plan)
@@ -624,6 +600,7 @@ public sealed class CoopCompatibilityPatcher
 
         Directory.CreateDirectory(backupDirectory);
         var applied = new List<PendingChange>();
+        var manifestPath = Path.Combine(backupDirectory, "bcs-compatibility-backup.json");
         try
         {
             foreach (var change in pending.Changes)
@@ -657,13 +634,11 @@ public sealed class CoopCompatibilityPatcher
                     AppliedSha256 = change.PublicChange.ProposedSha256
                 }).ToList()
             };
-            var manifestPath = Path.Combine(backupDirectory, "bcs-compatibility-backup.json");
-            File.WriteAllText(
-                manifestPath,
-                JsonSerializer.Serialize(manifest, JsonOptions()) + Environment.NewLine,
-                Utf8NoBom);
+            var manifestBytes = Utf8NoBom.GetBytes(
+                JsonSerializer.Serialize(manifest, JsonOptions()) + Environment.NewLine);
 
             UnblockPreparedModuleAssemblies(plan.ServerRoot, ReadEnabledModuleIds(plan.ServerRoot));
+            ReplaceFileSafely(manifestPath, manifestBytes);
 
             _pendingPlans.Remove(plan.PlanId);
             return new CoopPreparationResult(
@@ -674,7 +649,15 @@ public sealed class CoopCompatibilityPatcher
         }
         catch (Exception applyException)
         {
-            var rollbackErrors = RollBackApplied(plan.ServerRoot, backupDirectory, applied);
+            var rollbackErrors = RollBackApplied(plan.ServerRoot, backupDirectory, applied).ToList();
+            try
+            {
+                File.Delete(manifestPath);
+            }
+            catch (Exception cleanupException)
+            {
+                rollbackErrors.Add(cleanupException);
+            }
             if (rollbackErrors.Count > 0)
             {
                 throw new AggregateException(
@@ -858,14 +841,6 @@ public sealed class CoopCompatibilityPatcher
             return;
         }
 
-        var hash = HashFile(coreDll);
-        if (!hash.Equals(RealmOfThronesCoreHash, StringComparison.Ordinal))
-        {
-            blockers.Add(
-                $"ROT.dll build is not supported by the pinned rule. SHA-256: {hash}");
-            return;
-        }
-
         var navalDlc = FindAssembly(byId.Values, modulesRoot, "NavalDLC.dll");
         if (navalDlc is null)
         {
@@ -922,31 +897,14 @@ public sealed class CoopCompatibilityPatcher
                 "(v0.1.1 or v0.1.2).");
         }
 
-        var manifest = LoadManifest(Path.Combine(module.Path, "SubModule.xml"));
-        var declared = DeclaredDllNames(manifest).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var expected = Europe1700AssemblyHashes.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (!declared.SetEquals(expected))
-        {
-            blockers.Add(
-                "Empires of Europe 1700 submodule set does not match the pinned v1.4.7.1 package. " +
-                $"Declared: {string.Join(", ", declared.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))}.");
-        }
-
         var clientBin = Path.Combine(module.Path, "bin", "Win64_Shipping_Client");
-        foreach (var expectedAssembly in Europe1700AssemblyHashes)
+        foreach (var expectedAssembly in Europe1700RequiredAssemblies)
         {
-            var path = Path.Combine(clientBin, expectedAssembly.Key);
+            var path = Path.Combine(clientBin, expectedAssembly);
             if (!File.Exists(path))
             {
-                blockers.Add($"Empires of Europe 1700 assembly is missing: {expectedAssembly.Key}.");
+                blockers.Add($"Empires of Europe 1700 assembly is missing: {expectedAssembly}.");
                 continue;
-            }
-            var actualHash = HashFile(path);
-            if (!actualHash.Equals(expectedAssembly.Value, StringComparison.Ordinal))
-            {
-                blockers.Add(
-                    $"Empires of Europe 1700 assembly is not the pinned build: {expectedAssembly.Key} " +
-                    $"(SHA-256 {actualHash}).");
             }
         }
 
@@ -960,15 +918,7 @@ public sealed class CoopCompatibilityPatcher
         }
 
         else
-        {
             clansResourceConfigBytes = File.ReadAllBytes(clansResourceConfig);
-            if (!IsPinnedEurope1700ClansResourceConfig(clansResourceConfigBytes))
-            {
-                blockers.Add(
-                    "Empires of Europe 1700 ClansResourceAdder configuration does not match the pinned " +
-                    $"v1.4.7.1 package (SHA-256 {Hash(clansResourceConfigBytes)})." );
-            }
-        }
 
         var mainMapScene = Path.Combine(
             module.Path,
@@ -981,16 +931,6 @@ public sealed class CoopCompatibilityPatcher
                 "Empires of Europe 1700 Main_map scene is missing, linked, or outside its module: " +
                 mainMapScene);
         }
-        else
-        {
-            var mainMapSceneHash = HashFile(mainMapScene);
-            if (!mainMapSceneHash.Equals(Europe1700MainMapSceneHash, StringComparison.Ordinal))
-            {
-                blockers.Add(
-                    "Empires of Europe 1700 Main_map does not match the pinned v1.4.7.1 map " +
-                    $"(SHA-256 {mainMapSceneHash}).");
-            }
-        }
 
         var engineRoot = Directory.GetParent(modulesRoot)?.FullName;
         if (engineRoot is null)
@@ -999,7 +939,7 @@ public sealed class CoopCompatibilityPatcher
         }
         else
         {
-            ValidatePinnedRuntimeAssembly(
+            ValidateRuntimeAssembly(
                 Path.Combine(
                     engineRoot,
                     "bin",
@@ -1007,7 +947,6 @@ public sealed class CoopCompatibilityPatcher
                     "DedicatedServer.Core.dll"),
                 engineRoot,
                 "DedicatedServer.Core",
-                Europe1700DedicatedServerCoreHash,
                 "EOE dedicated-server map loader",
                 blockers);
         }
@@ -1018,7 +957,7 @@ public sealed class CoopCompatibilityPatcher
         }
         else
         {
-            ValidatePinnedRuntimeAssembly(
+            ValidateRuntimeAssembly(
                 Path.Combine(
                     sandboxModule.Path,
                     "bin",
@@ -1026,7 +965,6 @@ public sealed class CoopCompatibilityPatcher
                     "SandBox.dll"),
                 sandboxModule.Path,
                 "SandBox",
-                Europe1700ServerSandBoxHash,
                 "EOE server terrain patch target",
                 blockers);
         }
@@ -1056,12 +994,16 @@ public sealed class CoopCompatibilityPatcher
             }
             else
             {
-                storyModeHash = HashFile(storyModeDll);
-                if (!IsPinnedEurope1700StoryModeHash(storyModeHash))
+                try
                 {
-                    blockers.Add(
-                        "The installed StoryMode.dll does not match the Bannerlord build pinned for EOE 1.4.7.1 " +
-                        $"(SHA-256 {storyModeHash}).");
+                    var identity = AssemblyName.GetAssemblyName(storyModeDll).Name;
+                    if (!string.Equals(identity, "StoryMode", StringComparison.Ordinal))
+                        blockers.Add($"EOE StoryMode dependency has unexpected assembly identity: {identity}.");
+                    storyModeHash = string.Empty;
+                }
+                catch (Exception exception) when (exception is BadImageFormatException or FileLoadException)
+                {
+                    blockers.Add($"EOE StoryMode dependency is not a readable managed assembly: {storyModeDll}");
                 }
             }
         }
@@ -1094,8 +1036,8 @@ public sealed class CoopCompatibilityPatcher
             clansResourceConfigBytes!,
             "Project ClansResourceAdder configuration into the server bin");
         warnings.Add(
-            "EOE.CustomBattlePatch and BannerColorPersistence remain disabled on the dedicated server because " +
-            "they are client/custom-battle presentation paths, not Coop campaign authority.");
+            "Loose EOE.CustomBattlePatch/RF_BattleAI files and the declared BannerColorPersistence submodule " +
+            "remain disabled on the dedicated server because they are not current headless Coop campaign modules.");
         warnings.Add(
             "The bridge suppresses ClansResourceAdder daily mutations on clients and allows them only on the " +
             "authoritative Coop server. It also suppresses EOEPatches' music/UI startup hook on the headless server " +
@@ -1103,41 +1045,30 @@ public sealed class CoopCompatibilityPatcher
             "field/siege battle tests remain required.");
         warnings.Add(
             "EOE client animation TPACs crash Bannerlord's no-render asset loader. The server projection keeps " +
-            "all 24 EOE action IDs, maps their visual animations to pinned Native headless equivalents, and " +
+            "all 24 EOE action IDs, maps their visual animations to Native headless equivalents, and " +
             "repairs the package's mismatched bomb-reload action ID and four malformed trebuchet XML tags.");
         warnings.Add(
-            "The generated bridge redirects pinned EOE XML reads to bridge-owned casing, terminator, workshop-output, " +
+            "The generated bridge redirects EOE XML reads to bridge-owned casing, terminator, workshop-output, " +
             "legacy NPC equipment-type, and invalid equipment-slot overlays. EOE files remain unchanged. " +
             "Firearm alternate melee modes are retained; " +
             "the v1.4.7 server schema " +
             "warnings for multiple Weapon elements are not silently stripped.");
         warnings.Add(
             "BattleArtilleryReworked references StoryMode.CampaignStoryMode while EOE declares no StoryMode " +
-            "dependency and the dedicated-server package omits StoryMode.dll. BCS pins the installed official " +
+            "dependency and the dedicated-server package omits StoryMode.dll. BCS locates the installed official " +
             "StoryMode binary for both role-specific resolvers; no official game files are copied or redistributed.");
         warnings.Add(
-            "ClansResourceAdder resolves conf_clans_resource_adder.xml beside its loaded assembly. BCS pins and " +
+            "ClansResourceAdder resolves conf_clans_resource_adder.xml beside its loaded assembly. BCS validates and " +
             "projects the EOE-supplied configuration into the server bin so campaign initialization does not fail.");
         warnings.Add(
             "The released dedicated server selects Sandbox's settlement distance cache even while EOE's Main_map " +
-            "is active. The generated bridge redirects only that server cache read to EOE's exact pinned cache; " +
+            "is active. The generated bridge redirects only that server cache read to EOE's cache; " +
             "official Coop, Sandbox, and client files remain unchanged.");
         warnings.Add(
-            "The released dedicated-server map loader reports a fixed 848x848 terrain while EOE's pinned Main_map " +
+            "The released dedicated-server map loader reports a fixed 848x848 terrain while EOE's Main_map " +
             "is 1696x1696. The generated bridge corrects SandBox.MapScene.GetTerrainSize only on the server, " +
             "preventing valid EOE positions from indexing outside Bannerlord's weather grid.");
     }
-
-    internal static bool IsPinnedEurope1700ClansResourceConfig(byte[] bytes)
-    {
-        ArgumentNullException.ThrowIfNull(bytes);
-        return Hash(bytes).Equals(
-            Europe1700ClansResourceConfigHash,
-            StringComparison.Ordinal);
-    }
-
-    internal static bool IsPinnedEurope1700StoryModeHash(string hash) =>
-        Europe1700StoryModeHashes.Contains(hash);
 
     private static IReadOnlyList<BridgeClientAssemblyResolve>
         CreateEurope1700ClientAssemblyResolves()
@@ -1153,18 +1084,16 @@ public sealed class CoopCompatibilityPatcher
             relativePath.Replace('/', Path.DirectorySeparatorChar));
         if (!File.Exists(sourcePath))
             throw new FileNotFoundException("EOE StoryMode client dependency is missing.", sourcePath);
-        var hash = HashFile(sourcePath);
-        if (!IsPinnedEurope1700StoryModeHash(hash))
-        {
+        var assemblyName = AssemblyName.GetAssemblyName(sourcePath).Name;
+        if (!string.Equals(assemblyName, "StoryMode", StringComparison.Ordinal))
             throw new InvalidDataException(
-                "EOE StoryMode client dependency does not match the pinned Bannerlord build: " + hash + ".");
-        }
+                "EOE StoryMode client dependency has an unexpected assembly identity: " + assemblyName + ".");
         return
         [
             new BridgeClientAssemblyResolve(
                 "StoryMode",
                 relativePath,
-                hash,
+                string.Empty,
                 sourcePath)
         ];
     }
@@ -1179,31 +1108,17 @@ public sealed class CoopCompatibilityPatcher
                 module.Path,
                 repair.RelativePath.Replace('/', Path.DirectorySeparatorChar));
             if (!File.Exists(path))
-                throw new FileNotFoundException("Pinned EOE schema-repair file is missing.", path);
-
-            var currentHash = HashFile(path);
-            if (!currentHash.Equals(repair.SourceSha256, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    $"EOE XML overlay source changed: {repair.RelativePath} (SHA-256 {currentHash}). " +
-                    "Revert the existing preparation before generating a new bridge.");
-            }
+                throw new FileNotFoundException("Required EOE schema-repair file is missing.", path);
 
             var transformed = TransformEurope1700SchemaRepairForHeadless(
                 repair.RelativePath,
                 File.ReadAllBytes(path));
-            var transformedHash = Convert.ToHexString(SHA256.HashData(transformed));
-            if (!transformedHash.Equals(repair.OutputSha256, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    $"EOE schema repair was not deterministic: {repair.RelativePath}.");
-            }
             overlays.Add(new BridgeServerXmlOverlay(
                 module.Id,
                 repair.RelativePath,
-                repair.SourceSha256,
+                string.Empty,
                 "bcs-server-overlays/" + module.Id + "/" + repair.RelativePath,
-                repair.OutputSha256,
+                string.Empty,
                 transformed));
         }
         return overlays;
@@ -1466,7 +1381,7 @@ public sealed class CoopCompatibilityPatcher
             proposed,
             profilePath,
             bytes,
-            "Pin Bannerlord StoryMode runtime for EOE artillery on the dedicated server");
+            "Register Bannerlord StoryMode runtime for EOE artillery on the dedicated server");
     }
 
     private static void AddEurope1700TrebuchetPrefabTransformation(
@@ -1477,19 +1392,15 @@ public sealed class CoopCompatibilityPatcher
         if (!File.Exists(path))
             throw new FileNotFoundException("Empires of Europe 1700 trebuchet prefab is missing.", path);
 
-        var currentHash = HashFile(path);
-        if (currentHash.Equals(Europe1700HeadlessTrebuchetPrefabHash, StringComparison.Ordinal))
-            return;
-        if (!currentHash.Equals(Europe1700TrebuchetPrefabHash, StringComparison.Ordinal))
+        byte[] transformed;
+        try
         {
-            throw new InvalidDataException(
-                "EOE trebuchet prefab does not match the pinned v1.4.7.1 syntax repair.");
+            transformed = TransformEurope1700TrebuchetPrefabForHeadless(File.ReadAllBytes(path));
         }
-
-        var transformed = TransformEurope1700TrebuchetPrefabForHeadless(File.ReadAllBytes(path));
-        var transformedHash = Convert.ToHexString(SHA256.HashData(transformed));
-        if (!transformedHash.Equals(Europe1700HeadlessTrebuchetPrefabHash, StringComparison.Ordinal))
-            throw new InvalidDataException("EOE trebuchet prefab repair was not deterministic.");
+        catch (InvalidDataException) when (IsValidEurope1700TrebuchetPrefab(path))
+        {
+            return;
+        }
         AddPendingChange(
             proposed,
             path,
@@ -1536,6 +1447,26 @@ public sealed class CoopCompatibilityPatcher
         return transformed;
     }
 
+    private static bool IsValidEurope1700TrebuchetPrefab(string path)
+    {
+        try
+        {
+            var document = new XmlDocument { XmlResolver = null };
+            using var reader = XmlReader.Create(path, new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null,
+                MaxCharactersInDocument = MaximumManifestCharacters
+            });
+            document.Load(reader);
+            return document.DocumentElement?.LocalName == "prefabs";
+        }
+        catch (XmlException)
+        {
+            return false;
+        }
+    }
+
     private static void AddEurope1700HeadlessActionTypesTransformation(
         BannerlordModule module,
         ICollection<PendingChange> proposed)
@@ -1544,19 +1475,7 @@ public sealed class CoopCompatibilityPatcher
         if (!File.Exists(path))
             throw new FileNotFoundException("Empires of Europe 1700 action types are missing.", path);
 
-        var currentHash = HashFile(path);
-        if (currentHash.Equals(Europe1700HeadlessActionTypesHash, StringComparison.Ordinal))
-            return;
-        if (!currentHash.Equals(Europe1700ActionTypesHash, StringComparison.Ordinal))
-        {
-            throw new InvalidDataException(
-                "EOE action types do not match the pinned v1.4.7.1 headless transformation.");
-        }
-
         var transformed = TransformEurope1700ActionTypesForHeadless(File.ReadAllBytes(path));
-        var transformedHash = Convert.ToHexString(SHA256.HashData(transformed));
-        if (!transformedHash.Equals(Europe1700HeadlessActionTypesHash, StringComparison.Ordinal))
-            throw new InvalidDataException("EOE headless action-type transformation was not deterministic.");
         AddPendingChange(
             proposed,
             path,
@@ -1585,11 +1504,16 @@ public sealed class CoopCompatibilityPatcher
                 "/action_types/action[@name='cla_reload_bomb']")!
             .OfType<XmlElement>()
             .ToArray();
-        if (mismatched.Length != 1 || document.SelectSingleNode(
-                "/action_types/action[@name='cla_act_reload_bomb']") is not null)
+        var repaired = document.SelectNodes(
+                "/action_types/action[@name='cla_act_reload_bomb']")!
+            .OfType<XmlElement>()
+            .ToArray();
+        if (mismatched.Length == 0 && repaired.Length == 1)
+            return sourceBytes;
+        if (mismatched.Length != 1 || repaired.Length != 0)
         {
             throw new InvalidDataException(
-                "EOE bomb-reload action types do not match the pinned repair.");
+                "EOE bomb-reload action types do not match the required repair pattern.");
         }
         mismatched[0].SetAttribute("name", "cla_act_reload_bomb");
 
@@ -1618,19 +1542,7 @@ public sealed class CoopCompatibilityPatcher
         if (!File.Exists(path))
             throw new FileNotFoundException("Empires of Europe 1700 action set is missing.", path);
 
-        var currentHash = HashFile(path);
-        if (currentHash.Equals(Europe1700HeadlessActionSetHash, StringComparison.Ordinal))
-            return;
-        if (!currentHash.Equals(Europe1700ActionSetHash, StringComparison.Ordinal))
-        {
-            throw new InvalidDataException(
-                "EOE action set does not match the pinned v1.4.7.1 headless transformation.");
-        }
-
         var transformed = TransformEurope1700ActionSetForHeadless(File.ReadAllBytes(path));
-        var transformedHash = Convert.ToHexString(SHA256.HashData(transformed));
-        if (!transformedHash.Equals(Europe1700HeadlessActionSetHash, StringComparison.Ordinal))
-            throw new InvalidDataException("EOE headless action-set transformation was not deterministic.");
         AddPendingChange(
             proposed,
             path,
@@ -1679,6 +1591,8 @@ public sealed class CoopCompatibilityPatcher
         {
             var action = actionsByType[projection.Key];
             var currentAnimation = action.GetAttribute("animation");
+            if (currentAnimation.Equals(projection.Value.HeadlessAnimation, StringComparison.Ordinal))
+                continue;
             if (!currentAnimation.Equals(projection.Value.ClientAnimation, StringComparison.Ordinal))
             {
                 throw new InvalidDataException(
@@ -1728,22 +1642,14 @@ public sealed class CoopCompatibilityPatcher
             .OfType<XmlAttribute>()
             .ToArray();
         if (particleAttributes.Length == 0)
-        {
-            if (!HashFile(path).Equals(Europe1700HeadlessCollisionInfoHash, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    "EOE headless collision-info file changed after preparation.");
-            }
             return;
-        }
-        if (!HashFile(path).Equals(Europe1700CollisionInfoHash, StringComparison.Ordinal) ||
-            particleAttributes.Length != 76 ||
+        if (particleAttributes.Length != 76 ||
             particleAttributes.Any(attribute =>
                 !attribute.Value.Equals("cla_explosion", StringComparison.Ordinal) &&
                 !attribute.Value.Equals("cla_explosion_small", StringComparison.Ordinal)))
         {
             throw new InvalidDataException(
-                "EOE collision particles do not match the pinned v1.4.7.1 headless transformation.");
+                "EOE collision particles do not match the expected headless transformation.");
         }
 
         foreach (var attribute in particleAttributes)
@@ -1773,9 +1679,7 @@ public sealed class CoopCompatibilityPatcher
     private sealed record Europe1700SchemaRepair(
         string RelativePath,
         Europe1700SchemaRepairKind Kind,
-        int ExpectedOccurrences,
-        string SourceSha256,
-        string OutputSha256);
+        int ExpectedOccurrences);
 
     private enum Europe1700SchemaRepairKind
     {
@@ -2068,21 +1972,21 @@ public sealed class CoopCompatibilityPatcher
         IReadOnlyList<BridgeClientAssemblyResolve>? clientAssemblyResolves = null,
         IReadOnlyList<BridgeServerMapTerrainSize>? serverMapTerrainSizes = null)
     {
-        var fingerprinted = installedModules
+        var compatibleModules = installedModules
             .Where(module => module.IsInstalled &&
                              (preparedIds.Contains(module.Id, StringComparer.OrdinalIgnoreCase) ||
                               module.Id.Equals("Coop", StringComparison.OrdinalIgnoreCase)))
             .GroupBy(module => module.Id, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .ToArray();
-        if (!fingerprinted.Any(module =>
+        if (!compatibleModules.Any(module =>
                 module.Id.Equals("Coop", StringComparison.OrdinalIgnoreCase)))
         {
             throw new InvalidDataException("Released Coop must be installed before a bridge can be generated.");
         }
 
         var package = _bridgePackageBuilder.Build(
-            fingerprinted,
+            compatibleModules,
             projectedModuleIds: preparedIds,
             authorityRules: authorityRules,
             contentExclusions: contentExclusions,
@@ -2106,7 +2010,7 @@ public sealed class CoopCompatibilityPatcher
             proposed,
             Path.Combine(bridgeRoot, "bcs-coop-bridge.config"),
             package.Configuration,
-            "Create exact module/DLL bridge fingerprint");
+            "Create module/version bridge configuration");
         AddPendingChange(
             proposed,
             Path.Combine(bridgeRoot, "bin", "Win64_Shipping_Server", "BCS.CoopBridge.dll"),
@@ -2138,7 +2042,8 @@ public sealed class CoopCompatibilityPatcher
         AddProfileTransformation(installedModules, preparedIds, package.ModuleId, serverRoot, proposed);
         warnings.Add(
             $"Every client must install the generated package bcs-client-packages\\{package.ModuleId}.zip. " +
-            "Coop will reject a different bridge module ID/version, and the bridge validates local DLL hashes at startup.");
+            "Coop will reject a different bridge module ID/version, and the bridge requires the declared module paths " +
+            "and managed assembly identities at startup.");
         warnings.Add(
             "The bridge never creates or repairs campaign state. Select an existing EOE save before starting " +
             "the server; missing-save handling remains owned by Bannerlord Coop.");
@@ -2146,9 +2051,9 @@ public sealed class CoopCompatibilityPatcher
         {
             warnings.Add(
                 "The released Coop server and installed Bannerlord client use different supported game versions. " +
-                "The bridge pins both exact TaleWorlds runtime sets and bypasses only Coop's game-version gate for " +
+                "The bridge records the supported server/client version pair and bypasses only Coop's game-version gate for " +
                 $"{package.GameVersionCompatibility.ServerVersion} -> " +
-                $"{package.GameVersionCompatibility.ClientVersion}; changed binaries fail closed.");
+                $"{package.GameVersionCompatibility.ClientVersion}; required runtime names and method signatures still fail closed.");
         }
     }
 
@@ -2181,7 +2086,7 @@ public sealed class CoopCompatibilityPatcher
             "Win64_Shipping_Client");
         if (!File.Exists(serverManifestPath) ||
             !File.Exists(clientManifestPath) ||
-            GameRuntimeFingerprintFiles.Any(fileName =>
+            RequiredGameRuntimeFiles.Any(fileName =>
                 !File.Exists(Path.Combine(serverBin, fileName)) ||
                 !File.Exists(Path.Combine(clientBin, fileName))))
         {
@@ -2205,30 +2110,8 @@ public sealed class CoopCompatibilityPatcher
         return new BridgeGameVersionCompatibility(
             serverVersion,
             clientVersion,
-            BuildGameRuntimeFingerprint(serverBin),
-            BuildGameRuntimeFingerprint(clientBin));
-    }
-
-    internal static string BuildGameRuntimeFingerprint(string binDirectory)
-    {
-        using var payload = new MemoryStream();
-        foreach (var fileName in GameRuntimeFingerprintFiles.Order(StringComparer.Ordinal))
-        {
-            var path = Path.Combine(binDirectory, fileName);
-            if (!File.Exists(path) ||
-                (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-            {
-                throw new FileNotFoundException(
-                    "Pinned Bannerlord runtime file is missing or linked.",
-                    path);
-            }
-            var nameBytes = Utf8NoBom.GetBytes(fileName);
-            payload.Write(nameBytes, 0, nameBytes.Length);
-            payload.WriteByte(0);
-            var fileHash = SHA256.HashData(File.ReadAllBytes(path));
-            payload.Write(fileHash, 0, fileHash.Length);
-        }
-        return Hash(payload.ToArray());
+            string.Empty,
+            string.Empty);
     }
 
     private static void AddProfileTransformation(
@@ -2272,7 +2155,7 @@ public sealed class CoopCompatibilityPatcher
             proposed,
             Path.Combine(serverRoot, "bcs-server-modules.json"),
             bytes,
-            "Enable prepared modules, place Coop before them, and place the generated bridge last");
+            "Enable bridge-managed modules, place Coop before them, and place the generated bridge last");
     }
 
     private static void NormalizePreparedProfileOrder(
@@ -2356,7 +2239,7 @@ public sealed class CoopCompatibilityPatcher
             }
         }
         if (orderedIds.Count != active.Length)
-            throw new InvalidDataException("Prepared module dependencies contain a load-order cycle.");
+            throw new InvalidDataException("Bridge-managed module dependencies contain a load-order cycle.");
 
         var orderedActive = orderedIds.Select(id => activeById[id]).ToArray();
         var activeIndex = 0;
@@ -2658,11 +2541,10 @@ public sealed class CoopCompatibilityPatcher
         }
     }
 
-    private static void ValidatePinnedRuntimeAssembly(
+    private static void ValidateRuntimeAssembly(
         string path,
         string trustedRoot,
         string expectedAssemblyName,
-        string expectedSha256,
         string description,
         ICollection<string> blockers)
     {
@@ -2690,13 +2572,6 @@ public sealed class CoopCompatibilityPatcher
             return;
         }
 
-        var actualHash = HashFile(path);
-        if (!expectedSha256.Equals(actualHash, StringComparison.Ordinal))
-        {
-            blockers.Add(
-                $"{description} does not match the pinned server runtime " +
-                $"(SHA-256 {actualHash}).");
-        }
     }
 
     private static bool IsRegularUnlinkedFileWithin(string path, string trustedRoot)
@@ -2788,6 +2663,12 @@ public sealed class CoopCompatibilityPatcher
         byte[] ProposedBytes,
         bool OriginalExists,
         CoopPreparationChange PublicChange);
+
+    private sealed record BlockedAssemblyMarker(
+        string AssemblyPath,
+        string AssemblySha256,
+        string ZoneIdentifierPath,
+        byte[] ZoneIdentifierBytes);
 
     private sealed class BackupManifest
     {

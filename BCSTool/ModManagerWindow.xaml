@@ -133,18 +133,18 @@
                 <Button Content="Analyze for Coop" Command="{Binding AnalyzeCommand}"
                         MinWidth="135" Margin="0,0,0,8"
                         ToolTip="Read-only static inspection; does not execute or modify the selected module"/>
-                <Button Content="Prepare for Coop" Command="{Binding PrepareCommand}"
+                <Button Content="Install/Update Bridge" Command="{Binding InstallOrUpdateBridgeCommand}"
                         MinWidth="135" Margin="0,0,0,8"
-                        ToolTip="Preview and apply a version-pinned, backed-up server transformation"/>
-                <Button Content="Revert Preparation" Command="{Binding RevertPreparationCommand}"
+                        ToolTip="Install or repair the known EOE bridge recipe and matching client ZIP"/>
+                <Button Content="Revert Bridge Install" Command="{Binding RevertBridgeInstallationCommand}"
                         MinWidth="135" Margin="0,0,0,8"
-                        ToolTip="Restore exact files from the latest BCS compatibility backup"/>
+                        ToolTip="Restore exact files from the latest bridge installation backup"/>
                 <Button Content="Delete Module" Command="{Binding DeleteCommand}"
                         MinWidth="135" Foreground="#B71C1C"
                         ToolTip="Send the selected non-core module folder to the Windows Recycle Bin"/>
                 <TextBlock Margin="2,12,2,0" MaxWidth="125"
                            Foreground="Gray" FontSize="11" TextWrapping="Wrap"
-                           Text="Analyze is read-only. Prepare only accepts known-safe transformations and always backs up changes. Drag rows to reorder or drop module folders to import. Blue line shows insertion point. Red rows need attention."/>
+                           Text="Analyze is read-only. Install/Update Bridge recognizes EOE, installs its backed-up server projections and creates the matching client ZIP. Drag rows to reorder or drop module folders to import. Blue line shows insertion point. Red rows need attention."/>
             </StackPanel>
         </Grid>
 

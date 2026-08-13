@@ -26,9 +26,9 @@ using TaleWorlds.Core;
 using TaleWorlds.MountAndBlade;
 using TaleWorlds.ObjectSystem;
 
-[assembly: AssemblyVersion("0.6.58.0")]
-[assembly: AssemblyFileVersion("0.6.58.0")]
-[assembly: AssemblyInformationalVersion("0.6.58")]
+[assembly: AssemblyVersion("0.6.60.0")]
+[assembly: AssemblyFileVersion("0.6.60.0")]
+[assembly: AssemblyInformationalVersion("0.6.60")]
 
 namespace BCS.CoopBridge
 {
@@ -118,30 +118,6 @@ namespace BCS.CoopBridge
 
     internal static class ClientMapEventPositionAuthority
     {
-        internal const string ExpectedGameInterfaceHash =
-            "253EC70813715EFB5618F72F5D05A4B10F57F46F235977B79A2114A064488E0E";
-        private const string ExpectedCommonHash =
-            "9DCBCF74E5D86FCBBA98D3BD66A4E33C01E4E688E0ADAA2367054452121E9018";
-        internal const string ExpectedCampaignSystemHash =
-            "1F8E33E2ED73E6EC653D7629180AFB70649DDC6E5BD1657A802A264EFDA1C3AE";
-        private const string ExpectedHarmonyHash =
-            "643C9FB053F7A7465F6A6F484614EF8459C376BEAD23E8BAD1E3F4C66B150520";
-        private const int MapEventSideDestructionPatchesToken = 0x020003E9;
-        private const int MapEventSideDestructionPrefixToken = 0x060014B7;
-        private const int CallOriginalPolicyToken = 0x02000ABB;
-        private const int IsOriginalAllowedToken = 0x06003570;
-        private const int AllowedThreadToken = 0x02000015;
-        private const int AllowedThreadConstructorToken = 0x0600007F;
-        private const int AllowedThreadDisposeToken = 0x06000080;
-        private const int RemoveInvolvedPartyInternalToken = 0x06002E5E;
-        internal static readonly Guid ExpectedGameInterfaceMvid =
-            new Guid("f1c54ac0-7b6d-4b2e-af77-2e8e9c7e38ed");
-        private static readonly Guid ExpectedCommonMvid =
-            new Guid("9a027d25-be9b-4676-8a3c-a25f39d33cd7");
-        internal static readonly Guid ExpectedCampaignSystemMvid =
-            new Guid("886629fe-6e60-40d7-9a57-8d46017179d9");
-        private static readonly Guid ExpectedHarmonyMvid =
-            new Guid("024a0e6e-c8c2-437e-ad04-7b6279389c23");
         private static readonly object Sync = new object();
         private static Func<IDisposable> createAllowedScope;
         private static Action<object, object> removeInvolvedPartyInternal;
@@ -156,48 +132,29 @@ namespace BCS.CoopBridge
                 if (installed)
                     return;
 
-                var gameInterface = LoadPinnedCoopAssembly(
+                var gameInterface = LoadRequiredCoopAssembly(
                     coopModuleRoot,
                     "GameInterface.dll",
-                    "GameInterface",
-                    ExpectedGameInterfaceHash,
-                    ExpectedGameInterfaceMvid);
-                var common = LoadPinnedCoopAssembly(
+                    "GameInterface");
+                var common = LoadRequiredCoopAssembly(
                     coopModuleRoot,
                     "Common.dll",
-                    "Common",
-                    ExpectedCommonHash,
-                    ExpectedCommonMvid);
-                ValidatePinnedAssembly(
+                    "Common");
+                ValidateRequiredAssembly(
                     typeof(Harmony).Assembly,
                     Path.Combine(
                         coopModuleRoot,
                         "bin",
                         "Win64_Shipping_Client",
                         "0Harmony.dll"),
-                    "0Harmony",
-                    ExpectedHarmonyHash,
-                    ExpectedHarmonyMvid);
-                var campaignSystem = ResolvePinnedLoadedAssembly(
-                    "TaleWorlds.CampaignSystem",
-                    ExpectedCampaignSystemHash,
-                    ExpectedCampaignSystemMvid);
+                    "0Harmony");
+                var campaignSystem = ResolveRequiredLoadedAssembly(
+                    "TaleWorlds.CampaignSystem");
 
-                var patchType = gameInterface.ManifestModule.ResolveType(
-                    MapEventSideDestructionPatchesToken);
-                if (patchType == null ||
-                    !string.Equals(
-                        patchType.FullName,
-                        "GameInterface.Services.MapEvents.Patches.MapEventSideDestructionPatches",
-                        StringComparison.Ordinal))
-                {
-                    throw new InvalidDataException(
-                        "Released Coop map-event destruction patch type did not match its pinned ABI.");
-                }
-                var prefix = gameInterface.ManifestModule.ResolveMethod(
-                    MapEventSideDestructionPrefixToken) as MethodInfo;
-                RequireMethod(
-                    prefix,
+                var patchType = RequireType(
+                    gameInterface,
+                    "GameInterface.Services.MapEvents.Patches.MapEventSideDestructionPatches");
+                var prefix = FindRequiredMethod(
                     patchType,
                     "Prefix",
                     typeof(bool),
@@ -205,59 +162,44 @@ namespace BCS.CoopBridge
                     "TaleWorlds.CampaignSystem.MapEvents.MapEventSide",
                     "TaleWorlds.CampaignSystem.Party.PartyBase");
 
-                var policyType = gameInterface.ManifestModule.ResolveType(CallOriginalPolicyToken);
-                if (policyType == null ||
-                    !string.Equals(
-                        policyType.FullName,
-                        "GameInterface.Policies.CallOriginalPolicy",
-                        StringComparison.Ordinal))
-                {
-                    throw new InvalidDataException(
-                        "Released Coop call-original policy type did not match its pinned ABI.");
-                }
-                RequireMethod(
-                    gameInterface.ManifestModule.ResolveMethod(IsOriginalAllowedToken) as MethodInfo,
+                var policyType = RequireType(
+                    gameInterface,
+                    "GameInterface.Policies.CallOriginalPolicy");
+                FindRequiredMethod(
                     policyType,
                     "IsOriginalAllowed",
                     typeof(bool),
                     true);
 
-                var allowedThreadType = common.ManifestModule.ResolveType(AllowedThreadToken);
-                if (allowedThreadType == null ||
-                    !string.Equals(
-                        allowedThreadType.FullName,
-                        "Common.Util.AllowedThread",
-                        StringComparison.Ordinal) ||
-                    !typeof(IDisposable).IsAssignableFrom(allowedThreadType))
+                var allowedThreadType = RequireType(common, "Common.Util.AllowedThread");
+                if (!typeof(IDisposable).IsAssignableFrom(allowedThreadType))
                 {
                     throw new InvalidDataException(
-                        "Released Coop AllowedThread type did not match its pinned ABI.");
+                        "Required Coop AllowedThread type does not implement IDisposable.");
                 }
-                var allowedThreadConstructor = common.ManifestModule.ResolveMethod(
-                    AllowedThreadConstructorToken) as ConstructorInfo;
+                var allowedThreadConstructor = allowedThreadType.GetConstructor(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                    null,
+                    Type.EmptyTypes,
+                    null);
                 if (allowedThreadConstructor == null ||
                     allowedThreadConstructor.DeclaringType != allowedThreadType ||
                     !allowedThreadConstructor.IsPublic ||
                     allowedThreadConstructor.GetParameters().Length != 0)
                 {
                     throw new InvalidDataException(
-                        "Released Coop AllowedThread constructor did not match its pinned ABI.");
+                        "Required Coop AllowedThread constructor has an incompatible signature.");
                 }
-                RequireMethod(
-                    common.ManifestModule.ResolveMethod(AllowedThreadDisposeToken) as MethodInfo,
+                FindRequiredMethod(
                     allowedThreadType,
                     "Dispose",
                     typeof(void),
                     false);
 
-                var removeMethod = campaignSystem.ManifestModule.ResolveMethod(
-                    RemoveInvolvedPartyInternalToken) as MethodInfo;
-                var mapEventType = campaignSystem.GetType(
-                    "TaleWorlds.CampaignSystem.MapEvents.MapEvent",
-                    true,
-                    false);
-                RequireMethod(
-                    removeMethod,
+                var mapEventType = RequireType(
+                    campaignSystem,
+                    "TaleWorlds.CampaignSystem.MapEvents.MapEvent");
+                var removeMethod = FindRequiredMethod(
                     mapEventType,
                     "RemoveInvolvedPartyInternal",
                     typeof(void),
@@ -311,7 +253,7 @@ namespace BCS.CoopBridge
 
                 installed = true;
                 Console.WriteLine(
-                    "[BCS Coop Bridge] Installed pinned client map-event position-authority scope.");
+                    "[BCS Coop Bridge] Installed client map-event position-authority scope.");
             }
         }
 
@@ -325,8 +267,7 @@ namespace BCS.CoopBridge
                 var method = instruction.operand as MethodInfo;
                 if (instruction.opcode != OpCodes.Callvirt ||
                     method == null ||
-                    method.Module != removeInvolvedPartyInternalMethod.Module ||
-                    method.MetadataToken != removeInvolvedPartyInternalMethod.MetadataToken)
+                    !method.Equals(removeInvolvedPartyInternalMethod))
                 {
                     continue;
                 }
@@ -339,7 +280,7 @@ namespace BCS.CoopBridge
             {
                 throw new InvalidDataException(
                     "Released Coop map-event destruction prefix contained " + replacementCount +
-                    " pinned RemoveInvolvedPartyInternal calls; expected exactly one.");
+                    " required RemoveInvolvedPartyInternal calls; expected exactly one.");
             }
             return rewritten;
         }
@@ -364,12 +305,10 @@ namespace BCS.CoopBridge
             }
         }
 
-        internal static Assembly LoadPinnedCoopAssembly(
+        internal static Assembly LoadRequiredCoopAssembly(
             string coopModuleRoot,
             string fileName,
-            string assemblyName,
-            string expectedHash,
-            Guid expectedMvid)
+            string assemblyName)
         {
             var path = Path.Combine(
                 coopModuleRoot,
@@ -379,19 +318,14 @@ namespace BCS.CoopBridge
             var assembly = ClientCoopHandlerRegistration.LoadExactCoopAssembly(
                 path,
                 assemblyName);
-            ValidatePinnedAssembly(
+            ValidateRequiredAssembly(
                 assembly,
                 path,
-                assemblyName,
-                expectedHash,
-                expectedMvid);
+                assemblyName);
             return assembly;
         }
 
-        internal static Assembly ResolvePinnedLoadedAssembly(
-            string assemblyName,
-            string expectedHash,
-            Guid expectedMvid)
+        internal static Assembly ResolveRequiredLoadedAssembly(string assemblyName)
         {
             var matches = AppDomain.CurrentDomain.GetAssemblies().Where(candidate =>
                     string.Equals(
@@ -405,25 +339,21 @@ namespace BCS.CoopBridge
                     "Expected exactly one loaded " + assemblyName + " assembly, found " +
                     matches.Length + ".");
             }
-            ValidatePinnedAssembly(
+            ValidateRequiredAssembly(
                 matches[0],
                 matches[0].Location,
-                assemblyName,
-                expectedHash,
-                expectedMvid);
+                assemblyName);
             return matches[0];
         }
 
-        private static void ValidatePinnedAssembly(
+        private static void ValidateRequiredAssembly(
             Assembly assembly,
             string expectedPath,
-            string expectedName,
-            string expectedHash,
-            Guid expectedMvid)
+            string expectedName)
         {
             var canonicalPath = Path.GetFullPath(expectedPath);
             if (!File.Exists(canonicalPath))
-                throw new FileNotFoundException("Pinned assembly is missing.", canonicalPath);
+                throw new FileNotFoundException("Required assembly is missing.", canonicalPath);
             if (!string.Equals(
                     assembly.GetName().Name,
                     expectedName,
@@ -434,16 +364,44 @@ namespace BCS.CoopBridge
                     StringComparison.OrdinalIgnoreCase))
             {
                 throw new FileLoadException(
-                    "Loaded " + expectedName + " assembly did not match its pinned location.",
+                    "Loaded " + expectedName + " assembly did not match its required location.",
                     assembly.Location);
             }
-            var actualHash = BridgeRuntime.HashFileForCompatibility(canonicalPath);
-            if (!string.Equals(actualHash, expectedHash, StringComparison.Ordinal) ||
-                assembly.ManifestModule.ModuleVersionId != expectedMvid)
+        }
+
+        internal static Type RequireType(Assembly assembly, string fullName)
+        {
+            var type = assembly.GetType(fullName, false, false);
+            if (type == null)
+                throw new TypeLoadException("Required type is missing: " + fullName + ".");
+            return type;
+        }
+
+        internal static MethodInfo FindRequiredMethod(
+            Type declaringType,
+            string name,
+            Type returnType,
+            bool isStatic,
+            params string[] parameterTypeNames)
+        {
+            var matches = declaringType.GetMethods(
+                    BindingFlags.Instance | BindingFlags.Static |
+                    BindingFlags.Public | BindingFlags.NonPublic |
+                    BindingFlags.DeclaredOnly)
+                .Where(method =>
+                    string.Equals(method.Name, name, StringComparison.Ordinal) &&
+                    method.ReturnType == returnType &&
+                    method.IsStatic == isStatic &&
+                    method.GetParameters().Select(parameter => parameter.ParameterType.FullName)
+                        .SequenceEqual(parameterTypeNames, StringComparer.Ordinal))
+                .ToArray();
+            if (matches.Length != 1)
             {
                 throw new InvalidDataException(
-                    "Loaded " + expectedName + " assembly did not match its pinned binary identity.");
+                    "Required method did not resolve exactly once: " +
+                    declaringType.FullName + "::" + name + ".");
             }
+            return matches[0];
         }
 
         internal static void RequireMethod(
@@ -461,14 +419,14 @@ namespace BCS.CoopBridge
                 method.IsStatic != isStatic)
             {
                 throw new InvalidDataException(
-                    "Released Coop method did not match its pinned ABI: " +
+                    "Released Coop method did not match its required signature: " +
                     declaringType.FullName + "::" + name + ".");
             }
             var parameters = method.GetParameters();
             if (parameters.Length != parameterTypeNames.Length)
             {
                 throw new InvalidDataException(
-                    "Released Coop method parameter count did not match its pinned ABI: " +
+                    "Released Coop method parameter count did not match its required signature: " +
                     declaringType.FullName + "::" + name + ".");
             }
             for (var index = 0; index < parameters.Length; index++)
@@ -479,7 +437,7 @@ namespace BCS.CoopBridge
                         StringComparison.Ordinal))
                 {
                     throw new InvalidDataException(
-                        "Released Coop method parameter did not match its pinned ABI: " +
+                        "Released Coop method parameter did not match its required signature: " +
                         declaringType.FullName + "::" + name + ".");
                 }
             }
@@ -523,19 +481,6 @@ namespace BCS.CoopBridge
 
     internal static class ClientTroopUpgradeTrackerLoadRepair
     {
-        private const int RobustnessPatchTypeToken = 0x020003D4;
-        private const int RestoringTrackerFieldToken = 0x040009C7;
-        private const int TrackerPostfixToken = 0x06001461;
-        private const int MapEventTypeToken = 0x0200030E;
-        private const int TroopUpgradeTrackerTypeToken = 0x020000AD;
-        private const int OnAfterLoadToken = 0x06002E4F;
-        private const int TrackerGetterToken = 0x06002E1A;
-        private const string ExpectedTrackerPostfixIlHash =
-            "90D17D47B193590A2F4C0A818AA0DBB3BC9E8BB3B9F4765101D3E5C944449EB5";
-        private const string ExpectedOnAfterLoadIlHash =
-            "691A338FBCF2A9C5863866F9B1161D23E13578810ADDB538E1A56D28D1A572C0";
-        private const string ExpectedTrackerGetterIlHash =
-            "1539AD0199AA3BDFC34E229CB895C687FD99FDC73A478C6523F082D99ACE145F";
         private static readonly object Sync = new object();
         private static Func<bool> getRestoringTracker;
         private static Action<bool> setRestoringTracker;
@@ -548,31 +493,21 @@ namespace BCS.CoopBridge
                 if (installed)
                     return;
 
-                var gameInterface = ClientMapEventPositionAuthority.LoadPinnedCoopAssembly(
+                var gameInterface = ClientMapEventPositionAuthority.LoadRequiredCoopAssembly(
                     coopModuleRoot,
                     "GameInterface.dll",
-                    "GameInterface",
-                    ClientMapEventPositionAuthority.ExpectedGameInterfaceHash,
-                    ClientMapEventPositionAuthority.ExpectedGameInterfaceMvid);
-                var campaignSystem = ClientMapEventPositionAuthority.ResolvePinnedLoadedAssembly(
-                    "TaleWorlds.CampaignSystem",
-                    ClientMapEventPositionAuthority.ExpectedCampaignSystemHash,
-                    ClientMapEventPositionAuthority.ExpectedCampaignSystemMvid);
+                    "GameInterface");
+                var campaignSystem = ClientMapEventPositionAuthority.ResolveRequiredLoadedAssembly(
+                    "TaleWorlds.CampaignSystem");
 
-                var robustnessPatchType = gameInterface.ManifestModule.ResolveType(
-                    RobustnessPatchTypeToken);
-                if (robustnessPatchType == null ||
-                    !string.Equals(
-                        robustnessPatchType.FullName,
-                        "GameInterface.Services.MapEvents.Patches.MapEventRobustnessPatches",
-                        StringComparison.Ordinal))
-                {
-                    throw new InvalidDataException(
-                        "Released Coop tracker robustness patch type did not match its pinned ABI.");
-                }
+                var robustnessPatchType = ClientMapEventPositionAuthority.RequireType(
+                    gameInterface,
+                    "GameInterface.Services.MapEvents.Patches.MapEventRobustnessPatches");
 
-                var restoringField = gameInterface.ManifestModule.ResolveField(
-                    RestoringTrackerFieldToken);
+                var restoringField = robustnessPatchType.GetField(
+                    "restoringTroopUpgradeTracker",
+                    BindingFlags.Static | BindingFlags.Public |
+                    BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
                 if (restoringField == null ||
                     restoringField.DeclaringType != robustnessPatchType ||
                     !string.Equals(
@@ -586,36 +521,22 @@ namespace BCS.CoopBridge
                     restoringField.IsLiteral)
                 {
                     throw new InvalidDataException(
-                        "Released Coop tracker restoration guard did not match its pinned ABI.");
+                        "Released Coop tracker restoration guard has an incompatible signature.");
                 }
 
-                var mapEventType = campaignSystem.ManifestModule.ResolveType(MapEventTypeToken);
-                if (mapEventType == null ||
-                    mapEventType != typeof(MapEvent) ||
-                    !string.Equals(
-                        mapEventType.FullName,
-                        "TaleWorlds.CampaignSystem.MapEvents.MapEvent",
-                        StringComparison.Ordinal))
+                var mapEventType = ClientMapEventPositionAuthority.RequireType(
+                    campaignSystem,
+                    "TaleWorlds.CampaignSystem.MapEvents.MapEvent");
+                if (mapEventType != typeof(MapEvent))
                 {
                     throw new InvalidDataException(
-                        "Released TaleWorlds MapEvent type did not match its pinned ABI.");
+                        "Released TaleWorlds MapEvent type did not match the loaded runtime type.");
                 }
-                var trackerType = campaignSystem.ManifestModule.ResolveType(
-                    TroopUpgradeTrackerTypeToken);
-                if (trackerType == null ||
-                    !string.Equals(
-                        trackerType.FullName,
-                        "TaleWorlds.CampaignSystem.TroopUpgradeTracker",
-                        StringComparison.Ordinal))
-                {
-                    throw new InvalidDataException(
-                        "Released TaleWorlds TroopUpgradeTracker type did not match its pinned ABI.");
-                }
+                var trackerType = ClientMapEventPositionAuthority.RequireType(
+                    campaignSystem,
+                    "TaleWorlds.CampaignSystem.TroopUpgradeTracker");
 
-                var trackerPostfix = gameInterface.ManifestModule.ResolveMethod(
-                    TrackerPostfixToken) as MethodInfo;
-                ClientMapEventPositionAuthority.RequireMethod(
-                    trackerPostfix,
+                var trackerPostfix = ClientMapEventPositionAuthority.FindRequiredMethod(
                     robustnessPatchType,
                     "PostfixTroopUpgradeTracker",
                     typeof(void),
@@ -625,13 +546,10 @@ namespace BCS.CoopBridge
                 if (!trackerPostfix.IsPrivate)
                 {
                     throw new InvalidDataException(
-                        "Released Coop tracker robustness postfix visibility did not match its pinned ABI.");
+                        "Released Coop tracker robustness postfix visibility is incompatible.");
                 }
 
-                var onAfterLoad = campaignSystem.ManifestModule.ResolveMethod(
-                    OnAfterLoadToken) as MethodInfo;
-                ClientMapEventPositionAuthority.RequireMethod(
-                    onAfterLoad,
+                var onAfterLoad = ClientMapEventPositionAuthority.FindRequiredMethod(
                     mapEventType,
                     "OnAfterLoad",
                     typeof(void),
@@ -639,13 +557,10 @@ namespace BCS.CoopBridge
                 if (!onAfterLoad.IsAssembly)
                 {
                     throw new InvalidDataException(
-                        "Released TaleWorlds MapEvent.OnAfterLoad visibility did not match its pinned ABI.");
+                        "Released TaleWorlds MapEvent.OnAfterLoad visibility is incompatible.");
                 }
 
-                var trackerGetter = campaignSystem.ManifestModule.ResolveMethod(
-                    TrackerGetterToken) as MethodInfo;
-                ClientMapEventPositionAuthority.RequireMethod(
-                    trackerGetter,
+                var trackerGetter = ClientMapEventPositionAuthority.FindRequiredMethod(
                     mapEventType,
                     "get_TroopUpgradeTracker",
                     trackerType,
@@ -653,21 +568,8 @@ namespace BCS.CoopBridge
                 if (!trackerGetter.IsPublic || !trackerGetter.IsSpecialName)
                 {
                     throw new InvalidDataException(
-                        "Released TaleWorlds tracker getter did not match its pinned ABI.");
+                        "Released TaleWorlds tracker getter visibility is incompatible.");
                 }
-
-                RequireMethodIlHash(
-                    trackerPostfix,
-                    ExpectedTrackerPostfixIlHash,
-                    "Released Coop tracker robustness postfix");
-                RequireMethodIlHash(
-                    onAfterLoad,
-                    ExpectedOnAfterLoadIlHash,
-                    "Released TaleWorlds MapEvent.OnAfterLoad");
-                RequireMethodIlHash(
-                    trackerGetter,
-                    ExpectedTrackerGetterIlHash,
-                    "Released TaleWorlds tracker getter");
 
                 getRestoringTracker = BuildBooleanFieldGetter(restoringField);
                 setRestoringTracker = BuildBooleanFieldSetter(restoringField);
@@ -757,7 +659,7 @@ namespace BCS.CoopBridge
 
                     installed = true;
                     Console.WriteLine(
-                        "[BCS Coop Bridge] Installed pinned client troop-upgrade tracker load repair.");
+                        "[BCS Coop Bridge] Installed client troop-upgrade tracker load repair.");
                 }
                 catch (Exception installException)
                 {
@@ -835,27 +737,6 @@ namespace BCS.CoopBridge
                 patch.PatchMethod == patchMethod);
         }
 
-        private static void RequireMethodIlHash(
-            MethodInfo method,
-            string expectedHash,
-            string description)
-        {
-            var body = method.GetMethodBody();
-            var bytes = body == null ? null : body.GetILAsByteArray();
-            if (bytes == null)
-                throw new InvalidDataException(description + " has no managed IL body.");
-            string actualHash;
-            using (var sha256 = SHA256.Create())
-            {
-                actualHash = BitConverter.ToString(sha256.ComputeHash(bytes)).Replace("-", string.Empty);
-            }
-            if (!string.Equals(actualHash, expectedHash, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    description + " did not match its pinned IL fingerprint.");
-            }
-        }
-
         private static Func<bool> BuildBooleanFieldGetter(FieldInfo field)
         {
             var method = new DynamicMethod(
@@ -894,13 +775,6 @@ namespace BCS.CoopBridge
 
     internal static class ClientDiagnosticSupport
     {
-        internal const string ExpectedCommonHash =
-            "9DCBCF74E5D86FCBBA98D3BD66A4E33C01E4E688E0ADAA2367054452121E9018";
-        internal static readonly Guid ExpectedCommonMvid =
-            new Guid("9a027d25-be9b-4676-8a3c-a25f39d33cd7");
-        private const int GameThreadTypeToken = 0x02000009;
-        private const int GameThreadInstanceGetterToken = 0x0600001E;
-        private const int IsGameThreadGetterToken = 0x0600001C;
         private const int MaxFailureKeys = 16;
         private static readonly object FailureSync = new object();
         private static readonly ISet<string> FailureKeys =
@@ -909,26 +783,16 @@ namespace BCS.CoopBridge
 
         internal static GameThreadProbe CreateGameThreadProbe(Assembly common)
         {
-            var gameThreadType = common.ManifestModule.ResolveType(GameThreadTypeToken);
-            if (gameThreadType == null ||
-                !string.Equals(gameThreadType.FullName, "Common.GameThread", StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    "Released Coop GameThread type did not match its pinned ABI.");
-            }
+            var gameThreadType = ClientMapEventPositionAuthority.RequireType(
+                common,
+                "Common.GameThread");
 
-            var instanceGetter = common.ManifestModule.ResolveMethod(
-                GameThreadInstanceGetterToken) as MethodInfo;
-            ClientMapEventPositionAuthority.RequireMethod(
-                instanceGetter,
+            var instanceGetter = ClientMapEventPositionAuthority.FindRequiredMethod(
                 gameThreadType,
                 "get_Instance",
                 gameThreadType,
                 true);
-            var isGameThreadGetter = common.ManifestModule.ResolveMethod(
-                IsGameThreadGetterToken) as MethodInfo;
-            ClientMapEventPositionAuthority.RequireMethod(
-                isGameThreadGetter,
+            var isGameThreadGetter = ClientMapEventPositionAuthority.FindRequiredMethod(
                 gameThreadType,
                 "get_IsGameThread",
                 typeof(bool),
@@ -939,7 +803,7 @@ namespace BCS.CoopBridge
                 !isGameThreadGetter.IsSpecialName)
             {
                 throw new InvalidDataException(
-                    "Released Coop GameThread accessors did not match their pinned ABI.");
+                    "Released Coop GameThread accessors have incompatible visibility.");
             }
             return new GameThreadProbe(instanceGetter, isGameThreadGetter);
         }
@@ -974,8 +838,7 @@ namespace BCS.CoopBridge
                     if (method == null || declaringType == null)
                         continue;
                     if (target != null &&
-                        method.Module == target.Module &&
-                        method.MetadataToken == target.MetadataToken)
+                        method.Equals(target))
                     {
                         continue;
                     }
@@ -1121,10 +984,6 @@ namespace BCS.CoopBridge
 
     internal static class ClientSetDisorganizedDiagnostic
     {
-        private const int MobilePartyTypeToken = 0x020002F2;
-        private const int SetDisorganizedToken = 0x06002B0B;
-        private const int IsDisorganizedGetterToken = 0x06002A6A;
-        private const int IsMainPartyGetterToken = 0x06002B35;
         private const int MaxRecords = 256;
         private const int MaxDedupeKeys = 128;
         private static readonly long DedupeTicks = Stopwatch.Frequency * 2L;
@@ -1156,34 +1015,19 @@ namespace BCS.CoopBridge
                 var harmonyId = bridgeId + ".client-set-disorganized-diagnostic";
                 try
                 {
-                    var common = ClientMapEventPositionAuthority.LoadPinnedCoopAssembly(
+                    var common = ClientMapEventPositionAuthority.LoadRequiredCoopAssembly(
                         coopModuleRoot,
                         "Common.dll",
-                        "Common",
-                        ClientDiagnosticSupport.ExpectedCommonHash,
-                        ClientDiagnosticSupport.ExpectedCommonMvid);
+                        "Common");
                     var campaignSystem =
-                        ClientMapEventPositionAuthority.ResolvePinnedLoadedAssembly(
-                            "TaleWorlds.CampaignSystem",
-                            ClientMapEventPositionAuthority.ExpectedCampaignSystemHash,
-                            ClientMapEventPositionAuthority.ExpectedCampaignSystemMvid);
+                        ClientMapEventPositionAuthority.ResolveRequiredLoadedAssembly(
+                            "TaleWorlds.CampaignSystem");
 
-                    var mobilePartyType = campaignSystem.ManifestModule.ResolveType(
-                        MobilePartyTypeToken);
-                    if (mobilePartyType == null ||
-                        !string.Equals(
-                            mobilePartyType.FullName,
-                            "TaleWorlds.CampaignSystem.Party.MobileParty",
-                            StringComparison.Ordinal))
-                    {
-                        throw new InvalidDataException(
-                            "Released TaleWorlds MobileParty type did not match its pinned ABI.");
-                    }
+                    var mobilePartyType = ClientMapEventPositionAuthority.RequireType(
+                        campaignSystem,
+                        "TaleWorlds.CampaignSystem.Party.MobileParty");
 
-                    resolvedTarget = campaignSystem.ManifestModule.ResolveMethod(
-                        SetDisorganizedToken) as MethodInfo;
-                    ClientMapEventPositionAuthority.RequireMethod(
-                        resolvedTarget,
+                    resolvedTarget = ClientMapEventPositionAuthority.FindRequiredMethod(
                         mobilePartyType,
                         "SetDisorganized",
                         typeof(void),
@@ -1192,22 +1036,17 @@ namespace BCS.CoopBridge
                     if (!resolvedTarget.IsPublic)
                     {
                         throw new InvalidDataException(
-                            "Released TaleWorlds MobileParty.SetDisorganized visibility did not match its pinned ABI.");
+                            "Released TaleWorlds MobileParty.SetDisorganized visibility is incompatible.");
                     }
 
                     var resolvedIsDisorganizedGetter =
-                        campaignSystem.ManifestModule.ResolveMethod(
-                            IsDisorganizedGetterToken) as MethodInfo;
-                    ClientMapEventPositionAuthority.RequireMethod(
-                        resolvedIsDisorganizedGetter,
+                        ClientMapEventPositionAuthority.FindRequiredMethod(
                         mobilePartyType,
                         "get_IsDisorganized",
                         typeof(bool),
                         false);
-                    var resolvedIsMainPartyGetter = campaignSystem.ManifestModule.ResolveMethod(
-                        IsMainPartyGetterToken) as MethodInfo;
-                    ClientMapEventPositionAuthority.RequireMethod(
-                        resolvedIsMainPartyGetter,
+                    var resolvedIsMainPartyGetter =
+                        ClientMapEventPositionAuthority.FindRequiredMethod(
                         mobilePartyType,
                         "get_IsMainParty",
                         typeof(bool),
@@ -1218,7 +1057,7 @@ namespace BCS.CoopBridge
                         !resolvedIsMainPartyGetter.IsSpecialName)
                     {
                         throw new InvalidDataException(
-                            "Released TaleWorlds MobileParty diagnostic getters did not match their pinned ABI.");
+                            "Released TaleWorlds MobileParty diagnostic getters have incompatible visibility.");
                     }
 
                     var stringIdProperty = mobilePartyType.GetProperty(
@@ -1238,7 +1077,7 @@ namespace BCS.CoopBridge
                             StringComparison.Ordinal))
                     {
                         throw new InvalidDataException(
-                            "Released TaleWorlds MobileParty.StringId getter did not match its pinned ABI.");
+                            "Released TaleWorlds MobileParty.StringId getter has an incompatible signature.");
                     }
 
                     targetMethod = resolvedTarget;
@@ -1296,7 +1135,7 @@ namespace BCS.CoopBridge
 
                     installed = true;
                     ClientDiagnosticSupport.Write(
-                        "[BCS Coop Bridge] Installed pinned client SetDisorganized diagnostic.");
+                        "[BCS Coop Bridge] Installed client SetDisorganized diagnostic.");
                 }
                 catch (Exception exception)
                 {
@@ -1523,32 +1362,6 @@ namespace BCS.CoopBridge
 
     internal static class ClientTroopRosterSequenceDiagnostic
     {
-        private const int AutoRegistryHandlerTypeToken = 0x02000AB5;
-        private const int CreateClientInstanceToken = 0x06003565;
-        private const int AutoRegistryObjectManagerFieldToken = 0x04001708;
-        private const int NetworkCreateInstanceIdFieldToken = 0x0400170D;
-        private const int TroopRosterDeltaHandlerTypeToken = 0x0200019B;
-        private const int DeltaObjectManagerFieldToken = 0x04000432;
-        private const int HandleSetNumberToken = 0x06000852;
-        private const int HandleSetWoundedToken = 0x06000853;
-        private const int HandleElementBatchToken = 0x06000854;
-        private const int HandleRemoveZeroCountsToken = 0x06000855;
-        private const int SetNumberRosterIdFieldToken = 0x04000414;
-        private const int SetWoundedRosterIdFieldToken = 0x04000417;
-        private const int ElementBatchRosterIdFieldToken = 0x04000410;
-        private const int RemoveZeroCountsRosterIdFieldToken = 0x04000413;
-        private const int ApplyClosureTypeToken = 0x02000BCA;
-        private const int ApplyClosureMethodToken = 0x060038C7;
-        private const int ApplyClosureOuterFieldToken = 0x040019C7;
-        private const int ApplyClosureRosterIdFieldToken = 0x040019C8;
-        private const int ApplyClosureDelegateFieldToken = 0x040019CA;
-        private const int RemoveClosureTypeToken = 0x02000BC9;
-        private const int RemoveClosureMethodToken = 0x060038C5;
-        private const int RemoveClosureOuterFieldToken = 0x040019C5;
-        private const int RemoveClosureRosterIdFieldToken = 0x040019C6;
-        private const int TroopRosterTypeToken = 0x020002E2;
-        private const int ObjectManagerTypeToken = 0x0200032B;
-        private const int ObjectManagerContainsIdToken = 0x06001023;
         private const int MaxRecords = 512;
         private const int MaxRosterIds = 128;
         private static readonly long DedupeTicks =
@@ -1558,11 +1371,12 @@ namespace BCS.CoopBridge
             new HashSet<string>(StringComparer.Ordinal);
         private static readonly IDictionary<string, long> Recent =
             new Dictionary<string, long>(StringComparer.Ordinal);
-        private static IDictionary<int, PayloadIdAccessor> payloadAccessors;
-        private static IDictionary<int, string> deltaTypes;
+        private static IDictionary<MethodBase, PayloadIdAccessor> payloadAccessors;
+        private static IDictionary<MethodBase, string> deltaTypes;
         private static FieldInfo autoRegistryObjectManagerField;
         private static FieldInfo deltaObjectManagerField;
         private static MethodInfo objectManagerContainsId;
+        private static MethodInfo createClientInstanceMethod;
         private static ClosureAccessor applyClosureAccessor;
         private static ClosureAccessor removeClosureAccessor;
         private static ClientDiagnosticSupport.GameThreadProbe gameThreadProbe;
@@ -1587,51 +1401,35 @@ namespace BCS.CoopBridge
                 try
                 {
                     var gameInterface =
-                        ClientMapEventPositionAuthority.LoadPinnedCoopAssembly(
+                        ClientMapEventPositionAuthority.LoadRequiredCoopAssembly(
                             coopModuleRoot,
                             "GameInterface.dll",
-                            "GameInterface",
-                            ClientMapEventPositionAuthority.ExpectedGameInterfaceHash,
-                            ClientMapEventPositionAuthority.ExpectedGameInterfaceMvid);
-                    var common = ClientMapEventPositionAuthority.LoadPinnedCoopAssembly(
+                            "GameInterface");
+                    var common = ClientMapEventPositionAuthority.LoadRequiredCoopAssembly(
                         coopModuleRoot,
                         "Common.dll",
-                        "Common",
-                        ClientDiagnosticSupport.ExpectedCommonHash,
-                        ClientDiagnosticSupport.ExpectedCommonMvid);
+                        "Common");
                     var campaignSystem =
-                        ClientMapEventPositionAuthority.ResolvePinnedLoadedAssembly(
-                            "TaleWorlds.CampaignSystem",
-                            ClientMapEventPositionAuthority.ExpectedCampaignSystemHash,
-                            ClientMapEventPositionAuthority.ExpectedCampaignSystemMvid);
+                        ClientMapEventPositionAuthority.ResolveRequiredLoadedAssembly(
+                            "TaleWorlds.CampaignSystem");
 
-                    var troopRosterType = campaignSystem.ManifestModule.ResolveType(
-                        TroopRosterTypeToken);
-                    if (troopRosterType == null ||
-                        !string.Equals(
-                            troopRosterType.FullName,
-                            "TaleWorlds.CampaignSystem.Roster.TroopRoster",
-                            StringComparison.Ordinal))
-                    {
-                        throw new InvalidDataException(
-                            "Released TaleWorlds TroopRoster type did not match its pinned ABI.");
-                    }
+                    var troopRosterType = ClientMapEventPositionAuthority.RequireType(
+                        campaignSystem,
+                        "TaleWorlds.CampaignSystem.Roster.TroopRoster");
 
-                    var openAutoRegistryHandler = gameInterface.ManifestModule.ResolveType(
-                        AutoRegistryHandlerTypeToken);
-                    if (openAutoRegistryHandler == null ||
-                        !openAutoRegistryHandler.IsGenericTypeDefinition ||
+                    var openAutoRegistryHandler = ClientMapEventPositionAuthority.RequireType(
+                        gameInterface,
+                        "GameInterface.Registry.Auto.AutoRegistryHandler`1");
+                    if (!openAutoRegistryHandler.IsGenericTypeDefinition ||
                         openAutoRegistryHandler.GetGenericArguments().Length != 1 ||
-                        !string.Equals(
-                            openAutoRegistryHandler.FullName,
+                        !string.Equals(openAutoRegistryHandler.FullName,
                             "GameInterface.Registry.Auto.AutoRegistryHandler`1",
                             StringComparison.Ordinal))
                     {
                         throw new InvalidDataException(
-                            "Released Coop AutoRegistryHandler type did not match its pinned ABI.");
+                            "Released Coop AutoRegistryHandler type has an incompatible generic signature.");
                     }
-                    var openCreateMethod = gameInterface.ManifestModule.ResolveMethod(
-                        CreateClientInstanceToken) as MethodInfo;
+                    var openCreateMethod = FindAutoRegistryCreateMethod(openAutoRegistryHandler);
                     RequireAutoRegistryCreateMethod(
                         openCreateMethod,
                         openAutoRegistryHandler);
@@ -1639,7 +1437,7 @@ namespace BCS.CoopBridge
                         troopRosterType);
                     var createClientInstance = FindClosedMethod(
                         closedAutoRegistryHandler,
-                        CreateClientInstanceToken);
+                        "CreateClientInstance");
                     RequireClosedAutoRegistryCreateMethod(
                         createClientInstance,
                         closedAutoRegistryHandler);
@@ -1647,50 +1445,36 @@ namespace BCS.CoopBridge
 
                     var resolvedAutoRegistryObjectManagerField = FindClosedField(
                         closedAutoRegistryHandler,
-                        AutoRegistryObjectManagerFieldToken);
+                        "<ObjectManager>k__BackingField");
                     RequireObjectManagerField(
                         resolvedAutoRegistryObjectManagerField,
                         closedAutoRegistryHandler,
                         "<ObjectManager>k__BackingField");
 
-                    var deltaHandlerType = gameInterface.ManifestModule.ResolveType(
-                        TroopRosterDeltaHandlerTypeToken);
-                    if (deltaHandlerType == null ||
-                        !string.Equals(
-                            deltaHandlerType.FullName,
-                            "GameInterface.Services.TroopRosters.Handlers.TroopRosterDeltaHandler",
-                            StringComparison.Ordinal))
-                    {
-                        throw new InvalidDataException(
-                            "Released Coop TroopRosterDeltaHandler type did not match its pinned ABI.");
-                    }
+                    var deltaHandlerType = ClientMapEventPositionAuthority.RequireType(
+                        gameInterface,
+                        "GameInterface.Services.TroopRosters.Handlers.TroopRosterDeltaHandler");
                     var resolvedDeltaObjectManagerField =
-                        gameInterface.ManifestModule.ResolveField(
-                            DeltaObjectManagerFieldToken);
+                        deltaHandlerType.GetField(
+                            "objectManager",
+                            BindingFlags.Instance | BindingFlags.Public |
+                            BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
                     RequireObjectManagerField(
                         resolvedDeltaObjectManagerField,
                         deltaHandlerType,
                         "objectManager");
 
                     var setNumber = RequireDeltaMethod(
-                        gameInterface,
                         deltaHandlerType,
-                        HandleSetNumberToken,
                         "Handle_NetworkSetNumber");
                     var setWounded = RequireDeltaMethod(
-                        gameInterface,
                         deltaHandlerType,
-                        HandleSetWoundedToken,
                         "Handle_NetworkSetWoundedNumber");
                     var elementBatch = RequireDeltaMethod(
-                        gameInterface,
                         deltaHandlerType,
-                        HandleElementBatchToken,
                         "Handle_NetworkElementBatch");
                     var removeZeroCounts = RequireDeltaMethod(
-                        gameInterface,
                         deltaHandlerType,
-                        HandleRemoveZeroCountsToken,
                         "Handle_NetworkRemoveZeroCounts");
                     targets.Add(setNumber);
                     targets.Add(setWounded);
@@ -1698,97 +1482,77 @@ namespace BCS.CoopBridge
                     targets.Add(removeZeroCounts);
 
                     var resolvedPayloadAccessors =
-                        new Dictionary<int, PayloadIdAccessor>();
+                        new Dictionary<MethodBase, PayloadIdAccessor>();
                     resolvedPayloadAccessors.Add(
-                        CreateClientInstanceToken,
+                        createClientInstance,
                         BuildPayloadIdAccessor(
                             createClientInstance,
                             "GameInterface.Registry.Auto.NetworkCreateInstance`1",
                             troopRosterType,
-                            NetworkCreateInstanceIdFieldToken,
                             "InstanceId"));
                     resolvedPayloadAccessors.Add(
-                        HandleSetNumberToken,
+                        setNumber,
                         BuildPayloadIdAccessor(
                             setNumber,
                             "GameInterface.Services.TroopRosters.Messages.NetworkTroopRosterSetNumber",
                             null,
-                            SetNumberRosterIdFieldToken,
                             "RosterId"));
                     resolvedPayloadAccessors.Add(
-                        HandleSetWoundedToken,
+                        setWounded,
                         BuildPayloadIdAccessor(
                             setWounded,
                             "GameInterface.Services.TroopRosters.Messages.NetworkTroopRosterSetWoundedNumber",
                             null,
-                            SetWoundedRosterIdFieldToken,
                             "RosterId"));
                     resolvedPayloadAccessors.Add(
-                        HandleElementBatchToken,
+                        elementBatch,
                         BuildPayloadIdAccessor(
                             elementBatch,
                             "GameInterface.Services.TroopRosters.Messages.NetworkTroopRosterElementBatch",
                             null,
-                            ElementBatchRosterIdFieldToken,
                             "RosterId"));
                     resolvedPayloadAccessors.Add(
-                        HandleRemoveZeroCountsToken,
+                        removeZeroCounts,
                         BuildPayloadIdAccessor(
                             removeZeroCounts,
                             "GameInterface.Services.TroopRosters.Messages.NetworkTroopRosterRemoveZeroCounts",
                             null,
-                            RemoveZeroCountsRosterIdFieldToken,
                             "RosterId"));
 
-                    var resolvedDeltaTypes = new Dictionary<int, string>
+                    var resolvedDeltaTypes = new Dictionary<MethodBase, string>
                     {
-                        { HandleSetNumberToken, "NetworkTroopRosterSetNumber" },
-                        { HandleSetWoundedToken, "NetworkTroopRosterSetWoundedNumber" },
-                        { HandleElementBatchToken, "NetworkTroopRosterElementBatch" },
-                        { HandleRemoveZeroCountsToken, "NetworkTroopRosterRemoveZeroCounts" }
+                        { setNumber, "NetworkTroopRosterSetNumber" },
+                        { setWounded, "NetworkTroopRosterSetWoundedNumber" },
+                        { elementBatch, "NetworkTroopRosterElementBatch" },
+                        { removeZeroCounts, "NetworkTroopRosterRemoveZeroCounts" }
                     };
 
                     var resolvedApplyClosure = BuildClosureAccessor(
                         gameInterface,
                         deltaHandlerType,
-                        ApplyClosureTypeToken,
-                        ApplyClosureMethodToken,
                         "GameInterface.Services.TroopRosters.Handlers.TroopRosterDeltaHandler+<>c__DisplayClass22_0",
                         "<Apply>b__0",
-                        ApplyClosureOuterFieldToken,
-                        ApplyClosureRosterIdFieldToken,
-                        ApplyClosureDelegateFieldToken,
+                        "apply",
                         "Apply");
                     var resolvedRemoveClosure = BuildClosureAccessor(
                         gameInterface,
                         deltaHandlerType,
-                        RemoveClosureTypeToken,
-                        RemoveClosureMethodToken,
                         "GameInterface.Services.TroopRosters.Handlers.TroopRosterDeltaHandler+<>c__DisplayClass21_0",
                         "<Handle_NetworkRemoveZeroCounts>b__0",
-                        RemoveClosureOuterFieldToken,
-                        RemoveClosureRosterIdFieldToken,
-                        0,
+                        null,
                         "NetworkTroopRosterRemoveZeroCounts");
                     targets.Add(resolvedApplyClosure.Method);
                     targets.Add(resolvedRemoveClosure.Method);
 
-                    var objectManagerType = gameInterface.ManifestModule.ResolveType(
-                        ObjectManagerTypeToken);
-                    if (objectManagerType == null ||
-                        !objectManagerType.IsInterface ||
-                        !string.Equals(
-                            objectManagerType.FullName,
-                            "GameInterface.Services.ObjectManager.IObjectManager",
-                            StringComparison.Ordinal))
+                    var objectManagerType = ClientMapEventPositionAuthority.RequireType(
+                        gameInterface,
+                        "GameInterface.Services.ObjectManager.IObjectManager");
+                    if (!objectManagerType.IsInterface)
                     {
                         throw new InvalidDataException(
-                            "Released Coop IObjectManager type did not match its pinned ABI.");
+                            "Released Coop IObjectManager type is not an interface.");
                     }
-                    var resolvedContainsId = gameInterface.ManifestModule.ResolveMethod(
-                        ObjectManagerContainsIdToken) as MethodInfo;
-                    ClientMapEventPositionAuthority.RequireMethod(
-                        resolvedContainsId,
+                    var resolvedContainsId = ClientMapEventPositionAuthority.FindRequiredMethod(
                         objectManagerType,
                         "Contains",
                         typeof(bool),
@@ -1797,7 +1561,7 @@ namespace BCS.CoopBridge
                     if (!resolvedContainsId.IsPublic || !resolvedContainsId.IsAbstract)
                     {
                         throw new InvalidDataException(
-                            "Released Coop IObjectManager.Contains(string) did not match its pinned ABI.");
+                            "Released Coop IObjectManager.Contains(string) visibility is incompatible.");
                     }
 
                     payloadAccessors = resolvedPayloadAccessors;
@@ -1806,6 +1570,7 @@ namespace BCS.CoopBridge
                         resolvedAutoRegistryObjectManagerField;
                     deltaObjectManagerField = resolvedDeltaObjectManagerField;
                     objectManagerContainsId = resolvedContainsId;
+                    createClientInstanceMethod = createClientInstance;
                     applyClosureAccessor = resolvedApplyClosure;
                     removeClosureAccessor = resolvedRemoveClosure;
                     gameThreadProbe = ClientDiagnosticSupport.CreateGameThreadProbe(common);
@@ -1905,7 +1670,7 @@ namespace BCS.CoopBridge
 
                     installed = true;
                     ClientDiagnosticSupport.Write(
-                        "[BCS Coop Bridge] Installed pinned client TroopRoster sequence diagnostic.");
+                        "[BCS Coop Bridge] Installed client TroopRoster sequence diagnostic.");
                 }
                 catch (Exception exception)
                 {
@@ -1940,7 +1705,7 @@ namespace BCS.CoopBridge
             {
                 if (!installed || IsSaturated())
                     return;
-                var instanceId = ReadPayloadId(CreateClientInstanceToken, __0);
+                var instanceId = ReadPayloadId(createClientInstanceMethod, __0);
                 __state.RosterId = string.IsNullOrEmpty(instanceId)
                     ? instanceId
                     : "TroopRoster_" + instanceId;
@@ -1996,11 +1761,10 @@ namespace BCS.CoopBridge
             {
                 if (!installed || IsSaturated() || __originalMethod == null)
                     return;
-                var token = __originalMethod.MetadataToken;
                 string deltaType;
-                if (!deltaTypes.TryGetValue(token, out deltaType))
-                    throw new InvalidDataException("Unexpected TroopRoster delta hook token.");
-                var rosterId = ReadPayloadId(token, __0);
+                if (!deltaTypes.TryGetValue(__originalMethod, out deltaType))
+                    throw new InvalidDataException("Unexpected TroopRoster delta hook method.");
+                var rosterId = ReadPayloadId(__originalMethod, __0);
                 Record(
                     "delta-receive",
                     rosterId,
@@ -2026,13 +1790,13 @@ namespace BCS.CoopBridge
             {
                 if (!installed || IsSaturated() || __originalMethod == null)
                     return;
-                var accessor = __originalMethod.MetadataToken == ApplyClosureMethodToken
+                var accessor = MatchesMethod(__originalMethod, applyClosureAccessor.Method)
                     ? applyClosureAccessor
-                    : __originalMethod.MetadataToken == RemoveClosureMethodToken
+                    : MatchesMethod(__originalMethod, removeClosureAccessor.Method)
                         ? removeClosureAccessor
                         : null;
                 if (accessor == null)
-                    throw new InvalidDataException("Unexpected TroopRoster closure hook token.");
+                    throw new InvalidDataException("Unexpected TroopRoster closure hook method.");
                 var rosterId = accessor.ReadRosterId(__instance);
                 var handler = accessor.ReadOuter(__instance);
                 Record(
@@ -2064,7 +1828,7 @@ namespace BCS.CoopBridge
                 !method.IsPrivate)
             {
                 throw new InvalidDataException(
-                    "Released Coop AutoRegistryHandler.CreateClientInstance did not match its pinned ABI.");
+                    "Released Coop AutoRegistryHandler.CreateClientInstance has an incompatible signature.");
             }
             var parameters = method.GetParameters();
             if (parameters.Length != 1 ||
@@ -2075,7 +1839,7 @@ namespace BCS.CoopBridge
                     StringComparison.Ordinal))
             {
                 throw new InvalidDataException(
-                    "Released Coop AutoRegistryHandler.CreateClientInstance payload did not match its pinned ABI.");
+                    "Released Coop AutoRegistryHandler.CreateClientInstance payload has an incompatible signature.");
             }
             var messageType = parameters[0].ParameterType.GetGenericArguments()[0];
             if (!messageType.IsGenericType ||
@@ -2088,7 +1852,7 @@ namespace BCS.CoopBridge
                     openDeclaringType.GetGenericArguments()[0])
             {
                 throw new InvalidDataException(
-                    "Released Coop NetworkCreateInstance payload did not match its pinned ABI.");
+                    "Released Coop NetworkCreateInstance payload has an incompatible signature.");
             }
         }
 
@@ -2098,31 +1862,50 @@ namespace BCS.CoopBridge
         {
             if (method == null ||
                 method.DeclaringType != closedDeclaringType ||
-                method.MetadataToken != CreateClientInstanceToken ||
                 method.ContainsGenericParameters)
             {
                 throw new InvalidDataException(
-                    "Released Coop closed TroopRoster registry method did not match its pinned ABI.");
+                    "Released Coop closed TroopRoster registry method has an incompatible signature.");
             }
             RequireAutoRegistryCreateMethod(method, closedDeclaringType);
         }
 
-        private static MethodInfo FindClosedMethod(Type closedType, int token)
+        private static MethodInfo FindAutoRegistryCreateMethod(Type declaringType)
         {
-            return closedType.GetMethods(
-                    BindingFlags.Instance | BindingFlags.Static |
-                    BindingFlags.Public | BindingFlags.NonPublic |
-                    BindingFlags.DeclaredOnly)
-                .SingleOrDefault(method => method.MetadataToken == token);
+            var matches = declaringType.GetMethods(
+                    BindingFlags.Instance | BindingFlags.Public |
+                    BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                .Where(method => string.Equals(
+                    method.Name,
+                    "CreateClientInstance",
+                    StringComparison.Ordinal))
+                .ToArray();
+            if (matches.Length != 1)
+                throw new InvalidDataException(
+                    "Required Coop AutoRegistryHandler.CreateClientInstance did not resolve exactly once.");
+            return matches[0];
         }
 
-        private static FieldInfo FindClosedField(Type closedType, int token)
+        private static MethodInfo FindClosedMethod(Type closedType, string name)
         {
-            return closedType.GetFields(
+            var matches = closedType.GetMethods(
                     BindingFlags.Instance | BindingFlags.Static |
                     BindingFlags.Public | BindingFlags.NonPublic |
                     BindingFlags.DeclaredOnly)
-                .SingleOrDefault(field => field.MetadataToken == token);
+                .Where(method => string.Equals(method.Name, name, StringComparison.Ordinal))
+                .ToArray();
+            return matches.Length == 1 ? matches[0] : null;
+        }
+
+        private static FieldInfo FindClosedField(Type closedType, string name)
+        {
+            var matches = closedType.GetFields(
+                    BindingFlags.Instance | BindingFlags.Static |
+                    BindingFlags.Public | BindingFlags.NonPublic |
+                    BindingFlags.DeclaredOnly)
+                .Where(field => string.Equals(field.Name, name, StringComparison.Ordinal))
+                .ToArray();
+            return matches.Length == 1 ? matches[0] : null;
         }
 
         private static void RequireObjectManagerField(
@@ -2142,28 +1925,30 @@ namespace BCS.CoopBridge
                 !field.IsInitOnly)
             {
                 throw new InvalidDataException(
-                    "Released Coop object-manager field did not match its pinned ABI: " +
+                    "Released Coop object-manager field has an incompatible signature: " +
                     declaringType.FullName + "::" + name + ".");
             }
         }
 
         private static MethodInfo RequireDeltaMethod(
-            Assembly gameInterface,
             Type declaringType,
-            int token,
             string name)
         {
-            var method = gameInterface.ManifestModule.ResolveMethod(token) as MethodInfo;
+            var matches = declaringType.GetMethods(
+                    BindingFlags.Instance | BindingFlags.Public |
+                    BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                .Where(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal))
+                .ToArray();
+            var method = matches.Length == 1 ? matches[0] : null;
             if (method == null ||
                 method.DeclaringType != declaringType ||
-                !string.Equals(method.Name, name, StringComparison.Ordinal) ||
                 method.ReturnType != typeof(void) ||
                 method.IsStatic ||
                 !method.IsPrivate ||
                 method.GetParameters().Length != 1)
             {
                 throw new InvalidDataException(
-                    "Released Coop TroopRoster delta method did not match its pinned ABI: " + name + ".");
+                    "Released Coop TroopRoster delta method has an incompatible signature: " + name + ".");
             }
             return method;
         }
@@ -2172,12 +1957,11 @@ namespace BCS.CoopBridge
             MethodInfo method,
             string expectedMessageTypeName,
             Type expectedGenericArgument,
-            int idFieldToken,
             string idFieldName)
         {
             var parameters = method.GetParameters();
             if (parameters.Length != 1)
-                throw new InvalidDataException("Pinned Coop payload parameter count changed.");
+                throw new InvalidDataException("Required Coop payload parameter count changed.");
             var payloadType = parameters[0].ParameterType;
             if (!payloadType.IsGenericType ||
                 !string.Equals(
@@ -2185,7 +1969,7 @@ namespace BCS.CoopBridge
                     "Common.Messaging.MessagePayload`1",
                     StringComparison.Ordinal))
             {
-                throw new InvalidDataException("Pinned Coop payload type changed.");
+                throw new InvalidDataException("Required Coop payload type changed.");
             }
             var messageType = payloadType.GetGenericArguments()[0];
             if (expectedGenericArgument == null)
@@ -2195,7 +1979,7 @@ namespace BCS.CoopBridge
                         expectedMessageTypeName,
                         StringComparison.Ordinal))
                 {
-                    throw new InvalidDataException("Pinned Coop message type changed.");
+                    throw new InvalidDataException("Required Coop message type changed.");
                 }
             }
             else if (!messageType.IsGenericType ||
@@ -2206,7 +1990,7 @@ namespace BCS.CoopBridge
                      messageType.GetGenericArguments().Length != 1 ||
                      messageType.GetGenericArguments()[0] != expectedGenericArgument)
             {
-                throw new InvalidDataException("Pinned Coop generic message type changed.");
+                throw new InvalidDataException("Required Coop generic message type changed.");
             }
 
             var whatProperty = payloadType.GetProperty(
@@ -2220,14 +2004,17 @@ namespace BCS.CoopBridge
                 whatGetter.ReturnType != messageType ||
                 whatGetter.GetParameters().Length != 0)
             {
-                throw new InvalidDataException("Pinned Coop MessagePayload.What getter changed.");
+                throw new InvalidDataException("Required Coop MessagePayload.What getter changed.");
             }
 
             var idField = messageType.GetFields(
                     BindingFlags.Instance | BindingFlags.Static |
                     BindingFlags.Public | BindingFlags.NonPublic |
                     BindingFlags.DeclaredOnly)
-                .SingleOrDefault(field => field.MetadataToken == idFieldToken);
+                .SingleOrDefault(field => string.Equals(
+                    field.Name,
+                    idFieldName,
+                    StringComparison.Ordinal));
             if (idField == null ||
                 !string.Equals(idField.Name, idFieldName, StringComparison.Ordinal) ||
                 idField.FieldType != typeof(string) ||
@@ -2235,7 +2022,7 @@ namespace BCS.CoopBridge
                 !idField.IsPublic ||
                 !idField.IsInitOnly)
             {
-                throw new InvalidDataException("Pinned Coop payload identifier field changed.");
+                throw new InvalidDataException("Required Coop payload identifier field changed.");
             }
             return new PayloadIdAccessor(whatGetter, idField);
         }
@@ -2243,25 +2030,15 @@ namespace BCS.CoopBridge
         private static ClosureAccessor BuildClosureAccessor(
             Assembly gameInterface,
             Type deltaHandlerType,
-            int typeToken,
-            int methodToken,
             string typeName,
             string methodName,
-            int outerFieldToken,
-            int rosterIdFieldToken,
-            int delegateFieldToken,
+            string delegateFieldName,
             string fallbackDeltaType)
         {
-            var closureType = gameInterface.ManifestModule.ResolveType(typeToken);
-            if (closureType == null ||
-                !string.Equals(closureType.FullName, typeName, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    "Released Coop TroopRoster closure type did not match its pinned ABI.");
-            }
-            var method = gameInterface.ManifestModule.ResolveMethod(methodToken) as MethodInfo;
-            ClientMapEventPositionAuthority.RequireMethod(
-                method,
+            var closureType = ClientMapEventPositionAuthority.RequireType(
+                gameInterface,
+                typeName);
+            var method = ClientMapEventPositionAuthority.FindRequiredMethod(
                 closureType,
                 methodName,
                 typeof(void),
@@ -2272,7 +2049,10 @@ namespace BCS.CoopBridge
                     "Released Coop TroopRoster closure method visibility changed.");
             }
 
-            var outerField = gameInterface.ManifestModule.ResolveField(outerFieldToken);
+            var outerField = closureType.GetField(
+                "<>4__this",
+                BindingFlags.Instance | BindingFlags.Public |
+                BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
             if (outerField == null ||
                 outerField.DeclaringType != closureType ||
                 !string.Equals(outerField.Name, "<>4__this", StringComparison.Ordinal) ||
@@ -2283,8 +2063,10 @@ namespace BCS.CoopBridge
                 throw new InvalidDataException(
                     "Released Coop TroopRoster closure outer field changed.");
             }
-            var rosterIdField = gameInterface.ManifestModule.ResolveField(
-                rosterIdFieldToken);
+            var rosterIdField = closureType.GetField(
+                "rosterId",
+                BindingFlags.Instance | BindingFlags.Public |
+                BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
             if (rosterIdField == null ||
                 rosterIdField.DeclaringType != closureType ||
                 !string.Equals(rosterIdField.Name, "rosterId", StringComparison.Ordinal) ||
@@ -2297,13 +2079,15 @@ namespace BCS.CoopBridge
             }
 
             FieldInfo delegateField = null;
-            if (delegateFieldToken != 0)
+            if (!string.IsNullOrEmpty(delegateFieldName))
             {
-                delegateField = gameInterface.ManifestModule.ResolveField(
-                    delegateFieldToken);
+                delegateField = closureType.GetField(
+                    delegateFieldName,
+                    BindingFlags.Instance | BindingFlags.Public |
+                    BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
                 if (delegateField == null ||
                     delegateField.DeclaringType != closureType ||
-                    !string.Equals(delegateField.Name, "apply", StringComparison.Ordinal) ||
+                    !string.Equals(delegateField.Name, delegateFieldName, StringComparison.Ordinal) ||
                     delegateField.IsStatic ||
                     !delegateField.IsPublic ||
                     !typeof(Delegate).IsAssignableFrom(delegateField.FieldType))
@@ -2318,6 +2102,11 @@ namespace BCS.CoopBridge
                 rosterIdField,
                 delegateField,
                 fallbackDeltaType);
+        }
+
+        private static bool MatchesMethod(MethodBase first, MethodBase second)
+        {
+            return first != null && second != null && first.Equals(second);
         }
 
         private static bool IsExactlyInstalled(
@@ -2385,13 +2174,13 @@ namespace BCS.CoopBridge
             }
         }
 
-        private static string ReadPayloadId(int token, object payload)
+        private static string ReadPayloadId(MethodBase method, object payload)
         {
             if (payload == null)
                 return null;
             PayloadIdAccessor accessor;
             if (payloadAccessors == null ||
-                !payloadAccessors.TryGetValue(token, out accessor))
+                !payloadAccessors.TryGetValue(method, out accessor))
             {
                 throw new InvalidOperationException(
                     "TroopRoster diagnostic payload accessor is unavailable.");
@@ -2650,25 +2439,6 @@ namespace BCS.CoopBridge
         private const string BridgeIdPrefix = "BCS.CoopBridge.";
         private const string ConfigurationName = "bcs-coop-bridge.config";
         private const string BridgeAssemblyFileName = "BCS.CoopBridge.dll";
-#if BCS_SERVER
-        private const string ServerXmlOverlayObjectSystemHash =
-            "E080BAFA4DA67B76385B20E7898D0B1B197A28B92A731F7B54A8898665BC2C3B";
-        private const string ServerXmlOverlayApplyXsltIlHash =
-            "3A397E9A796458021A93B5A6393A1220D9DCA6D75B9860CFDAA5C267F01961D9";
-        private const int ServerXmlOverlayApplyXsltToken = 0x0600005E;
-        private static readonly Guid ServerXmlOverlayObjectSystemMvid =
-            new Guid("825bfb0e-b3c8-4816-a193-0f5ded0dd5d5");
-#endif
-        private static readonly string[] GameRuntimeFingerprintFiles =
-        {
-            "TaleWorlds.CampaignSystem.dll",
-            "TaleWorlds.Core.dll",
-            "TaleWorlds.Library.dll",
-            "TaleWorlds.Localization.dll",
-            "TaleWorlds.ModuleManager.dll",
-            "TaleWorlds.MountAndBlade.dll",
-            "TaleWorlds.ObjectSystem.dll"
-        };
         private static readonly object Sync = new object();
         private static bool validated;
         internal static void ValidateInstalledPackage()
@@ -2760,11 +2530,6 @@ namespace BCS.CoopBridge
                     {
                         if (gameVersionCompatibility != null)
                             throw new InvalidDataException("Duplicate game-version compatibility record.");
-                        if (!IsSha256(fields[3]) || !IsSha256(fields[4]))
-                        {
-                            throw new InvalidDataException(
-                                "Game-version compatibility runtime fingerprints must be SHA-256 hashes.");
-                        }
                         gameVersionCompatibility = new GameVersionCompatibilityRule(
                             Decode(fields[1]),
                             Decode(fields[2]),
@@ -2786,12 +2551,6 @@ namespace BCS.CoopBridge
                     if (fields.Length == 4 &&
                         string.Equals(fields[0], "CLIENT_ASSEMBLY_RESOLVE", StringComparison.Ordinal))
                     {
-                        if (!IsSha256(fields[3]) ||
-                            !string.Equals(
-                                fields[3],
-                                fields[3].ToUpperInvariant(),
-                                StringComparison.Ordinal))
-                            throw new InvalidDataException("Client assembly resolver requires a SHA-256 fingerprint.");
                         var resolverModuleId = Decode(fields[1]);
                         var resolverRelativePath = Decode(fields[2]).Replace('\\', '/');
                         if (string.IsNullOrWhiteSpace(resolverModuleId) ||
@@ -2814,10 +2573,9 @@ namespace BCS.CoopBridge
                         var resolverPath = ResolveSafeRelativePath(
                             resolverModule.RootPath,
                             resolverRelativePath);
-                        ValidatePinnedRegularFile(
+                        ValidateRequiredRegularFile(
                             resolverPath,
-                            fields[3],
-                            "Pinned client assembly resolver");
+                            "Client assembly resolver");
                         var resolverAssemblyName = AssemblyName.GetAssemblyName(resolverPath).Name;
                         var expectedAssemblyName = Path.GetFileNameWithoutExtension(resolverRelativePath);
                         if (!string.Equals(
@@ -2849,14 +2607,6 @@ namespace BCS.CoopBridge
                             throw new InvalidDataException(
                                 "Ignored visual-content file is linked: " + ignoredModuleId + "/" + ignoredRelativePath);
                         }
-#if BCS_SERVER
-                        if (!File.Exists(ignoredPath))
-                        {
-                            throw new InvalidDataException(
-                                "Ignored server-only content file is missing: " +
-                                ignoredModuleId + "/" + ignoredRelativePath);
-                        }
-#endif
                         HashSet<string> moduleIgnored;
                         if (!ignoredContent.TryGetValue(ignoredModuleId, out moduleIgnored))
                         {
@@ -2886,14 +2636,6 @@ namespace BCS.CoopBridge
                                 "Server file redirect is missing or linked: " +
                                 redirectModuleId + "/" + redirectRelativePath);
                         }
-                        var redirectHash = HashFile(redirectPath);
-                        if (!string.Equals(redirectHash, fields[3], StringComparison.Ordinal))
-                        {
-                            throw new InvalidDataException(
-                                "Server file redirect fingerprint mismatch for " +
-                                redirectModuleId + "/" + redirectRelativePath +
-                                ". Expected " + fields[3] + ", found " + redirectHash + ".");
-                        }
                         if (serverFileRedirects.Any(rule => string.Equals(
                                 Path.GetFileName(rule.SourcePath),
                                 Path.GetFileName(redirectPath),
@@ -2912,13 +2654,6 @@ namespace BCS.CoopBridge
                     if (fields.Length == 10 &&
                         string.Equals(fields[0], "SERVER_MAP_TERRAIN_SIZE", StringComparison.Ordinal))
                     {
-                        if (!IsUppercaseSha256(fields[3]) ||
-                            !IsUppercaseSha256(fields[7]) ||
-                            !IsUppercaseSha256(fields[9]))
-                        {
-                            throw new InvalidDataException(
-                                "Server map terrain size source, loader, and target require canonical SHA-256 fingerprints.");
-                        }
                         var terrainModuleId = Decode(fields[1]);
                         var terrainRelativePath = Decode(fields[2]).Replace('\\', '/');
                         var loaderAssemblyName = Decode(fields[6]);
@@ -2959,10 +2694,9 @@ namespace BCS.CoopBridge
                         var terrainSourcePath = ResolveSafeRelativePath(
                             terrainModule.RootPath,
                             terrainRelativePath);
-                        ValidatePinnedModuleRegularFile(
+                        ValidateRequiredModuleRegularFile(
                             terrainModule.RootPath,
                             terrainSourcePath,
-                            fields[3],
                             "Server map terrain size source");
                         var terrainRule = new ServerMapTerrainSizeRule(
                             terrainModuleId,
@@ -2993,9 +2727,6 @@ namespace BCS.CoopBridge
                         var overlayModuleId = Decode(fields[1]);
                         var sourceRelativePath = Decode(fields[2]).Replace('\\', '/');
                         var overlayRelativePath = Decode(fields[4]).Replace('\\', '/');
-                        if (!IsSha256(fields[3]) || !IsSha256(fields[5]))
-                            throw new InvalidDataException(
-                                "Server XML overlay fingerprints must be SHA-256 hashes.");
                         ModuleIdentity overlayModule;
                         if (!installed.TryGetValue(overlayModuleId, out overlayModule))
                             throw new InvalidDataException(
@@ -3014,14 +2745,12 @@ namespace BCS.CoopBridge
                                 "Server XML overlay is outside bcs-server-overlays: " +
                                 overlayRelativePath);
                         }
-                        ValidatePinnedRegularFile(
+                        ValidateRequiredRegularFile(
                             sourcePath,
-                            fields[3],
                             "Server XML overlay source");
 #if BCS_SERVER
-                        ValidatePinnedRegularFile(
+                        ValidateRequiredRegularFile(
                             overlayPath,
-                            fields[5],
                             "Server XML overlay payload");
 #endif
                         if (serverXmlOverlays.Any(rule => string.Equals(
@@ -3067,16 +2796,6 @@ namespace BCS.CoopBridge
                             throw new InvalidDataException("Required Coop bridge module is missing: " + contentModuleId);
                         HashSet<string> moduleIgnored;
                         ignoredContent.TryGetValue(contentModuleId, out moduleIgnored);
-                        var actualContentHash = BuildContentFingerprint(
-                            contentModuleId,
-                            contentModule.RootPath,
-                            moduleIgnored ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase));
-                        if (!string.Equals(actualContentHash, fields[2], StringComparison.Ordinal))
-                        {
-                            throw new InvalidDataException(
-                                "Coop bridge content fingerprint mismatch for " + contentModuleId +
-                                ". Expected " + fields[2] + ", found " + actualContentHash + ".");
-                        }
                         continue;
                     }
 
@@ -3086,7 +2805,6 @@ namespace BCS.CoopBridge
                     var moduleId = Decode(fields[1]);
                     var version = Decode(fields[2]);
                     var dllName = Decode(fields[3]);
-                    var expectedHash = fields[4];
                     ModuleIdentity module;
                     if (!installed.TryGetValue(moduleId, out module))
                         throw new InvalidDataException("Required Coop bridge module is missing: " + moduleId);
@@ -3108,13 +2826,11 @@ namespace BCS.CoopBridge
                     var dllPath = FindAssembly(module.RootPath, dllName);
                     if (dllPath == null)
                         throw new FileNotFoundException("Required Coop bridge assembly is missing: " + moduleId + "/" + dllName);
-                    var actualHash = HashFile(dllPath);
-                    if (!string.Equals(actualHash, expectedHash, StringComparison.Ordinal))
-                    {
-                        throw new InvalidDataException(
-                            "Coop bridge assembly fingerprint mismatch for " + moduleId + "/" + dllName +
-                            ". Expected " + expectedHash + ", found " + actualHash + ".");
-                    }
+                    ValidateRequiredModuleAssembly(
+                        module.RootPath,
+                        dllPath,
+                        dllName,
+                        "Required Coop bridge assembly");
                 }
 
                 ApplyClientAssemblyResolves(clientAssemblyResolves);
@@ -3204,33 +2920,6 @@ namespace BCS.CoopBridge
             if (string.Equals(value, "SERVER_SETTINGS_FALLBACK", StringComparison.Ordinal))
                 return AuthorityScope.ServerSettingsFallback;
             throw new InvalidDataException("Invalid authority-rule scope: " + value);
-        }
-
-        private static bool IsSha256(string value)
-        {
-            if (value == null || value.Length != 64)
-                return false;
-            foreach (var character in value)
-            {
-                if (!Uri.IsHexDigit(character))
-                    return false;
-            }
-            return true;
-        }
-
-        private static bool IsUppercaseSha256(string value)
-        {
-            if (value == null || value.Length != 64)
-                return false;
-            foreach (var character in value)
-            {
-                if (!((character >= '0' && character <= '9') ||
-                      (character >= 'A' && character <= 'F')))
-                {
-                    return false;
-                }
-            }
-            return true;
         }
 
         private static bool IsSafeAssemblySimpleName(string value)
@@ -3465,11 +3154,6 @@ namespace BCS.CoopBridge
             return FindAssembly(moduleRoot, dllName);
         }
 
-        internal static string HashFileForCompatibility(string path)
-        {
-            return HashFile(path);
-        }
-
         private static string FindAssembly(string moduleRoot, string dllName)
         {
             var bins = new[]
@@ -3563,7 +3247,7 @@ namespace BCS.CoopBridge
             ClientAssemblyResolver.Configure(rules);
             Console.WriteLine(
                 "[BCS Coop Bridge] Installed " + rules.Count +
-                " pinned client assembly resolver(s).");
+                " client assembly resolver(s).");
 #endif
         }
 
@@ -3586,29 +3270,19 @@ namespace BCS.CoopBridge
             if (!GameVersionCompatibilityPrefix.MatchesVersion(native.Version, expectedVersion))
             {
                 throw new InvalidDataException(
-                    "Pinned Bannerlord version mismatch. Expected " + expectedVersion +
+                    "Bannerlord version mismatch. Expected " + expectedVersion +
                     ", found " + native.Version + ".");
             }
 
             var runtimeDirectory = Path.GetDirectoryName(typeof(MBSubModuleBase).Assembly.Location);
             if (string.IsNullOrWhiteSpace(runtimeDirectory))
                 throw new InvalidOperationException("Bannerlord runtime directory could not be resolved.");
-            var expectedRuntimeHash = IsServerProcess()
-                ? rule.ServerRuntimeSha256
-                : rule.ClientRuntimeSha256;
-            var actualRuntimeHash = BuildGameRuntimeFingerprint(runtimeDirectory);
-            if (!string.Equals(actualRuntimeHash, expectedRuntimeHash, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    "Pinned Bannerlord runtime fingerprint mismatch. Expected " +
-                    expectedRuntimeHash + ", found " + actualRuntimeHash + ".");
-            }
-            RecordStartupProgress("Pinned game runtime fingerprint validated");
+            RecordStartupProgress("Game runtime directory validated");
 
             if (IsServerProcess())
             {
                 Console.WriteLine(
-                    "[BCS Coop Bridge] Pinned server game runtime validated for " +
+                    "[BCS Coop Bridge] Server game runtime version validated for " +
                     rule.ServerVersion + ".");
             }
 
@@ -3661,16 +3335,16 @@ namespace BCS.CoopBridge
                     prefix: new HarmonyMethod(prefix.DeclaringType, prefix.Name));
 #if BCS_SERVER
             if (IsServerProcess())
-                InstallPinnedClientOnlyModuleCompatibility(validatorType, bridgeId);
+                InstallSupportedClientOnlyModuleCompatibility(validatorType, bridgeId);
 #endif
             RecordStartupProgress("Harmony game-version patch completed");
             Console.WriteLine(
-                "[BCS Coop Bridge] Installed pinned Coop game-version compatibility: " +
+                "[BCS Coop Bridge] Installed version-scoped Coop game-version compatibility: " +
                 rule.ServerVersion + " -> " + rule.ClientVersion + ".");
         }
 
 #if BCS_SERVER
-        private static void InstallPinnedClientOnlyModuleCompatibility(
+        private static void InstallSupportedClientOnlyModuleCompatibility(
             Type validatorType,
             string bridgeId)
         {
@@ -3687,13 +3361,13 @@ namespace BCS.CoopBridge
                     "Validate with 3 parameter(s)");
             }
 
-            var prefix = typeof(PinnedClientOnlyModulePrefix).GetMethod(
+            var prefix = typeof(SupportedClientOnlyModulePrefix).GetMethod(
                 "Filter",
                 BindingFlags.Static | BindingFlags.Public);
             if (prefix == null)
             {
                 throw new MissingMethodException(
-                    typeof(PinnedClientOnlyModulePrefix).FullName,
+                    typeof(SupportedClientOnlyModulePrefix).FullName,
                     "Filter");
             }
 
@@ -3705,34 +3379,6 @@ namespace BCS.CoopBridge
                 "[BCS Coop Bridge] Installed exact client-only module compatibility.");
         }
 #endif
-
-        private static string BuildGameRuntimeFingerprint(string binDirectory)
-        {
-            using (var payload = new MemoryStream())
-            {
-                foreach (var fileName in GameRuntimeFingerprintFiles.OrderBy(value => value, StringComparer.Ordinal))
-                {
-                    var path = Path.Combine(binDirectory, fileName);
-                    if (!File.Exists(path) ||
-                        (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                    {
-                        throw new FileNotFoundException(
-                            "Pinned Bannerlord runtime file is missing or linked.",
-                            path);
-                    }
-                    var nameBytes = Encoding.UTF8.GetBytes(fileName);
-                    payload.Write(nameBytes, 0, nameBytes.Length);
-                    payload.WriteByte(0);
-                    using (var sha256 = SHA256.Create())
-                    using (var input = File.OpenRead(path))
-                    {
-                        var fileHash = sha256.ComputeHash(input);
-                        payload.Write(fileHash, 0, fileHash.Length);
-                    }
-                }
-                return Hash(payload.ToArray());
-            }
-        }
 
         private static void ApplyServerFileRedirects(
             IEnumerable<ServerFileRedirect> rules,
@@ -3783,7 +3429,7 @@ namespace BCS.CoopBridge
                     deserialize,
                     prefix: new HarmonyMethod(prefix.DeclaringType, prefix.Name));
             Console.WriteLine(
-                "[BCS Coop Bridge] Installed " + redirects.Length + " pinned server file redirect(s).");
+                "[BCS Coop Bridge] Installed " + redirects.Length + " server file redirect(s).");
         }
 
 #if BCS_SERVER
@@ -3804,24 +3450,22 @@ namespace BCS.CoopBridge
                     StringComparison.Ordinal))
             {
                 throw new InvalidDataException(
-                    "Server map terrain size requires the pinned DedicatedServer.Core loader and SandBox target.");
+                    "Server map terrain size requires the DedicatedServer.Core loader and SandBox target.");
             }
 
-            ResolvePinnedRuntimeAssembly(
+            ResolveRequiredRuntimeAssembly(
                 rule.LoaderAssemblyName,
-                rule.LoaderAssemblySha256,
                 true,
                 "Server map terrain size loader");
-            var targetAssembly = ResolvePinnedRuntimeAssembly(
+            var targetAssembly = ResolveRequiredRuntimeAssembly(
                 rule.TargetAssemblyName,
-                rule.TargetAssemblySha256,
                 false,
                 "Server map terrain size target");
             var mapSceneType = targetAssembly.GetType("SandBox.MapScene", false, false);
             if (mapSceneType == null)
             {
                 throw new TypeLoadException(
-                    "Pinned Bannerlord SandBox assembly does not contain SandBox.MapScene.");
+                    "Bannerlord SandBox assembly does not contain SandBox.MapScene.");
             }
             var targets = mapSceneType.GetMethods(
                     BindingFlags.Instance | BindingFlags.Public |
@@ -3857,15 +3501,14 @@ namespace BCS.CoopBridge
                         priority = Priority.First
                     });
             Console.WriteLine(
-                "[BCS Coop Bridge] Installed pinned server map terrain size " +
+                "[BCS Coop Bridge] Installed server map terrain size " +
                 rule.Width.ToString("R", CultureInfo.InvariantCulture) + "x" +
                 rule.Height.ToString("R", CultureInfo.InvariantCulture) + " from " +
                 rule.ModuleId + "/" + rule.RelativePath + ".");
         }
 
-        private static Assembly ResolvePinnedRuntimeAssembly(
+        private static Assembly ResolveRequiredRuntimeAssembly(
             string expectedName,
-            string expectedHash,
             bool requireAlreadyLoaded,
             string description)
         {
@@ -3941,13 +3584,6 @@ namespace BCS.CoopBridge
                     ", found " + fileIdentity + ".",
                     canonicalLocation);
             }
-            var actualHash = HashFile(canonicalLocation);
-            if (!string.Equals(actualHash, expectedHash, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    description + " fingerprint mismatch at " + canonicalLocation +
-                    ". Expected " + expectedHash + ", found " + actualHash + ".");
-            }
             return assembly;
         }
 
@@ -3990,7 +3626,7 @@ namespace BCS.CoopBridge
             if (prefix == null)
                 throw new MissingMethodException(typeof(ServerXmlOverlayPrefix).FullName, "Redirect");
 #if BCS_SERVER
-            var xsltLoader = ResolvePinnedServerXsltLoader(objectManagerType);
+            var xsltLoader = ResolveRequiredServerXsltLoader(objectManagerType);
 #endif
             var harmony = new Harmony(bridgeId + ".server-xml-overlays");
             harmony.Patch(
@@ -4021,146 +3657,41 @@ namespace BCS.CoopBridge
                     mergedLoader,
                     postfix: new HarmonyMethod(mergedAudit.DeclaringType, mergedAudit.Name));
             Console.WriteLine(
-                "[BCS Coop Bridge] Installed " + overlays.Length + " pinned server XML overlay(s).");
+                "[BCS Coop Bridge] Installed " + overlays.Length + " server XML overlay(s).");
         }
 
 #if BCS_SERVER
-        private static MethodInfo ResolvePinnedServerXsltLoader(Type objectManagerType)
+        private static MethodInfo ResolveRequiredServerXsltLoader(Type objectManagerType)
         {
-            var objectSystem = ResolvePinnedRuntimeAssembly(
+            var objectSystem = ResolveRequiredRuntimeAssembly(
                 "TaleWorlds.ObjectSystem",
-                ServerXmlOverlayObjectSystemHash,
                 true,
                 "Server XML overlay XSLT loader");
-            if (objectManagerType.Assembly != objectSystem ||
-                objectSystem.ManifestModule.ModuleVersionId != ServerXmlOverlayObjectSystemMvid)
+            if (objectManagerType.Assembly != objectSystem)
             {
                 throw new InvalidDataException(
-                    "Server XML overlay XSLT loader did not match its pinned ObjectSystem identity.");
+                    "Server XML overlay XSLT loader did not match its required ObjectSystem identity.");
             }
 
-            MethodInfo method;
-            try
-            {
-                method = objectSystem.ManifestModule.ResolveMethod(
-                    ServerXmlOverlayApplyXsltToken) as MethodInfo;
-            }
-            catch (ArgumentException exception)
-            {
-                throw new InvalidDataException(
-                    "Pinned server XML overlay ApplyXslt token could not be resolved.",
-                    exception);
-            }
-            var parameters = method == null ? new ParameterInfo[0] : method.GetParameters();
-            if (method == null ||
-                method.DeclaringType != objectManagerType ||
-                !string.Equals(method.Name, "ApplyXslt", StringComparison.Ordinal) ||
-                !method.IsPublic ||
-                !method.IsStatic ||
-                method.IsGenericMethodDefinition ||
-                method.ReturnType != typeof(XmlDocument) ||
-                parameters.Length != 2 ||
-                parameters[0].ParameterType != typeof(string) ||
-                parameters[1].ParameterType != typeof(XmlDocument))
+            var methods = objectManagerType.GetMethods(
+                    BindingFlags.Static | BindingFlags.Public |
+                    BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                .Where(method =>
+                    string.Equals(method.Name, "ApplyXslt", StringComparison.Ordinal) &&
+                    !method.IsGenericMethodDefinition &&
+                    method.ReturnType == typeof(XmlDocument) &&
+                    method.GetParameters().Select(parameter => parameter.ParameterType)
+                        .SequenceEqual(new[] { typeof(string), typeof(XmlDocument) }))
+                .ToArray();
+            if (methods.Length != 1 || !methods[0].IsPublic)
             {
                 throw new InvalidDataException(
-                    "Pinned server XML overlay ApplyXslt method did not match its exact ABI.");
+                    "Required server XML overlay ApplyXslt method did not match its unique signature.");
             }
 
-            var body = method.GetMethodBody();
-            var il = body == null ? null : body.GetILAsByteArray();
-            if (il == null ||
-                !string.Equals(Hash(il), ServerXmlOverlayApplyXsltIlHash, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    "Pinned server XML overlay ApplyXslt implementation changed.");
-            }
-            return method;
+            return methods[0];
         }
 #endif
-
-        private static string BuildContentFingerprint(
-            string moduleId,
-            string moduleRoot,
-            ISet<string> ignoredRelativePaths)
-        {
-            var files = new List<string>();
-            var pending = new Stack<string>();
-            pending.Push(moduleRoot);
-            while (pending.Count > 0)
-            {
-                var directory = pending.Pop();
-                foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
-                {
-                    var relative = MakeRelativePath(moduleRoot, entry).Replace('\\', '/');
-                    var attributes = File.GetAttributes(entry);
-                    if ((attributes & FileAttributes.ReparsePoint) != 0)
-                        throw new InvalidDataException("Linked module content is not safe to fingerprint: " + entry);
-                    if ((attributes & FileAttributes.Directory) != 0)
-                    {
-                        if (IsCoopRoleSpecificDirectory(moduleId, relative))
-                            continue;
-                        pending.Push(entry);
-                        continue;
-                    }
-
-                    if (string.Equals(relative, "SubModule.xml", StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    if (ignoredRelativePaths.Contains(relative))
-                        continue;
-                    var extension = Path.GetExtension(entry);
-                    if (string.Equals(extension, ".xml", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(extension, ".xslt", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(extension, ".xsl", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(extension, ".json", StringComparison.OrdinalIgnoreCase))
-                    {
-                        files.Add(entry);
-                    }
-                }
-            }
-
-            files.Sort(delegate(string left, string right)
-            {
-                return string.CompareOrdinal(
-                    MakeRelativePath(moduleRoot, left).Replace('\\', '/'),
-                    MakeRelativePath(moduleRoot, right).Replace('\\', '/'));
-            });
-            using (var payload = new MemoryStream())
-            {
-                foreach (var file in files)
-                {
-                    var relative = MakeRelativePath(moduleRoot, file).Replace('\\', '/');
-                    var relativeBytes = Encoding.UTF8.GetBytes(relative);
-                    payload.Write(relativeBytes, 0, relativeBytes.Length);
-                    payload.WriteByte(0);
-                    byte[] fileHash;
-                    using (var sha = SHA256.Create())
-                    using (var input = File.OpenRead(file))
-                        fileHash = sha.ComputeHash(input);
-                    payload.Write(fileHash, 0, fileHash.Length);
-                }
-                return Hash(payload.ToArray());
-            }
-        }
-
-        private static bool IsCoopRoleSpecificDirectory(string moduleId, string relativePath)
-        {
-            if (!string.Equals(moduleId, "Coop", StringComparison.OrdinalIgnoreCase) ||
-                relativePath.IndexOf('/') >= 0)
-            {
-                return false;
-            }
-            return string.Equals(relativePath, "DedicatedServer", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(relativePath, "GUI", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string MakeRelativePath(string root, string path)
-        {
-            var rootUri = new Uri(AppendDirectorySeparator(Path.GetFullPath(root)));
-            var pathUri = new Uri(Path.GetFullPath(path));
-            return Uri.UnescapeDataString(rootUri.MakeRelativeUri(pathUri).ToString())
-                .Replace('/', Path.DirectorySeparatorChar);
-        }
 
         private static string AppendDirectorySeparator(string path)
         {
@@ -4183,9 +3714,8 @@ namespace BCS.CoopBridge
             return path;
         }
 
-        private static void ValidatePinnedRegularFile(
+        private static void ValidateRequiredRegularFile(
             string path,
-            string expectedHash,
             string description)
         {
             if (!File.Exists(path) ||
@@ -4193,19 +3723,11 @@ namespace BCS.CoopBridge
             {
                 throw new FileNotFoundException(description + " is missing or linked.", path);
             }
-            var actualHash = HashFile(path);
-            if (!string.Equals(actualHash, expectedHash, StringComparison.Ordinal))
-            {
-                throw new InvalidDataException(
-                    description + " fingerprint mismatch. Expected " +
-                    expectedHash + ", found " + actualHash + ".");
-            }
         }
 
-        private static void ValidatePinnedModuleRegularFile(
+        private static void ValidateRequiredModuleRegularFile(
             string moduleRoot,
             string path,
-            string expectedHash,
             string description)
         {
             var canonicalRoot = Path.GetFullPath(moduleRoot).TrimEnd(
@@ -4236,7 +3758,38 @@ namespace BCS.CoopBridge
             if (!reachedRoot)
                 throw new InvalidDataException(description + " escaped its module: " + path);
 
-            ValidatePinnedRegularFile(canonicalPath, expectedHash, description);
+            ValidateRequiredRegularFile(canonicalPath, description);
+        }
+
+        private static void ValidateRequiredModuleAssembly(
+            string moduleRoot,
+            string path,
+            string dllName,
+            string description)
+        {
+            ValidateRequiredModuleRegularFile(moduleRoot, path, description);
+
+            string assemblyName;
+            try
+            {
+                assemblyName = AssemblyName.GetAssemblyName(path).Name;
+            }
+            catch (Exception exception) when (
+                exception is BadImageFormatException || exception is FileLoadException)
+            {
+                throw new InvalidDataException(
+                    description + " is not a readable managed assembly: " + path,
+                    exception);
+            }
+
+            var expectedName = Path.GetFileNameWithoutExtension(dllName);
+            if (string.IsNullOrWhiteSpace(assemblyName) ||
+                !string.Equals(assemblyName, expectedName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    description + " identity mismatch for " + dllName +
+                    ". Found " + (assemblyName ?? "<null>") + ".");
+            }
         }
 
         private static string Decode(string value)
@@ -4255,17 +3808,6 @@ namespace BCS.CoopBridge
         {
             using (var sha = SHA256.Create())
                 return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", string.Empty);
-        }
-
-        private static string HashFile(string path)
-        {
-            using (var stream = new FileStream(
-                       path,
-                       FileMode.Open,
-                       FileAccess.Read,
-                       FileShare.Read))
-            using (var sha = SHA256.Create())
-                return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", string.Empty);
         }
 
         private static string BuildBridgeIdentity(
@@ -4671,11 +4213,11 @@ namespace BCS.CoopBridge
                     StringComparison.OrdinalIgnoreCase))
             {
                 throw new FileLoadException(
-                    "Pinned client assembly resolved to an unexpected identity.",
+                    "Required client assembly resolved to an unexpected identity.",
                     path);
             }
             Console.WriteLine(
-                "[BCS Coop Bridge] Resolved pinned client assembly " +
+                "[BCS Coop Bridge] Resolved client assembly " +
                 requestedName + " from " + path + ".");
             return loaded;
         }
@@ -4790,7 +4332,7 @@ namespace BCS.CoopBridge
                 string.IsNullOrWhiteSpace(clientVersion))
             {
                 throw new InvalidDataException(
-                    "Pinned game-version compatibility has an empty version.");
+                    "Game-version compatibility has an empty version.");
             }
             expectedServerVersion = serverVersion;
             expectedClientVersion = clientVersion;
@@ -4813,7 +4355,7 @@ namespace BCS.CoopBridge
             error = null;
             __result = true;
             Console.WriteLine(
-                "[BCS Coop Bridge] Accepted pinned game-version pair " +
+                "[BCS Coop Bridge] Accepted supported game-version pair " +
                 serverVersion + " -> " + clientVersion + ".");
             return false;
         }
@@ -4855,7 +4397,7 @@ namespace BCS.CoopBridge
     }
 
 #if BCS_SERVER
-    internal static class PinnedClientOnlyModulePrefix
+    internal static class SupportedClientOnlyModulePrefix
     {
         private static readonly IDictionary<string, string> AllowedVersions =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -4895,7 +4437,7 @@ namespace BCS.CoopBridge
                 }
 
                 Console.WriteLine(
-                    "[BCS Coop Bridge] Accepted pinned client-only module " +
+                    "[BCS Coop Bridge] Accepted supported client-only module " +
                     module.Id + " " + actualVersion + ".");
                 return false;
             }).ToArray();

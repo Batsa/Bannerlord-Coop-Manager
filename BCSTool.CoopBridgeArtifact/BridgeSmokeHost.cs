@@ -133,7 +133,7 @@ internal static class BridgeSmokeHost
         var arguments = new object[] { server, client, null };
         var accepted = (bool)validate.Invoke(null, arguments);
         if (!accepted || arguments[2] != null)
-            throw new InvalidOperationException("Pinned released game-version pair was not accepted.");
+            throw new InvalidOperationException("Supported released game-version pair was not accepted.");
 
         var unsupportedServer = CreateModuleInfoArray(
             moduleInfo,
@@ -143,14 +143,14 @@ internal static class BridgeSmokeHost
         arguments = new object[] { unsupportedServer, client, null };
         accepted = (bool)validate.Invoke(null, arguments);
         if (accepted || string.IsNullOrWhiteSpace(arguments[2] as string))
-            throw new InvalidOperationException("Unpinned game-version pair bypassed Coop validation.");
+            throw new InvalidOperationException("Unsupported game-version pair bypassed Coop validation.");
 
         if (bridgePath.IndexOf(
                 "Win64_Shipping_Server",
                 StringComparison.OrdinalIgnoreCase) < 0)
         {
             Console.WriteLine(
-                "PASS: game-version adapter accepted only the exact pinned release pair.");
+                "PASS: game-version adapter accepted only the supported release pair.");
             return;
         }
 
@@ -181,7 +181,7 @@ internal static class BridgeSmokeHost
         if (!accepted || arguments[2] != null)
         {
             throw new InvalidOperationException(
-                "Pinned client-only Harmony module was not accepted.");
+                "Supported client-only Harmony module was not accepted.");
         }
 
         var unsupportedHarmony = CreateModuleInfo(
@@ -201,10 +201,10 @@ internal static class BridgeSmokeHost
         if (accepted || string.IsNullOrWhiteSpace(arguments[2] as string))
         {
             throw new InvalidOperationException(
-                "Unpinned client-only Harmony version bypassed Coop validation.");
+                "Unsupported client-only Harmony version bypassed Coop validation.");
         }
         Console.WriteLine(
-            "PASS: game-version and client-only-module adapters accepted only pinned releases.");
+            "PASS: game-version and client-only-module adapters accepted only supported releases.");
     }
 
     private static Array CreateModuleInfoArray(

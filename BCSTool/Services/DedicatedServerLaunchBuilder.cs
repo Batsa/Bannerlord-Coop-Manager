@@ -1,5 +1,4 @@
 using System.IO;
-using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace BCSTool.Services;
@@ -295,7 +294,7 @@ public sealed class DedicatedServerLaunchBuilder
             if (!Directory.Exists(directory) || entry.RequiredFiles.Count == 0)
             {
                 throw new InvalidDataException(
-                    $"Managed dependency directory is missing or has no pinned files: {directory}");
+                    $"Managed dependency directory is missing or has no required files: {directory}");
             }
 
             foreach (var required in entry.RequiredFiles)
@@ -303,8 +302,7 @@ public sealed class DedicatedServerLaunchBuilder
                 if (string.IsNullOrWhiteSpace(required.Name) ||
                     Path.IsPathRooted(required.Name) ||
                     required.Name.Contains(Path.DirectorySeparatorChar) ||
-                    required.Name.Contains(Path.AltDirectorySeparatorChar) ||
-                    required.Sha256.Length != 64)
+                    required.Name.Contains(Path.AltDirectorySeparatorChar))
                 {
                     throw new InvalidDataException(
                         $"Managed dependency file entry is unsafe: {required.Name}");
@@ -314,16 +312,8 @@ public sealed class DedicatedServerLaunchBuilder
                 if (!File.Exists(file))
                 {
                     throw new FileNotFoundException(
-                        $"Pinned managed dependency is missing: {file}",
+                        $"Required managed dependency is missing: {file}",
                         file);
-                }
-
-                using var input = File.OpenRead(file);
-                var actual = Convert.ToHexString(SHA256.HashData(input));
-                if (!actual.Equals(required.Sha256, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidDataException(
-                        $"Pinned managed dependency changed: {file} (SHA-256 {actual}).");
                 }
             }
 

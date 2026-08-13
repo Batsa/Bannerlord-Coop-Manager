@@ -346,11 +346,7 @@ try {
             foreach ($requiredFile in $directoryEntry.RequiredFiles) {
                 $requiredPath = Join-Path $managedDirectory $requiredFile.Name
                 if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
-                    throw "Pinned managed dependency is missing: $requiredPath"
-                }
-                $actualHash = Get-Sha256Hex ([IO.File]::ReadAllBytes($requiredPath))
-                if ($actualHash -ne $requiredFile.Sha256) {
-                    throw "Pinned managed dependency changed: $requiredPath"
+                    throw "Required managed dependency is missing: $requiredPath"
                 }
             }
             $searchDirectories.Add($managedDirectory)
@@ -685,7 +681,7 @@ try {
     $terrainMarkerCount = @(
         Select-String `
             -LiteralPath $OutputLog `
-            -Pattern 'Installed pinned server map terrain size 1696x1696' `
+            -Pattern 'Installed server map terrain size 1696x1696' `
             -SimpleMatch).Count
     $workshopEmptyCount = @(
         Select-String `

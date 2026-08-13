@@ -28,7 +28,7 @@ function Get-ModuleIdentity([string] $root) {
     return $id
 }
 
-function Copy-FingerprintSurface([string] $source, [string] $destination) {
+function Copy-CompatibilitySurface([string] $source, [string] $destination) {
     [System.IO.Directory]::CreateDirectory($destination) | Out-Null
     $sourceFull = [System.IO.Path]::GetFullPath($source)
     $pending = New-Object 'System.Collections.Generic.Stack[string]'
@@ -52,6 +52,8 @@ function Copy-FingerprintSurface([string] $source, [string] $destination) {
             $relative = $entry.Substring($sourcePrefix.Length)
             $extension = [System.IO.Path]::GetExtension($entry)
             $copy = $relative -eq 'SubModule.xml' -or
+                $relative -ieq 'SceneObj\Main_map\scene.xscene' -or
+                $relative -ieq 'ModuleData\DistanceCaches\settlements_distance_cache_Default.bin' -or
                 $extension -ieq '.xml' -or
                 $extension -ieq '.xslt' -or
                 $extension -ieq '.xsl' -or
@@ -83,6 +85,7 @@ try {
     [System.IO.Directory]::CreateDirectory($stagedServerBin) | Out-Null
     foreach ($runtimeFile in @(
         'default_new_game.sav',
+        'DedicatedServer.Core.dll',
         'TaleWorlds.CampaignSystem.dll',
         'TaleWorlds.Core.dll',
         'TaleWorlds.Library.dll',
@@ -102,11 +105,13 @@ try {
     }
     $executableDependencyIds = @(
         'Coop',
+        'Sandbox',
         'Bannerlord.Harmony',
         'Bannerlord.ButterLib',
         'Bannerlord.UIExtenderEx',
         'Bannerlord.MBOptionScreen'
     )
+    $moduleId = Get-ModuleIdentity $ModuleRoot
     foreach ($serverModule in Get-ChildItem -LiteralPath $ServerModulesRoot -Directory) {
         if (($serverModule.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
             continue
@@ -116,22 +121,23 @@ try {
             continue
         }
         $id = Get-ModuleIdentity $serverModule.FullName
+        if ($id -ieq $moduleId) {
+            continue
+        }
         $destination = Join-Path $stagedModules $id
         if ($executableDependencyIds -icontains $id) {
-            Copy-FingerprintSurface $serverModule.FullName $destination
+            Copy-CompatibilitySurface $serverModule.FullName $destination
         }
         else {
             [System.IO.Directory]::CreateDirectory($destination) | Out-Null
             [System.IO.File]::Copy($manifest, (Join-Path $destination 'SubModule.xml'), $false)
         }
     }
-
-    $moduleId = Get-ModuleIdentity $ModuleRoot
     $moduleDestination = Join-Path $stagedModules $moduleId
     if (Test-Path -LiteralPath $moduleDestination) {
         throw "Staging collision for module ID: $moduleId"
     }
-    Copy-FingerprintSurface $ModuleRoot $moduleDestination
+    Copy-CompatibilitySurface $ModuleRoot $moduleDestination
 
     if ([string]::IsNullOrWhiteSpace($RegressionDll)) {
         $RegressionDll = Join-Path $WorkspaceRoot 'BCSTool.RegressionTests\bin\Release\net10.0-windows\BCSTool.RegressionTests.dll'

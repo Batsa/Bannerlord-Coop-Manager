@@ -175,10 +175,10 @@ if (args is ["--metadata-callers", var callerAssemblyPath, var callerTokenText])
 
 if (args is ["--server-xml-overlay-abi", var objectSystemAssemblyPath, var bridgeAssemblyPath])
 {
-    VerifyPinnedServerXmlOverlayAbi(
+    VerifyServerXmlOverlayAbi(
         Path.GetFullPath(objectSystemAssemblyPath),
         File.ReadAllBytes(Path.GetFullPath(bridgeAssemblyPath)));
-    Console.WriteLine("PASS: pinned server XML overlay runtime redirects the exact ApplyXslt ABI.");
+    Console.WriteLine("PASS: server XML overlay runtime resolves the unique ApplyXslt signature.");
     return 0;
 }
 
@@ -277,7 +277,7 @@ if (args is ["--server-smoke", var smokeExecutable, var smokeSecondsText, var sm
     var port4200ArgumentCount = launchArguments.Count(argument =>
         argument.Equals("4200", StringComparison.Ordinal));
     const string terrainInstallMarker =
-        "[BCS Coop Bridge] Installed pinned server map terrain size 1696x1696 from " +
+        "[BCS Coop Bridge] Installed server map terrain size 1696x1696 from " +
         "Europe1700/SceneObj/Main_map/scene.xscene.";
     const string weatherEventStackPattern =
         "DefaultMapWeatherModel.GetWeatherEventInPosition";
@@ -459,22 +459,30 @@ Run("custom campaign code requires a bridge", TestCustomCampaignCodeCompatibilit
 Run("dependency version mismatch requires testing", TestDependencyVersionCompatibilityAnalysis);
 Run("compatibility XML parser rejects DTD content", TestCompatibilityAnalyzerRejectsDtd);
 Run("saved module profile becomes the real engine token", TestManagedModuleLaunchPlan);
-Run("managed dependency profile pins external official runtime", TestManagedDependencyProfile);
+Run("managed dependency profile requires external official runtime", TestManagedDependencyProfile);
 Run("managed resolver prioritizes exact dependency identity", TestManagedResolverPrefersExactIdentity);
 Run("managed resolver prioritizes released Coop server dependencies", TestManagedResolverPrefersCoopServerDependencies);
 Run("invalid enabled load order blocks server launch", TestInvalidManagedModuleLaunchPlan);
 Run("ConPTY quotes Windows arguments safely", TestConPtyArgumentQuoting);
 Run("managed engine console logging is lossless and rotated", TestServerConsoleLogWriter);
+Run("bridge installation recipe and start preflight are scoped", BridgeInstallationRegression.Run);
+Run("applied content-only module replans without pending state", TestAppliedContentModuleReplansAsNoOp);
 Run("content compatibility prepare and revert are lossless", TestContentCompatibilityPrepareAndRevert);
 Run("prepared module DLL unblock preserves assembly bytes", TestPreparedModuleDllUnblock);
+Run("prepared module DLL unblock restores markers on failure", TestPreparedModuleDllUnblockRollback);
+Run("failed compatibility finalization rolls back without a manifest", TestCompatibilityApplyRollsBackBeforeManifestPublication);
 Run("compatibility apply rejects files changed after preview", TestCompatibilityPlanRejectsConcurrentChange);
 Run("generic bridge package is deterministic and client-ready", TestGenericBridgePackage);
-Run("released Coop bridge fingerprints only cross-role assemblies", TestReleasedCoopRoleParity);
-Run("bridge game-version compatibility is exact-runtime pinned", TestBridgeGameVersionCompatibility);
-Run("bridge authority rules are fingerprint-bound", TestBridgeAuthorityRuleConfiguration);
-Run("bridge server file redirects are pinned", TestBridgeServerFileRedirectConfiguration);
-Run("bridge server XML overlays are source and payload pinned", TestBridgeServerXmlOverlayConfiguration);
-Run("bridge server map terrain size is source pinned and fail closed", TestBridgeServerMapTerrainSizeConfiguration);
+Run("released Coop bridge records only cross-role assemblies", TestReleasedCoopRoleParity);
+Run("bridge builder rejects linked module roots and bins", TestBridgeBuilderRejectsLinkedModulePaths);
+Run("bridge builder rejects module DLL identity mismatch", TestBridgeBuilderRejectsAssemblyIdentityMismatch);
+Run("bridge builder ignores native support DLLs", TestBridgeBuilderIgnoresNativeSupportDll);
+Run("non-Coop bridge records only declared DLLs", TestBridgeBuilderOmitsUndeclaredManagedSidecars);
+Run("bridge game-version compatibility is version-scoped", TestBridgeGameVersionCompatibility);
+Run("bridge authority rules are module-bound", TestBridgeAuthorityRuleConfiguration);
+Run("bridge server file redirects require safe existing sources", TestBridgeServerFileRedirectConfiguration);
+Run("bridge server XML overlays require safe source and payload", TestBridgeServerXmlOverlayConfiguration);
+Run("bridge server map terrain size is version-scoped and fail closed", TestBridgeServerMapTerrainSizeConfiguration);
 Run("bridge excludes campaign intervention", TestBridgeExcludesCampaignIntervention);
 Run("generic executable preparation projects DLL and creates bridge", TestGenericExecutablePrepareAndRevert);
 Run("prepared profile normalizes dependency order", TestPreparedProfileNormalizesDependencyOrder);
@@ -485,8 +493,6 @@ Run("EOE headless action projection uses native server animations", TestEurope17
 Run("EOE headless action types repair the bomb reload ID", TestEurope1700HeadlessActionTypeProjection);
 Run("EOE malformed trebuchet prefab receives exact syntax repair", TestEurope1700TrebuchetPrefabRepair);
 Run("EOE dedicated-server schema repairs are exact and fail closed", TestEurope1700SchemaRepairs);
-Run("EOE ClansResourceAdder config is pinned", TestEurope1700ClansResourceConfigPin);
-Run("EOE StoryMode pins accept IL-identical v1.4.7 binaries", TestEurope1700StoryModePins);
 Run("compatibility rules accept only verified Coop releases", TestSupportedReleasedCoopVersions);
 Run("campaign save discovery uses live client saves and hides backups", TestCampaignSaveDiscovery);
 Run("client campaign imports never overwrite server saves", TestClientSaveImport);
@@ -657,44 +663,32 @@ string DescribeTypeReference(MetadataReader metadata, TypeReference reference) =
 string DescribeTypeDefinition(MetadataReader metadata, TypeDefinition definition) =>
     metadata.GetString(definition.Namespace) + "." + metadata.GetString(definition.Name);
 
-void VerifyPinnedServerXmlOverlayAbi(string objectSystemPath, byte[] serverBridgeAssembly)
+void VerifyServerXmlOverlayAbi(string objectSystemPath, byte[] serverBridgeAssembly)
 {
-    const string expectedObjectSystemHash =
-        "E080BAFA4DA67B76385B20E7898D0B1B197A28B92A731F7B54A8898665BC2C3B";
-    const string expectedApplyXsltIlHash =
-        "3A397E9A796458021A93B5A6393A1220D9DCA6D75B9860CFDAA5C267F01961D9";
-    const int expectedObjectManagerToken = 0x02000008;
-    const int expectedApplyXsltToken = 0x0600005E;
-    var expectedMvid = new Guid("825bfb0e-b3c8-4816-a193-0f5ded0dd5d5");
-
     var objectSystemBytes = File.ReadAllBytes(objectSystemPath);
-    Assert(Convert.ToHexString(SHA256.HashData(objectSystemBytes)) == expectedObjectSystemHash,
-        "Pinned server TaleWorlds.ObjectSystem.dll hash changed.");
     using (var stream = new MemoryStream(objectSystemBytes, writable: false))
     using (var pe = new PEReader(stream))
     {
         var metadata = pe.GetMetadataReader();
-        Assert(metadata.GetGuid(metadata.GetModuleDefinition().Mvid) == expectedMvid,
-            "Pinned server TaleWorlds.ObjectSystem.dll MVID changed.");
-        var typeHandle = (TypeDefinitionHandle)MetadataTokens.Handle(expectedObjectManagerToken);
+        var typeHandles = metadata.TypeDefinitions.Where(handle =>
+            DescribeTypeDefinition(metadata, metadata.GetTypeDefinition(handle)) ==
+            "TaleWorlds.ObjectSystem.MBObjectManager").ToArray();
+        Assert(typeHandles.Length == 1,
+            "Server MBObjectManager type did not resolve exactly once by name.");
+        var typeHandle = typeHandles[0];
         var type = metadata.GetTypeDefinition(typeHandle);
-        Assert(DescribeTypeDefinition(metadata, type) == "TaleWorlds.ObjectSystem.MBObjectManager",
-            "Pinned server MBObjectManager type token changed.");
-        var methodHandle = (MethodDefinitionHandle)MetadataTokens.Handle(expectedApplyXsltToken);
-        var method = metadata.GetMethodDefinition(methodHandle);
-        Assert(type.GetMethods().Contains(methodHandle) &&
-               metadata.GetString(method.Name) == "ApplyXslt" &&
-               method.Attributes.HasFlag(MethodAttributes.Public) &&
-               method.Attributes.HasFlag(MethodAttributes.Static) &&
-               method.GetParameters().Count == 2 &&
-               Convert.ToHexString(metadata.GetBlobBytes(method.Signature)) ==
-               "00021280850E128085",
-            "Pinned server ApplyXslt token or public static two-parameter ABI changed.");
-        var body = pe.GetMethodBody(method.RelativeVirtualAddress);
-        var il = body.GetILBytes() ?? throw new InvalidDataException(
-            "Pinned server ApplyXslt method has no IL body.");
-        Assert(Convert.ToHexString(SHA256.HashData(il)) == expectedApplyXsltIlHash,
-            "Pinned server ApplyXslt implementation changed.");
+        var methods = type.GetMethods().Where(handle =>
+        {
+            var method = metadata.GetMethodDefinition(handle);
+            return metadata.GetString(method.Name) == "ApplyXslt" &&
+                   method.Attributes.HasFlag(MethodAttributes.Public) &&
+                   method.Attributes.HasFlag(MethodAttributes.Static) &&
+                   method.GetParameters().Count == 2 &&
+                   Convert.ToHexString(metadata.GetBlobBytes(method.Signature)) ==
+                   "00021280850E128085";
+        }).ToArray();
+        Assert(methods.Length == 1,
+            "Server ApplyXslt public static signature did not resolve exactly once.");
     }
 
     VerifyServerBridgeXsltRedirect(serverBridgeAssembly);
@@ -717,10 +711,10 @@ void VerifyServerBridgeXsltRedirect(byte[] serverBridgeAssembly)
         .ToArray();
     var resolveHandles = bridgeRuntime.GetMethods().Where(handle =>
             metadata.GetString(metadata.GetMethodDefinition(handle).Name) ==
-            "ResolvePinnedServerXsltLoader")
+            "ResolveRequiredServerXsltLoader")
         .ToArray();
     Assert(installHandles.Length == 1 && resolveHandles.Length == 1,
-        "Packaged server bridge omitted its pinned ApplyXslt overlay resolver.");
+        "Packaged server bridge omitted its signature-based ApplyXslt overlay resolver.");
     var installHandle = installHandles[0];
     var resolveHandle = resolveHandles[0];
     var install = metadata.GetMethodDefinition(installHandle);
@@ -729,25 +723,46 @@ void VerifyServerBridgeXsltRedirect(byte[] serverBridgeAssembly)
         "Packaged server XML-overlay installer has no IL body.");
     var calls = ReadInlineMethodTokens(il, metadata);
     Assert(calls.Count(token => token == MetadataTokens.GetToken(resolveHandle)) == 1,
-        "Packaged server XML-overlay installer does not resolve the pinned ApplyXslt target exactly once.");
+        "Packaged server XML-overlay installer does not resolve ApplyXslt by signature exactly once.");
+}
 
-    var fields = bridgeRuntime.GetFields().ToDictionary(
-        handle => metadata.GetString(metadata.GetFieldDefinition(handle).Name),
-        handle => handle,
-        StringComparer.Ordinal);
-    Assert(ReadMetadataInt32Constant(
-               metadata,
-               fields["ServerXmlOverlayApplyXsltToken"]) == 0x0600005E,
-        "Packaged server bridge pins the wrong ApplyXslt method token.");
-    Assert(ReadMetadataStringConstant(
-               metadata,
-               fields["ServerXmlOverlayObjectSystemHash"]) ==
-           "E080BAFA4DA67B76385B20E7898D0B1B197A28B92A731F7B54A8898665BC2C3B" &&
-           ReadMetadataStringConstant(
-               metadata,
-               fields["ServerXmlOverlayApplyXsltIlHash"]) ==
-           "3A397E9A796458021A93B5A6393A1220D9DCA6D75B9860CFDAA5C267F01961D9",
-        "Packaged server bridge pins the wrong ObjectSystem or ApplyXslt implementation hash.");
+void VerifyRuntimeModuleAssemblyValidation(byte[] bridgeAssembly)
+{
+    using var stream = new MemoryStream(bridgeAssembly, writable: false);
+    using var pe = new PEReader(stream);
+    var metadata = pe.GetMetadataReader();
+    var bridgeRuntimeHandle = metadata.TypeDefinitions.Single(handle =>
+        DescribeTypeDefinition(metadata, metadata.GetTypeDefinition(handle)) ==
+        "BCS.CoopBridge.BridgeRuntime");
+    var bridgeRuntime = metadata.GetTypeDefinition(bridgeRuntimeHandle);
+    MethodDefinitionHandle FindMethod(string name) => bridgeRuntime.GetMethods().Single(handle =>
+        metadata.GetString(metadata.GetMethodDefinition(handle).Name) == name);
+
+    var validatePackageHandle = FindMethod("ValidateInstalledPackage");
+    var validateAssemblyHandle = FindMethod("ValidateRequiredModuleAssembly");
+    var validateRegularFileHandle = FindMethod("ValidateRequiredModuleRegularFile");
+    var packageBody = pe.GetMethodBody(
+        metadata.GetMethodDefinition(validatePackageHandle).RelativeVirtualAddress);
+    var packageCalls = ReadInlineMethodTokens(
+        packageBody.GetILBytes() ?? throw new InvalidDataException(
+            "Packaged bridge validation has no IL body."),
+        metadata);
+    Assert(packageCalls.Count(token => token == MetadataTokens.GetToken(validateAssemblyHandle)) == 1,
+        "Runtime MODULE validation does not require module-contained managed assembly validation.");
+
+    var assemblyBody = pe.GetMethodBody(
+        metadata.GetMethodDefinition(validateAssemblyHandle).RelativeVirtualAddress);
+    var assemblyCalls = ReadInlineMethodTokens(
+        assemblyBody.GetILBytes() ?? throw new InvalidDataException(
+            "Packaged module-assembly validation has no IL body."),
+        metadata);
+    Assert(assemblyCalls.Contains(MetadataTokens.GetToken(validateRegularFileHandle)),
+        "Runtime module-assembly validation lost linked-ancestor containment checks.");
+    Assert(assemblyCalls.Any(token =>
+            DescribeMetadataToken(metadata, token).Contains(
+                "System.Reflection.AssemblyName::GetAssemblyName",
+                StringComparison.Ordinal)),
+        "Runtime module-assembly validation lost managed simple-identity inspection.");
 }
 
 IReadOnlyList<int> ReadInlineMethodTokens(byte[] bytes, MetadataReader metadata)
@@ -770,27 +785,6 @@ IReadOnlyList<int> ReadInlineMethodTokens(byte[] bytes, MetadataReader metadata)
             result.Add(BitConverter.ToInt32(bytes, operandOffset));
     }
     return result;
-}
-
-int ReadMetadataInt32Constant(MetadataReader metadata, FieldDefinitionHandle fieldHandle)
-{
-    var constantHandle = metadata.GetFieldDefinition(fieldHandle).GetDefaultValue();
-    Assert(!constantHandle.IsNil, "Expected bridge metadata integer constant is missing.");
-    var constant = metadata.GetConstant(constantHandle);
-    Assert(constant.TypeCode == ConstantTypeCode.Int32,
-        "Expected bridge metadata integer constant has the wrong type.");
-    return metadata.GetBlobReader(constant.Value).ReadInt32();
-}
-
-string ReadMetadataStringConstant(MetadataReader metadata, FieldDefinitionHandle fieldHandle)
-{
-    var constantHandle = metadata.GetFieldDefinition(fieldHandle).GetDefaultValue();
-    Assert(!constantHandle.IsNil, "Expected bridge metadata string constant is missing.");
-    var constant = metadata.GetConstant(constantHandle);
-    Assert(constant.TypeCode == ConstantTypeCode.String,
-        "Expected bridge metadata string constant has the wrong type.");
-    var reader = metadata.GetBlobReader(constant.Value);
-    return reader.ReadUTF16(reader.Length);
 }
 
 void TestCoopDependentModuleOrderValidation()
@@ -1182,7 +1176,7 @@ void TestEurope1700SchemaRepairs()
            mergedNpc.SelectNodes("//EquipmentSet[@equipmentType='Civilian']")?.Count == 345,
         "EOE merged NPC XSLT did not convert the exact legacy civilian=true semantics.");
     Assert(mergedNpc.SelectNodes("//EquipmentSet[@civilian='false']")?.Count == 1,
-        "EOE merged NPC XSLT changed an unpinned civilian=false value.");
+        "EOE merged NPC XSLT changed a civilian=false value outside its repair pattern.");
     Assert(mergedNpc.SelectNodes("//*[@slot='Cape' and @id='Item.bearskin']")?.Count == 0,
         "EOE merged NPC XSLT retained Bearskin Cape entries.");
 
@@ -1315,36 +1309,7 @@ void TestEurope1700SchemaRepairs()
         rejectedChangedInput = true;
     }
     Assert(rejectedChangedInput,
-        "EOE schema repair accepted an unpinned element count.");
-}
-
-void TestEurope1700ClansResourceConfigPin()
-{
-    var pinned = Convert.FromBase64String(
-        "PD94bWwgdmVyc2lvbj0iMS4wIj8+DQo8cGFyYW1zPg0KICAgIDxwYXJhbQ0KDQogICAg" +
-        "bGV2ZXJhZ2Vfb2ZfaW5mbHVlbmNlX2FkZF9mb3JfY2xhbj0iMTAwIg0KICAgIGFtb3Vu" +
-        "dF9vZl9hZGRlZF9pbmZsdWVuY2VfZm9yX2NsYW49IjEwMCINCiAgICBsZXZlcmFnZV9v" +
-        "Zl9nb2xkX2FkZF9mb3JfY2xhbl9tZW1iZXI9IjEwMDAwIg0KICAgIGFtb3VudF9vZl9h" +
-        "ZGRlZF9nb2xkX2Zvcl9jbGFuX21lbWJlcj0iMTAwMDAiDQoNCiAgICAvPg0KPC9wYXJh" +
-        "bXM+");
-    Assert(CoopCompatibilityPatcher.IsPinnedEurope1700ClansResourceConfig(pinned),
-        "EOE ClansResourceAdder config pin rejected the released v1.4.7.1 bytes.");
-    pinned[^1] ^= 1;
-    Assert(!CoopCompatibilityPatcher.IsPinnedEurope1700ClansResourceConfig(pinned),
-        "EOE ClansResourceAdder config pin accepted modified bytes.");
-}
-
-void TestEurope1700StoryModePins()
-{
-    Assert(CoopCompatibilityPatcher.IsPinnedEurope1700StoryModeHash(
-            "6149BAFFE6FAC3C53360006D2C7C601970515FC4587CB380373E0896E8BBE778"),
-        "EOE StoryMode pin rejected the pre-release v1.4.7 binary.");
-    Assert(CoopCompatibilityPatcher.IsPinnedEurope1700StoryModeHash(
-            "CC205186BCA26EA04197C543F06BFD14EC7CA8A94B559A3A2753921C4BB27EF0"),
-        "EOE StoryMode pin rejected the IL-identical public v1.4.7 binary.");
-    Assert(!CoopCompatibilityPatcher.IsPinnedEurope1700StoryModeHash(
-            new string('0', 64)),
-        "EOE StoryMode pin accepted an unknown binary.");
+        "EOE schema repair accepted an unexpected element count.");
 }
 
 void TestSupportedReleasedCoopVersions()
@@ -1819,20 +1784,22 @@ void TestManagedDependencyProfile()
             Assert(
                 searchDirectories.Split(Path.PathSeparator)
                     .Contains(externalDirectory, StringComparer.OrdinalIgnoreCase),
-                "Pinned external dependency directory was not added to the child resolver.");
+                "Required external dependency directory was not added to the child resolver.");
 
             File.WriteAllBytes(dependencyPath, [9, 9, 9]);
+            _ = builder.Build(executable, serverRoot);
+            File.Delete(dependencyPath);
+            var missingFileRejected = false;
             try
             {
                 _ = builder.Build(executable, serverRoot);
-                throw new InvalidOperationException("Changed managed dependency was accepted.");
             }
-            catch (InvalidDataException exception)
+            catch (FileNotFoundException)
             {
-                Assert(
-                    exception.Message.Contains("changed", StringComparison.OrdinalIgnoreCase),
-                    "Managed dependency hash failure did not identify the changed file.");
+                missingFileRejected = true;
             }
+            Assert(missingFileRejected,
+                "Managed dependency profile accepted a missing required file.");
         });
 }
 
@@ -2145,6 +2112,42 @@ void TestContentCompatibilityPrepareAndRevert()
         });
 }
 
+void TestAppliedContentModuleReplansAsNoOp()
+{
+    WithTemporaryModules(
+        (serverRoot, modulesDirectory) =>
+        {
+            CreateModule(modulesDirectory, "Native", "v1.4.7");
+            CreateModule(modulesDirectory, "Coop", "v0.1.1", ["Native"]);
+            CreateModule(
+                modulesDirectory,
+                "ReplanContentPack",
+                "v1.0.0",
+                ["Native"],
+                contentXml: "<Items><Item id=\"replan_item\" /></Items>");
+            var scanner = new ModuleScanner();
+            var modules = scanner.Scan(modulesDirectory);
+            var selected = modules.Single(module => module.Id == "ReplanContentPack");
+            var patcher = new CoopCompatibilityPatcher();
+            var initialPlan = patcher.CreatePlan(selected, modules, serverRoot);
+            Assert(initialPlan.CanApply, initialPlan.Summary);
+            var applied = patcher.Apply(initialPlan);
+
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                modules = scanner.Scan(modulesDirectory);
+                selected = modules.Single(module => module.Id == "ReplanContentPack");
+                var noOpPlan = patcher.CreatePlan(selected, modules, serverRoot);
+                Assert(noOpPlan.Changes.Count == 0,
+                    "An unchanged applied content-only module produced another compatibility change.");
+                Assert(patcher.PendingPlanCount == 0,
+                    "No-op compatibility replan retained private pending state.");
+            }
+
+            patcher.Revert(applied.ManifestPath);
+        });
+}
+
 void TestPreparedModuleDllUnblock()
 {
     WithTemporaryModules(
@@ -2170,6 +2173,68 @@ void TestPreparedModuleDllUnblock()
             Assert(!File.Exists(zoneIdentifier), "Zone.Identifier remained after unblocking.");
             Assert(File.ReadAllBytes(assemblyPath).SequenceEqual(assemblyBytes),
                 "Unblocking changed the assembly bytes.");
+        });
+}
+
+void TestPreparedModuleDllUnblockRollback()
+{
+    WithTemporaryModules(
+        (serverRoot, modulesDirectory) =>
+        {
+            var modulePath = CreateModule(modulesDirectory, "BlockedRollbackModule", "v1.0.0");
+            var bin = Path.Combine(modulePath, "bin", "Win64_Shipping_Server");
+            Directory.CreateDirectory(bin);
+            var firstAssembly = Path.Combine(bin, "01-First.dll");
+            var lockedAssembly = Path.Combine(bin, "02-Locked.dll");
+            File.WriteAllBytes(firstAssembly, [0x4D, 0x5A, 0x01]);
+            File.WriteAllBytes(lockedAssembly, [0x4D, 0x5A, 0x02]);
+            var firstZone = firstAssembly + ":Zone.Identifier";
+            var lockedZone = lockedAssembly + ":Zone.Identifier";
+            var firstZoneBytes = System.Text.Encoding.UTF8.GetBytes(
+                "[ZoneTransfer]\r\nZoneId=3\r\nFirst=1\r\n");
+            var lockedZoneBytes = System.Text.Encoding.UTF8.GetBytes(
+                "[ZoneTransfer]\r\nZoneId=3\r\nLocked=1\r\n");
+            File.WriteAllBytes(firstZone, firstZoneBytes);
+            File.WriteAllBytes(lockedZone, lockedZoneBytes);
+
+            try
+            {
+                _ = new CoopCompatibilityPatcher().UnblockPreparedModuleAssemblies(
+                    serverRoot,
+                    ["BlockedRollbackModule", "MissingEnabledModule"]);
+                throw new InvalidOperationException("Missing enabled module was unexpectedly accepted.");
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // Expected: every enabled module is validated before the first ADS delete.
+            }
+            Assert(File.ReadAllBytes(firstZone).SequenceEqual(firstZoneBytes) &&
+                   File.ReadAllBytes(lockedZone).SequenceEqual(lockedZoneBytes),
+                "Prevalidation failure removed or changed an earlier Zone.Identifier.");
+
+            using var heldMarker = new FileStream(
+                lockedZone,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read);
+            try
+            {
+                _ = new CoopCompatibilityPatcher().UnblockPreparedModuleAssemblies(
+                    serverRoot,
+                    ["BlockedRollbackModule"]);
+                throw new InvalidOperationException("Locked blocked-file marker was unexpectedly removed.");
+            }
+            catch (IOException)
+            {
+                // Expected: the held ADS allows validation reads but denies deletion.
+            }
+
+            Assert(File.Exists(firstZone) &&
+                   File.ReadAllBytes(firstZone).SequenceEqual(firstZoneBytes),
+                "Earlier Zone.Identifier bytes were not restored after a later unblock failure.");
+            Assert(File.Exists(lockedZone) &&
+                   File.ReadAllBytes(lockedZone).SequenceEqual(lockedZoneBytes),
+                "Locked Zone.Identifier bytes changed during failed unblocking.");
         });
 }
 
@@ -2244,29 +2309,15 @@ void TestGenericBridgePackage()
                 inputs,
                 clientAssemblyResolves: [resolver]);
             Assert(resolvedPackage.ClientAssemblyResolves.SequenceEqual([resolver]),
-                "Bridge package omitted its pinned client assembly resolver.");
+                "Bridge package omitted its client assembly resolver.");
             Assert(System.Text.Encoding.UTF8.GetString(resolvedPackage.Configuration)
                     .Contains("CLIENT_ASSEMBLY_RESOLVE|", StringComparison.Ordinal),
-                "Bridge configuration omitted its pinned client assembly resolver.");
-            var rejectedResolverHash = false;
-            try
-            {
-                packageBuilder.Build(
-                    inputs,
-                    clientAssemblyResolves:
-                    [
-                        resolver with
-                        {
-                            Sha256 = new string('0', 64)
-                        }
-                    ]);
-            }
-            catch (InvalidDataException)
-            {
-                rejectedResolverHash = true;
-            }
-            Assert(rejectedResolverHash,
-                "Bridge accepted a client assembly resolver with a mismatched fingerprint.");
+                "Bridge configuration omitted its client assembly resolver.");
+            var resolverWithoutHash = packageBuilder.Build(
+                inputs,
+                clientAssemblyResolves: [resolver with { Sha256 = string.Empty }]);
+            Assert(resolverWithoutHash.ClientAssemblyResolves.Count == 1,
+                "Bridge rejected an identity-valid client assembly resolver without a byte pin.");
 
             Assert(first.ModuleId == second.ModuleId,
                 "Bridge ID changed when equivalent inputs were reordered.");
@@ -2365,7 +2416,7 @@ void TestGenericBridgePackage()
                        !clientReferences.Contains("GameInterface"),
                     "Client bridge runtime regained an early Coop support-assembly reference.");
                 Assert(serverTypes.Contains("BCS.CoopBridge.ServerMapTerrainSizePrefix"),
-                    "Server bridge runtime lost its pinned map terrain size prefix.");
+            "Server bridge runtime lost its map terrain size prefix.");
                 Assert(!clientTypes.Contains("BCS.CoopBridge.ServerMapTerrainSizePrefix"),
                     "Client bridge runtime contains the server-only map terrain size prefix.");
                 Assert(!clientReferences.Contains("SandBox") &&
@@ -2375,13 +2426,15 @@ void TestGenericBridgePackage()
                        clientCompatibilityMethods.Contains("BeforeGetNumberOfInvolvedMen"),
                     "Client bridge runtime lost an EOE invalid-map-event-side guard.");
             }
+            VerifyRuntimeModuleAssemblyValidation(first.Assembly);
+            VerifyRuntimeModuleAssemblyValidation(first.ClientAssembly);
 
             File.WriteAllText(
                 Path.Combine(contentPath, "ModuleData", "content.xml"),
                 "<Items><Item id=\"content_b\" /></Items>");
             var changed = packageBuilder.Build(inputs);
-            Assert(first.ModuleId != changed.ModuleId,
-                "Bridge ID did not change when gameplay content changed.");
+            Assert(first.ModuleId == changed.ModuleId,
+                "Gameplay content bytes changed the version-scoped bridge ID.");
             var excludedChanged = packageBuilder.Build(
                 inputs,
                 contentExclusions: [visualExclusion]);
@@ -2458,29 +2511,167 @@ void TestReleasedCoopRoleParity()
         var clientBin = Path.Combine(releaseRoot, "bin", "Win64_Shipping_Client");
         Directory.CreateDirectory(serverBin);
         Directory.CreateDirectory(clientBin);
-        File.WriteAllBytes(Path.Combine(serverBin, "Coop.dll"), [1, 2, 3]);
-        File.WriteAllBytes(Path.Combine(clientBin, "Coop.dll"), [1, 2, 3]);
-        File.WriteAllBytes(Path.Combine(serverBin, "0Harmony.dll"), [4]);
-        File.WriteAllBytes(Path.Combine(clientBin, "0Harmony.dll"), [5]);
-        File.WriteAllBytes(Path.Combine(serverBin, "ServerOnly.dll"), [6]);
-        File.WriteAllBytes(Path.Combine(clientBin, "ClientOnly.dll"), [7]);
+        WriteManagedAssembly(Path.Combine(serverBin, "Coop.dll"), "Coop");
+        WriteManagedAssembly(Path.Combine(clientBin, "Coop.dll"), "Coop");
+        using (var stream = new FileStream(
+                   Path.Combine(clientBin, "Coop.dll"),
+                   FileMode.Append,
+                   FileAccess.Write,
+                   FileShare.None))
+        {
+            stream.WriteByte(0x42);
+        }
+        WriteManagedAssembly(Path.Combine(serverBin, "0Harmony.dll"), "0Harmony");
+        WriteManagedAssembly(Path.Combine(clientBin, "0Harmony.dll"), "0Harmony");
+        WriteManagedAssembly(Path.Combine(serverBin, "ServerOnly.dll"), "ServerOnly");
+        WriteManagedAssembly(Path.Combine(clientBin, "ClientOnly.dll"), "ClientOnly");
 
         var coop = new ModuleScanner().Scan(modulesDirectory).Single();
         var package = new CoopBridgePackageBuilder().Build([coop]);
         var names = package.ModuleRecords.Select(record => record.DllName).ToArray();
         Assert(names.Contains("Coop.dll", StringComparer.OrdinalIgnoreCase),
-            "Bridge omitted a byte-identical Coop cross-role assembly.");
+            "Bridge rejected byte-different Coop role assemblies with the same managed identity.");
         Assert(!names.Contains("0Harmony.dll", StringComparer.OrdinalIgnoreCase),
-            "Bridge fingerprinted Coop's role-specific Harmony support copy.");
+            "Bridge included Coop's role-specific Harmony support copy.");
         Assert(!names.Contains("ServerOnly.dll", StringComparer.OrdinalIgnoreCase),
-            "Bridge fingerprinted a Coop server-only support assembly on clients.");
+            "Bridge included a Coop server-only support assembly on clients.");
         Assert(!names.Contains("ClientOnly.dll", StringComparer.OrdinalIgnoreCase),
-            "Bridge fingerprinted a Coop client-only support assembly on servers.");
+            "Bridge included a Coop client-only support assembly on servers.");
     }
     finally
     {
         Directory.Delete(releaseRoot, recursive: true);
     }
+}
+
+void TestBridgeBuilderRejectsLinkedModulePaths()
+{
+    var root = Path.Combine(Path.GetTempPath(), "bcs-bridge-link-regression-" + Guid.NewGuid().ToString("N"));
+    var modulesDirectory = Path.Combine(root, "Modules");
+    var targetsDirectory = Path.Combine(root, "targets");
+    Directory.CreateDirectory(modulesDirectory);
+    Directory.CreateDirectory(targetsDirectory);
+    string? linkedRoot = null;
+    string? linkedBin = null;
+    try
+    {
+        var rootTarget = CreateModule(targetsDirectory, "LinkedRootMod", "v1.0.0", declaredDll: "LinkedRootMod.dll");
+        var rootTargetBin = Path.Combine(rootTarget, "bin", "Win64_Shipping_Client");
+        Directory.CreateDirectory(rootTargetBin);
+        WriteManagedAssembly(Path.Combine(rootTargetBin, "LinkedRootMod.dll"), "LinkedRootMod");
+        linkedRoot = Path.Combine(modulesDirectory, "LinkedRootMod");
+        CreateDirectoryJunction(linkedRoot, rootTarget);
+        var linkedRootModule = new ModuleScanner().Scan(modulesDirectory).Single();
+        AssertThrowsInvalidData(
+            () => new CoopBridgePackageBuilder().Build([linkedRootModule]),
+            "Bridge builder accepted a linked module root.");
+        Directory.Delete(linkedRoot);
+        linkedRoot = null;
+
+        var binLinkedModuleRoot = CreateModule(
+            modulesDirectory,
+            "LinkedBinMod",
+            "v1.0.0",
+            declaredDll: "LinkedBinMod.dll");
+        var binTarget = Path.Combine(targetsDirectory, "linked-bin");
+        var shippingTarget = Path.Combine(binTarget, "Win64_Shipping_Client");
+        Directory.CreateDirectory(shippingTarget);
+        WriteManagedAssembly(Path.Combine(shippingTarget, "LinkedBinMod.dll"), "LinkedBinMod");
+        linkedBin = Path.Combine(binLinkedModuleRoot, "bin");
+        CreateDirectoryJunction(linkedBin, binTarget);
+        var linkedBinModule = new ModuleScanner().Scan(modulesDirectory).Single();
+        AssertThrowsInvalidData(
+            () => new CoopBridgePackageBuilder().Build([linkedBinModule]),
+            "Bridge builder accepted a linked bin ancestor.");
+    }
+    finally
+    {
+        if (linkedBin is not null && Directory.Exists(linkedBin))
+            Directory.Delete(linkedBin);
+        if (linkedRoot is not null && Directory.Exists(linkedRoot))
+            Directory.Delete(linkedRoot);
+        Directory.Delete(root, recursive: true);
+    }
+}
+
+void TestBridgeBuilderRejectsAssemblyIdentityMismatch()
+{
+    WithTemporaryModules(
+        (_, modulesDirectory) =>
+        {
+            var moduleRoot = CreateModule(
+                modulesDirectory,
+                "ExpectedModule",
+                "v1.0.0",
+                declaredDll: "ExpectedModule.dll");
+            var bin = Path.Combine(moduleRoot, "bin", "Win64_Shipping_Client");
+            Directory.CreateDirectory(bin);
+            WriteManagedAssembly(Path.Combine(bin, "ExpectedModule.dll"), "DifferentIdentity");
+            var module = new ModuleScanner().Scan(modulesDirectory).Single();
+            AssertThrowsInvalidData(
+                () => new CoopBridgePackageBuilder().Build([module]),
+                "Bridge builder accepted a module DLL whose managed identity did not match its file name.");
+        });
+}
+
+void TestBridgeBuilderIgnoresNativeSupportDll()
+{
+    WithTemporaryModules(
+        (_, modulesDirectory) =>
+        {
+            var moduleRoot = CreateModule(
+                modulesDirectory,
+                "ManagedModule",
+                "v1.0.0",
+                declaredDll: "ManagedModule.dll");
+            var bin = Path.Combine(moduleRoot, "bin", "Win64_Shipping_Client");
+            Directory.CreateDirectory(bin);
+            WriteManagedAssembly(Path.Combine(bin, "ManagedModule.dll"), "ManagedModule");
+            File.WriteAllBytes(Path.Combine(bin, "native_support.dll"), [0x4D, 0x5A, 0x01, 0x02]);
+            var module = new ModuleScanner().Scan(modulesDirectory).Single();
+
+            var package = new CoopBridgePackageBuilder().Build([module]);
+            Assert(package.ModuleRecords.Any(record => record.DllName == "ManagedModule.dll") &&
+                   package.ModuleRecords.All(record => record.DllName != "native_support.dll"),
+                "Bridge builder rejected or recorded a native support DLL as managed.");
+        });
+}
+
+void TestBridgeBuilderOmitsUndeclaredManagedSidecars()
+{
+    WithTemporaryModules(
+        (_, modulesDirectory) =>
+        {
+            var moduleRoot = CreateModule(
+                modulesDirectory,
+                "DeclaredOnlyModule",
+                "v1.0.0",
+                declaredDll: "DeclaredOnlyModule.dll");
+            var bin = Path.Combine(moduleRoot, "bin", "Win64_Shipping_Client");
+            Directory.CreateDirectory(bin);
+            WriteManagedAssembly(
+                Path.Combine(bin, "DeclaredOnlyModule.dll"),
+                "DeclaredOnlyModule");
+            var module = new ModuleScanner().Scan(modulesDirectory).Single();
+            var builder = new CoopBridgePackageBuilder();
+            var baseline = builder.Build([module]);
+
+            var sidecar = Path.Combine(bin, "LooseSidecar.dll");
+            WriteManagedAssembly(sidecar, "LooseSidecar");
+            var withSidecar = builder.Build([module]);
+            File.AppendAllBytes(sidecar, [0x42]);
+            var withChangedSidecar = builder.Build([module]);
+
+            Assert(withSidecar.ModuleRecords.Count == 1 &&
+                   withSidecar.ModuleRecords[0].DllName == "DeclaredOnlyModule.dll",
+                "Bridge recorded an undeclared managed sidecar as a runtime requirement.");
+            Assert(baseline.ModuleId == withSidecar.ModuleId &&
+                   withSidecar.ModuleId == withChangedSidecar.ModuleId,
+                "Undeclared managed sidecar bytes changed the bridge ID.");
+            Assert(baseline.Configuration.SequenceEqual(withSidecar.Configuration) &&
+                   withSidecar.Configuration.SequenceEqual(withChangedSidecar.Configuration),
+                "Undeclared managed sidecar bytes changed bridge configuration.");
+        });
 }
 
 void TestBridgeGameVersionCompatibility()
@@ -2505,23 +2696,9 @@ void TestBridgeGameVersionCompatibility()
                 "Game-version compatibility rule was omitted from the package model.");
             Assert(configuration.Contains("GAME_VERSION_COMPAT|", StringComparison.Ordinal),
                 "Game-version compatibility rule was omitted from bridge configuration.");
-            Assert(configuration.Contains(new string('A', 64), StringComparison.Ordinal) &&
-                   configuration.Contains(new string('B', 64), StringComparison.Ordinal),
-                "Game-version compatibility did not pin both role-specific runtime digests.");
-
-            var rejectedInvalidDigest = false;
-            try
-            {
-                _ = packageBuilder.Build(
-                    [coop],
-                    gameVersionCompatibility: rule with { ClientRuntimeSha256 = "not-a-hash" });
-            }
-            catch (InvalidDataException)
-            {
-                rejectedInvalidDigest = true;
-            }
-            Assert(rejectedInvalidDigest,
-                "Bridge accepted an invalid client runtime digest for game-version compatibility.");
+            Assert(!configuration.Contains(new string('A', 64), StringComparison.Ordinal) &&
+                   !configuration.Contains(new string('B', 64), StringComparison.Ordinal),
+                "Game-version compatibility retained role-specific runtime byte pins.");
         });
 }
 
@@ -2542,10 +2719,20 @@ void TestGenericExecutablePrepareAndRevert()
             var serverBin = Path.Combine(modulePath, "bin", "Win64_Shipping_Server");
             Directory.CreateDirectory(clientBin);
             Directory.CreateDirectory(serverBin);
-            var originalDll = new byte[] { 1, 4, 7, 9 };
-            var staleServerDll = new byte[] { 9, 7, 4, 1 };
-            File.WriteAllBytes(Path.Combine(clientBin, "ExecutableMod.dll"), originalDll);
-            File.WriteAllBytes(Path.Combine(serverBin, "ExecutableMod.dll"), staleServerDll);
+            var clientDll = Path.Combine(clientBin, "ExecutableMod.dll");
+            var serverDll = Path.Combine(serverBin, "ExecutableMod.dll");
+            WriteManagedAssembly(clientDll, "ExecutableMod");
+            WriteManagedAssembly(serverDll, "ExecutableMod");
+            using (var stream = new FileStream(
+                       serverDll,
+                       FileMode.Append,
+                       FileAccess.Write,
+                       FileShare.None))
+            {
+                stream.WriteByte(0x42);
+            }
+            var originalDll = File.ReadAllBytes(clientDll);
+            var staleServerDll = File.ReadAllBytes(serverDll);
 
             var modules = new ModuleScanner().Scan(modulesDirectory);
             var selected = modules.Single(module => module.Id == "ExecutableMod");
@@ -2556,7 +2743,6 @@ void TestGenericExecutablePrepareAndRevert()
                 "Executable mod did not select the generic bridge rule.");
 
             var result = patcher.Apply(plan);
-            var serverDll = Path.Combine(serverBin, "ExecutableMod.dll");
             Assert(File.Exists(serverDll) && File.ReadAllBytes(serverDll).SequenceEqual(originalDll),
                 "Executable mod DLL was not projected to the dedicated-server bin.");
             Assert(plan.ModuleIds.Any(id =>
@@ -2568,9 +2754,8 @@ void TestGenericExecutablePrepareAndRevert()
                 modulesDirectory,
                 bridgeId,
                 "bcs-coop-bridge.config"));
-            var projectedHash = Convert.ToHexString(SHA256.HashData(originalDll));
-            Assert(bridgeConfiguration.Contains(projectedHash, StringComparison.Ordinal),
-                "Bridge fingerprint did not pin the projected client DLL bytes.");
+            Assert(bridgeConfiguration.Contains("MODULE|", StringComparison.Ordinal),
+                "Bridge configuration omitted its module/version record.");
 
             patcher.Revert(result.ManifestPath);
             Assert(File.ReadAllBytes(serverDll).SequenceEqual(staleServerDll),
@@ -2592,7 +2777,7 @@ void TestBridgeAuthorityRuleConfiguration()
                 declaredDll: "AuthorityMod.dll");
             var clientBin = Path.Combine(modulePath, "bin", "Win64_Shipping_Client");
             Directory.CreateDirectory(clientBin);
-            File.WriteAllBytes(Path.Combine(clientBin, "AuthorityMod.dll"), [2, 4, 6, 8]);
+            WriteManagedAssembly(Path.Combine(clientBin, "AuthorityMod.dll"), "AuthorityMod");
 
             var modules = new ModuleScanner().Scan(modulesDirectory)
                 .Where(module => module.Id is "Coop" or "AuthorityMod")
@@ -2627,7 +2812,7 @@ void TestBridgeAuthorityRuleConfiguration()
             Assert(package.AuthorityRules.SequenceEqual([serverRule, clientRule, settingsRule]),
                 "Invocation-scope rules were omitted from the generated package model.");
             Assert(configuration.Contains("AUTHORITY|", StringComparison.Ordinal),
-                "Authority rule was omitted from the fingerprinted bridge configuration.");
+                "Authority rule was omitted from bridge configuration.");
             Assert(configuration.Contains("|SERVER_ONLY", StringComparison.Ordinal) &&
                    configuration.Contains("|CLIENT_ONLY", StringComparison.Ordinal) &&
                    configuration.Contains("|SERVER_SETTINGS_FALLBACK", StringComparison.Ordinal),
@@ -2671,24 +2856,12 @@ void TestBridgeServerFileRedirectConfiguration()
             Assert(package.ServerFileRedirects.SequenceEqual([redirect]),
                 "Server file redirect was omitted from the generated package model.");
             Assert(configuration.Contains("SERVER_FILE_REDIRECT|", StringComparison.Ordinal),
-                "Server file redirect was omitted from the fingerprinted bridge configuration.");
-            Assert(configuration.Contains(cacheHash, StringComparison.Ordinal),
-                "Server file redirect did not pin the exact source hash.");
+                "Server file redirect was omitted from bridge configuration.");
+            Assert(!configuration.Contains(cacheHash, StringComparison.Ordinal),
+                "Server file redirect retained an exact source byte pin.");
 
             File.WriteAllBytes(cachePath, [9, 9, 9]);
-            var rejectedChangedSource = false;
-            try
-            {
-                packageBuilder.Build(
-                    modules,
-                    serverFileRedirects: [redirect]);
-            }
-            catch (InvalidDataException)
-            {
-                rejectedChangedSource = true;
-            }
-            Assert(rejectedChangedSource,
-                "Bridge accepted a server redirect after its pinned source changed.");
+            _ = packageBuilder.Build(modules, serverFileRedirects: [redirect]);
         });
 }
 
@@ -2723,9 +2896,9 @@ void TestBridgeServerXmlOverlayConfiguration()
                    package.ServerXmlOverlays[0].Content.SequenceEqual(overlayBytes),
                 "Server XML overlay was omitted from the generated package model.");
             Assert(configuration.Contains("SERVER_XML_OVERLAY|", StringComparison.Ordinal) &&
-                   configuration.Contains(overlay.SourceSha256, StringComparison.Ordinal) &&
-                   configuration.Contains(overlay.OverlaySha256, StringComparison.Ordinal),
-                "Server XML overlay configuration did not pin source and payload hashes.");
+                   !configuration.Contains(overlay.SourceSha256, StringComparison.Ordinal) &&
+                   !configuration.Contains(overlay.OverlaySha256, StringComparison.Ordinal),
+                "Server XML overlay configuration retained source or payload byte pins.");
             using (var zipStream = new MemoryStream(package.ClientPackageZip, writable: false))
             using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read))
             {
@@ -2736,33 +2909,13 @@ void TestBridgeServerXmlOverlayConfiguration()
             }
 
             File.WriteAllText(sourcePath, "<NPCCharacters />");
-            var rejectedChangedSource = false;
-            try
-            {
-                _ = builder.Build(modules, serverXmlOverlays: [overlay]);
-            }
-            catch (InvalidDataException)
-            {
-                rejectedChangedSource = true;
-            }
-            Assert(rejectedChangedSource,
-                "Bridge accepted an XML overlay after its pinned source changed.");
+            _ = builder.Build(modules, serverXmlOverlays: [overlay]);
 
             File.WriteAllBytes(sourcePath, sourceBytes);
-            var rejectedChangedPayload = false;
-            try
-            {
-                _ = builder.Build(
-                    modules,
-                    serverXmlOverlays:
-                    [overlay with { Content = System.Text.Encoding.UTF8.GetBytes("<changed />") }]);
-            }
-            catch (InvalidDataException)
-            {
-                rejectedChangedPayload = true;
-            }
-            Assert(rejectedChangedPayload,
-                "Bridge accepted an XML overlay after its pinned payload changed.");
+            _ = builder.Build(
+                modules,
+                serverXmlOverlays:
+                [overlay with { Content = System.Text.Encoding.UTF8.GetBytes("<changed />") }]);
         });
 }
 
@@ -2810,19 +2963,16 @@ void TestBridgeServerMapTerrainSizeConfiguration()
             var expectedRecord =
                 "SERVER_MAP_TERRAIN_SIZE|" + EncodeTerrainField("MapMod") + "|" +
                 EncodeTerrainField("SceneObj/Main_map/scene.xscene") + "|" +
-                sceneHash + "|1696|1696|" + EncodeTerrainField("DedicatedServer.Core") + "|" +
-                loaderHash +
-                "|" + EncodeTerrainField("SandBox") + "|" + targetHash + "\n";
+                "|1696|1696|" + EncodeTerrainField("DedicatedServer.Core") + "||" +
+                EncodeTerrainField("SandBox") + "|\n";
             Assert(configuration.Contains(expectedRecord, StringComparison.Ordinal),
-                "Server map terrain size was omitted from fingerprinted bridge configuration.");
+                "Server map terrain size was omitted from bridge configuration.");
             Assert(package.ModuleId == repeated.ModuleId &&
                    package.Configuration.SequenceEqual(repeated.Configuration),
                 "Server map terrain rule made bridge identity depend on input module order.");
 
             File.WriteAllText(scenePath, "<changed />");
-            AssertThrowsInvalidData(
-                () => builder.Build(modules, serverMapTerrainSizes: [rule]),
-                "Bridge accepted a server map terrain rule after its pinned scene changed.");
+            _ = builder.Build(modules, serverMapTerrainSizes: [rule]);
             File.WriteAllBytes(scenePath, sceneBytes);
 
             AssertThrowsInvalidData(
@@ -2830,33 +2980,17 @@ void TestBridgeServerMapTerrainSizeConfiguration()
                     modules,
                     serverMapTerrainSizes: [rule with { Width = float.NaN }]),
                 "Bridge accepted a non-finite server map terrain dimension.");
-            AssertThrowsInvalidData(
-                () => builder.Build(
-                    modules,
-                    serverMapTerrainSizes: [rule with { Sha256 = sceneHash.ToLowerInvariant() }]),
-                "Bridge accepted a non-canonical server map terrain fingerprint.");
-            AssertThrowsInvalidData(
-                () => builder.Build(
-                    modules,
-                    serverMapTerrainSizes:
-                    [
-                        rule with
-                        {
-                            LoaderAssemblySha256 = loaderHash.ToLowerInvariant()
-                        }
-                    ]),
-                "Bridge accepted a non-canonical terrain loader assembly fingerprint.");
-            AssertThrowsInvalidData(
-                () => builder.Build(
-                    modules,
-                    serverMapTerrainSizes:
-                    [
-                        rule with
-                        {
-                            TargetAssemblySha256 = targetHash.ToLowerInvariant()
-                        }
-                    ]),
-                "Bridge accepted a non-canonical terrain target assembly fingerprint.");
+            _ = builder.Build(
+                modules,
+                serverMapTerrainSizes:
+                [
+                    rule with
+                    {
+                        Sha256 = sceneHash.ToLowerInvariant(),
+                        LoaderAssemblySha256 = loaderHash.ToLowerInvariant(),
+                        TargetAssemblySha256 = targetHash.ToLowerInvariant()
+                    }
+                ]);
             AssertThrowsInvalidData(
                 () => builder.Build(
                     modules,
@@ -2888,9 +3022,9 @@ void TestBridgeServerMapTerrainSizeConfiguration()
                         TargetAssemblySha256 = new string('C', 64)
                     }
                 ]);
-            Assert(changedTargetPackage.ModuleId != package.ModuleId &&
-                   !changedTargetPackage.Configuration.SequenceEqual(package.Configuration),
-                "Changed terrain target assembly fingerprint did not change bridge identity.");
+            Assert(changedTargetPackage.ModuleId == package.ModuleId &&
+                   changedTargetPackage.Configuration.SequenceEqual(package.Configuration),
+                "Unused terrain target hash changed bridge identity.");
             AssertThrowsInvalidData(
                 () => builder.Build(modules, serverMapTerrainSizes: [rule, rule]),
                 "Bridge accepted duplicate server map terrain rules.");
@@ -2989,7 +3123,7 @@ void TestPreparedProfileNormalizesDependencyOrder()
                     StringComparison.Ordinal));
             var clientBin = Path.Combine(modulePath, "bin", "Win64_Shipping_Client");
             Directory.CreateDirectory(clientBin);
-            File.WriteAllBytes(Path.Combine(clientBin, "PreparedMod.dll"), [1, 3, 5, 7]);
+            WriteManagedAssembly(Path.Combine(clientBin, "PreparedMod.dll"), "PreparedMod");
 
             var scanned = new ModuleScanner().Scan(modulesDirectory)
                 .Reverse()
@@ -3053,9 +3187,9 @@ void TestFrameworkBeforeNativePreparationOrder()
                 "bin",
                 "Win64_Shipping_Client");
             Directory.CreateDirectory(frameworkClientBin);
-            File.WriteAllBytes(
+            WriteManagedAssembly(
                 Path.Combine(frameworkClientBin, "ThirdParty.Framework.dll"),
-                [2, 4, 6]);
+                "ThirdParty.Framework");
 
             var modPath = CreateModule(
                 modulesDirectory,
@@ -3065,7 +3199,9 @@ void TestFrameworkBeforeNativePreparationOrder()
                 declaredDll: "FrameworkConsumer.dll");
             var modClientBin = Path.Combine(modPath, "bin", "Win64_Shipping_Client");
             Directory.CreateDirectory(modClientBin);
-            File.WriteAllBytes(Path.Combine(modClientBin, "FrameworkConsumer.dll"), [1, 3, 5]);
+            WriteManagedAssembly(
+                Path.Combine(modClientBin, "FrameworkConsumer.dll"),
+                "FrameworkConsumer");
 
             var modules = new ModuleScanner().Scan(modulesDirectory);
             var selected = modules.Single(module => module.Id == "FrameworkConsumer");
@@ -3199,6 +3335,53 @@ void TestCompatibilityPlanRejectsConcurrentChange()
         });
 }
 
+void TestCompatibilityApplyRollsBackBeforeManifestPublication()
+{
+    WithTemporaryModules(
+        (serverRoot, modulesDirectory) =>
+        {
+            var nativePath = CreateModule(modulesDirectory, "Native", "v1.4.7");
+            CreateModule(modulesDirectory, "Coop", "v0.1.1", ["Native"]);
+            var modulePath = CreateModule(
+                modulesDirectory,
+                "RollbackContentPack",
+                "v1.0.0",
+                ["Native", "StoryMode"],
+                contentXml: "<Items><Item id=\"rollback_sword\" /></Items>");
+            var moduleManifestPath = Path.Combine(modulePath, "SubModule.xml");
+            var originalManifest = File.ReadAllBytes(moduleManifestPath);
+            var modules = new ModuleScanner().Scan(modulesDirectory);
+            var selected = modules.Single(module => module.Id == "RollbackContentPack");
+            var patcher = new CoopCompatibilityPatcher();
+            var plan = patcher.CreatePlan(selected, modules, serverRoot);
+            Assert(plan.CanApply, plan.Summary);
+
+            // The plan does not modify Native, so deleting it after analysis passes
+            // stale-target validation but makes post-file assembly unblocking fail.
+            Directory.Delete(nativePath, recursive: true);
+
+            try
+            {
+                patcher.Apply(plan);
+                throw new InvalidOperationException("Post-file compatibility failure was not surfaced.");
+            }
+            catch (DirectoryNotFoundException exception)
+            {
+                Assert(exception.Message.Contains("Native", StringComparison.Ordinal),
+                    "Finalization failure did not identify the missing enabled module.");
+            }
+
+            Assert(File.ReadAllBytes(moduleManifestPath).SequenceEqual(originalManifest),
+                "Finalization failure did not restore the changed module manifest.");
+            Assert(plan.Changes
+                    .Where(change => change.Kind == CoopPreparationChangeKind.CreateFile)
+                    .All(change => !File.Exists(change.TargetPath)),
+                "Finalization failure left a newly created compatibility file installed.");
+            Assert(patcher.FindLatestBackupManifest(serverRoot) is null,
+                "Finalization failure left a discoverable completed backup manifest.");
+        });
+}
+
 string PrepareFakeDedicatedServer(string serverRoot)
 {
     var executable = Path.Combine(serverRoot, "BannerlordCoopServer.exe");
@@ -3284,6 +3467,47 @@ string CreateModule(
     }
 
     return modulePath;
+}
+
+void WriteManagedAssembly(string path, string assemblyName)
+{
+    var builder = new PersistedAssemblyBuilder(
+        new AssemblyName(assemblyName),
+        typeof(object).Assembly);
+    var module = builder.DefineDynamicModule(assemblyName);
+    module.DefineType(
+            assemblyName + ".Marker",
+            TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed)
+        .CreateType();
+    builder.Save(path);
+}
+
+void CreateDirectoryJunction(string path, string target)
+{
+    var startInfo = new ProcessStartInfo
+    {
+        FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true
+    };
+    startInfo.ArgumentList.Add("/d");
+    startInfo.ArgumentList.Add("/c");
+    startInfo.ArgumentList.Add("mklink");
+    startInfo.ArgumentList.Add("/J");
+    startInfo.ArgumentList.Add(path);
+    startInfo.ArgumentList.Add(target);
+    using var process = Process.Start(startInfo) ?? throw new InvalidOperationException(
+        "Could not start mklink for bridge reparse regression.");
+    var output = process.StandardOutput.ReadToEnd();
+    var error = process.StandardError.ReadToEnd();
+    process.WaitForExit();
+    if (process.ExitCode != 0)
+    {
+        throw new InvalidOperationException(
+            "Could not create bridge regression junction: " + output + error);
+    }
 }
 
 IReadOnlyList<string> FingerprintFiles(string root) =>

@@ -59,10 +59,15 @@ public partial class App : Application
         var moduleScanner = new ModuleScanner();
         var launchBuilder = new DedicatedServerLaunchBuilder(moduleScanner);
         var coopConfigService = new CoopConfigService();
+        var compatibilityPatcher = new CoopCompatibilityPatcher();
+        var bridgeInstallationService = new BridgeInstallationService(
+            moduleScanner,
+            compatibilityPatcher);
         var processManager = new ServerProcessManager(
             logService,
             launchBuilder,
-            coopConfigService);
+            coopConfigService,
+            bridgeInstallationService);
         var restartScheduler = new RestartScheduler();
         var playerRosterTracker = new PlayerRosterTracker();
         var serverExecutableLocator = new ServerExecutableLocator();
@@ -88,7 +93,8 @@ public partial class App : Application
             moduleScanner,
             dependencyValidator,
             coopPlayerListParser,
-            clientSaveImportService);
+            clientSaveImportService,
+            bridgeInstallationService);
         MainWindow = window;
         window.Show();
     }

@@ -46,7 +46,7 @@ public sealed class ServerExecutableLocator
 
     /// <summary>
     /// Resolves the installed Bannerlord client without scanning entire drives.
-    /// Compatibility preparation uses this only for version-pinned official
+    /// Bridge installation uses this only for version-scoped official
     /// runtime dependencies that the dedicated-server distribution omits.
     /// </summary>
     public static string? FindBannerlordInstallRoot()
