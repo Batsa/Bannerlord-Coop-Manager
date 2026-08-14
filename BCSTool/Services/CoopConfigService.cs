@@ -111,6 +111,44 @@ public sealed class CoopConfigService
             .ToArray();
     }
 
+    /// <summary>
+    /// Returns true when the active server campaign has not yet recorded a
+    /// Coop player. In that state the first joining client must finish the
+    /// campaign intro and character-creation flow before save transfer begins.
+    /// </summary>
+    public bool IsFirstJoinCharacterSetupRequired()
+    {
+        var saveName =
+            LoadServerConfig().SaveName;
+
+        CoopSaveNamePolicy.EnsureValid(saveName);
+
+        var sidecarPath =
+            Path.Combine(
+                ServerSaveDirectory,
+                saveName + ".json");
+
+        if (!File.Exists(sidecarPath))
+            return true;
+
+        using var document =
+            JsonDocument.Parse(
+                File.ReadAllText(sidecarPath),
+                JsonOptions);
+
+        if (
+            !document.RootElement.TryGetProperty(
+                "Players",
+                out var players) ||
+            players.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException(
+                $"Coop save sidecar does not contain a Players array: {sidecarPath}");
+        }
+
+        return players.GetArrayLength() == 0;
+    }
+
     private static bool IsNumberedSaveBackup(string fileName)
     {
         var saveName =

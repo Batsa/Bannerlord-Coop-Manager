@@ -6,12 +6,12 @@ using BCSTool.ViewModels;
 namespace BCSTool;
 
 /// <summary>
-/// Application entry point for BCS Tool.
+/// Application entry point for Bannerlord Coop Manager.
 ///
 /// WPF creates this class from App.xaml. Its responsibilities are deliberately
 /// limited to application-level concerns:
 ///
-/// 1. Make sure only one copy of BCS Tool is running.
+/// 1. Make sure only one copy of Bannerlord Coop Manager is running.
 /// 2. Construct the shared services used by the rest of the application.
 /// 3. Create the MainViewModel and MainWindow.
 /// 4. Dispose application-wide resources when the program closes.
@@ -32,15 +32,15 @@ public partial class App : Application
         // A named Windows mutex acts as a machine-wide "only one instance"
         // lock. This prevents two watchdogs from both trying to manage the
         // same Bannerlord server.
-        // Keep the legacy mutex identifier so an older BCS Tool build and
+        // Keep the legacy mutex identifier so an older Bannerlord Coop Manager build and
         // this renamed build cannot both manage the same server concurrently.
         _singleInstance = new SingleInstanceGuard("BCS_ServerTool_v1");
 
         if (!_singleInstance.TryAcquire())
         {
             MessageBox.Show(
-                "BCS Tool is already running.",
-                "BCS Tool",
+                "Bannerlord Coop Manager is already running.",
+                "Bannerlord Coop Manager",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
 
@@ -83,7 +83,8 @@ public partial class App : Application
             processManager,
             restartScheduler,
             playerRosterTracker,
-            serverExecutableLocator);
+            serverExecutableLocator,
+            coopConfigService);
 
         var window = new MainWindow(
             _viewModel,

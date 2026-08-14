@@ -7,7 +7,7 @@ namespace BCSTool.Services;
 /// <summary>
 /// Persists the raw character stream read from the Bannerlord ConPTY output.
 /// Keeping the VT/ANSI control data makes the file a lossless record of what
-/// reached BCS Tool; diagnostic tools can strip or replay it later.
+/// reached Bannerlord Coop Manager; diagnostic tools can strip or replay it later.
 /// </summary>
 internal sealed class ServerConsoleLogWriter : IDisposable
 {

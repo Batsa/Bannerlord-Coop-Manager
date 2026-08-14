@@ -55,6 +55,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
     private readonly RestartScheduler _restartScheduler;
     private readonly PlayerRosterTracker _playerRosterTracker;
     private readonly ServerExecutableLocator _serverExecutableLocator;
+    private readonly CoopConfigService _coopConfigService;
 
     private readonly Dispatcher _dispatcher;
     private readonly CancellationTokenSource _lifetimeCts = new();
@@ -65,13 +66,14 @@ public sealed class MainViewModel : BindableBase, IDisposable
     private bool _serverReady;
     private bool _applicationClosing;
     private bool _crashRecoveryRunning;
+    private bool _firstJoinNoticeShown;
 
     private DateTime? _nextRestartAt;
     private string? _lastWarningKey;
 
     private ServerSettings _settings = new();
     private ServerState _serverState = ServerState.Stopped;
-    private string _statusMessage = "Starting BCS Tool...";
+    private string _statusMessage = "Starting Bannerlord Coop Manager...";
     private string _serverPidText = "-";
     private string _uptimeText = "-";
     private string _nextRestartText = "Waiting...";
@@ -95,7 +97,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
     // complete screen. This makes full-screen redraws visually atomic.
     private bool _hasSeenCompleteTerminalHeader;
 
-    // ConsoleLines is retained for internal BCS Tool diagnostic messages and
+    // ConsoleLines is retained for internal Bannerlord Coop Manager diagnostic messages and
     // compatibility with the learning walkthrough. The visible server console
     // in v1.2 is TerminalText reconstructed from ConPTY.
     public ObservableCollection<string> ConsoleLines { get; } = new();
@@ -142,7 +144,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
     /// character; that metadata is intentionally omitted from the UI.
     /// </summary>
     public string ApplicationVersion =>
-        $"BCS Tool v{GetApplicationVersion()}";
+        $"Bannerlord Coop Manager v{GetApplicationVersion()}";
 
 
     private static string GetApplicationVersion()
@@ -233,7 +235,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
     ///
     /// While a managed server process is running, Bannerlord's native footer
     /// is preferred because it exposes a more detailed runtime status than
-    /// BCS Tool's lifecycle enum. Critical BCS Tool states such as Error,
+    /// Bannerlord Coop Manager's lifecycle enum. Critical Bannerlord Coop Manager states such as Error,
     /// Crashed, PortBlocked, and Restarting still take precedence.
     ///
     /// The internal ServerState enum is deliberately NOT replaced by this
@@ -401,7 +403,8 @@ public sealed class MainViewModel : BindableBase, IDisposable
         ServerProcessManager processManager,
         RestartScheduler restartScheduler,
         PlayerRosterTracker playerRosterTracker,
-        ServerExecutableLocator serverExecutableLocator)
+        ServerExecutableLocator serverExecutableLocator,
+        CoopConfigService coopConfigService)
     {
         _settingsService = settingsService;
         _logService = logService;
@@ -410,6 +413,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
         _restartScheduler = restartScheduler;
         _playerRosterTracker = playerRosterTracker;
         _serverExecutableLocator = serverExecutableLocator;
+        _coopConfigService = coopConfigService;
 
         _dispatcher = Application.Current.Dispatcher;
 
@@ -455,7 +459,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
 
         BrowseServerCommand = new AsyncRelayCommand(BrowseServerExecutableAsync);
 
-        // Clears BCS Tool's own informational console only.
+        // Clears Bannerlord Coop Manager's own informational console only.
         //
         // The live Server Console is the authoritative ConPTY terminal and is
         // deliberately not modified by this command.
@@ -491,7 +495,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
         _schedulerTask = RunSchedulerLoopAsync(_lifetimeCts.Token);
 
         // First launch is always manual. Scheduled restarts and optional crash
-        // recovery still work after BCS Tool has started a server, but opening
+        // recovery still work after Bannerlord Coop Manager has started a server, but opening
         // the application itself never launches Bannerlord.
         ServerState = ServerState.Stopped;
         StatusMessage = "Server is stopped. Press Start to launch it.";
@@ -543,7 +547,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
                 ServerState = ServerState.PortBlocked;
                 StatusMessage =
                     "Another BannerlordCoopServer process already exists. " +
-                    "BCS Tool will not start a duplicate. " +
+                    "Bannerlord Coop Manager will not start a duplicate. " +
                     "If you previously stopped a Visual Studio debug session, " +
                     "this may be a leftover process from that run.";
                 AddToolMessage(StatusMessage);
@@ -557,10 +561,12 @@ public sealed class MainViewModel : BindableBase, IDisposable
                 ServerState = ServerState.PortBlocked;
                 StatusMessage =
                     $"Port {DedicatedServerLaunchBuilder.CoopServerPort} is already in use. " +
-                    "BCS Tool will not start another server while the Coop port is occupied.";
+                    "Bannerlord Coop Manager will not start another server while the Coop port is occupied.";
                 AddToolMessage(StatusMessage);
                 return;
             }
+
+            ShowFirstJoinCharacterSetupNoticeIfNeeded();
 
             _serverReady = false;
             _nextRestartAt = null;
@@ -937,7 +943,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
     /// Sends raw interactive terminal input to Bannerlord.
     ///
     /// MainWindow uses this for text input and native editing/autocomplete
-    /// keys. No BCS Tool command database is involved.
+    /// keys. No Bannerlord Coop Manager command database is involved.
     /// </summary>
     public Task<bool> SendTerminalInputAsync(
         string input)
@@ -946,6 +952,44 @@ public sealed class MainViewModel : BindableBase, IDisposable
             _processManager.SendRawInputAsync(
                 input,
                 _lifetimeCts.Token);
+    }
+
+    private void ShowFirstJoinCharacterSetupNoticeIfNeeded()
+    {
+        if (_firstJoinNoticeShown)
+            return;
+
+        try
+        {
+            if (!_coopConfigService.IsFirstJoinCharacterSetupRequired())
+                return;
+
+            _firstJoinNoticeShown = true;
+
+            const string message =
+                "This campaign does not have a Coop player yet. On the first join, " +
+                "Bannerlord may show the campaign intro or a loading-looking video " +
+                "for about three minutes before character creation.\n\n" +
+                "Wait for it to finish or press Esc once to skip it safely. Keep the " +
+                "client open, then complete and confirm character creation. " +
+                "The server save transfer starts only after that step finishes.";
+
+            AddToolMessage(
+                "First-join setup required: wait for the campaign intro, then complete character creation.");
+
+            MessageBox.Show(
+                Application.Current.MainWindow,
+                message,
+                "First Join Setup",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception exception)
+        {
+            AddToolMessage(
+                "Could not inspect first-join character setup state: " +
+                exception.Message);
+        }
     }
 
     public void ReportBridgeInstallation(BridgeInstallationResult result)
@@ -1575,7 +1619,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
             }
 
             // Preserve Bannerlord's ANSI/VT styling, but hide a few native
-            // footer fields that are redundant or unusable inside BCS Tool.
+            // footer fields that are redundant or unusable inside Bannerlord Coop Manager.
             //
             // This is DISPLAY-ONLY filtering. Bannerlord's underlying ConPTY
             // screen is not modified, so native input/autocomplete/history
@@ -1593,7 +1637,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
             SynchronizeCommandInputFromTerminal(
                 e.Snapshot);
 
-            // Keep a plain-text copy of exactly what BCS Tool displays.
+            // Keep a plain-text copy of exactly what Bannerlord Coop Manager displays.
             var displayLines =
                 displaySnapshot.PlainLines;
 
@@ -1624,7 +1668,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
     // F10 Stop | SERVING · save saveauto1 · port 4200 · players 0 · up 0:02:58
     //
     // The native runtime state ("SERVING" in this example) is parsed from the
-    // ORIGINAL snapshot and shown in BCS Tool's top Server state field.
+    // ORIGINAL snapshot and shown in Bannerlord Coop Manager's top Server state field.
     //
     // The embedded Server Console still hides the native status and displays:
     //
@@ -1642,7 +1686,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
             status.Trim();
 
         // Bannerlord can report descriptive native states with a lowercase
-        // first letter, such as "loading campaign". Match BCS Tool's other
+        // first letter, such as "loading campaign". Match Bannerlord Coop Manager's other
         // state labels by capitalizing only that first character.
         //
         // Already-capitalized/all-uppercase states such as "SERVING" are left
@@ -2558,7 +2602,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
     private void AddToolMessage(string message)
     {
         _logService.Write(message);
-        AddConsoleLine($"[BCS Tool] {message}");
+        AddConsoleLine($"[Bannerlord Coop Manager] {message}");
     }
 
     /// <summary>
@@ -2589,7 +2633,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
     }
 
     /// <summary>
-    /// Called when the user closes BCS Tool while the server is still running.
+    /// Called when the user closes Bannerlord Coop Manager while the server is still running.
     /// Attempts a final save + graceful stop before the application exits.
     /// </summary>
     public async Task<bool> PrepareForApplicationExitAsync()

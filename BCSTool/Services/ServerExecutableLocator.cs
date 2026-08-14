@@ -15,7 +15,7 @@ namespace BCSTool.Services;
 /// Detection priority:
 ///
 /// 1. A currently running BannerlordCoopServer process.
-/// 2. BCS Tool's own directory.
+/// 2. Bannerlord Coop Manager's own directory.
 /// 3. Bannerlord's Documents\CoopData tree.
 /// 4. Bannerlord Steam Workshop content in every Steam library.
 /// 5. Installed Steam libraries that contain Mount & Blade II Bannerlord.
@@ -100,7 +100,7 @@ public sealed class ServerExecutableLocator
             Path.Combine(
                 AppContext.BaseDirectory,
                 DefaultExecutableName),
-            "BCS Tool directory",
+            "Bannerlord Coop Manager directory",
             priority: 10);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -472,7 +472,7 @@ public sealed class ServerExecutableLocator
         catch
         {
             // Registry access is a convenience signal. Failure should never
-            // prevent BCS Tool from starting.
+            // prevent Bannerlord Coop Manager from starting.
         }
     }
 

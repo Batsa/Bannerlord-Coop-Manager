@@ -45,7 +45,7 @@ public sealed class ModuleRemovalService
         if (!Directory.Exists(source))
             throw new DirectoryNotFoundException($"Module folder was not found: {source}");
         if ((File.GetAttributes(source) & FileAttributes.ReparsePoint) != 0)
-            throw new InvalidDataException("Linked module folders cannot be deleted by BCS Tool.");
+            throw new InvalidDataException("Linked module folders cannot be deleted by Bannerlord Coop Manager.");
 
         var stagingRoot = Path.Combine(
             _moduleManager.ServerRoot,

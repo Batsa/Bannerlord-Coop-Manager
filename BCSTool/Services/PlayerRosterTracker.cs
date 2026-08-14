@@ -14,7 +14,7 @@ namespace BCSTool.Services;
 /// Why this is needed:
 ///
 /// Terminal applications redraw their screen in multiple VT operations.
-/// During a redraw, BCS Tool can briefly receive an intermediate snapshot
+/// During a redraw, Bannerlord Coop Manager can briefly receive an intermediate snapshot
 /// where the Players header is temporarily absent.
 ///
 /// v1.2 behavior:
@@ -66,7 +66,7 @@ public sealed class PlayerRosterTracker
         _rosterLines;
 
     /// <summary>
-    /// True after BCS Tool has successfully parsed the native ConPTY Players
+    /// True after Bannerlord Coop Manager has successfully parsed the native ConPTY Players
     /// pane at least once during the current server instance.
     /// </summary>
     public bool HasNativePane =>

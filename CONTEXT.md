@@ -1,6 +1,6 @@
 # Bannerlord Coop Compatibility
 
-This context describes how BCS Tool makes a third-party Bannerlord campaign module usable with Bannerlord Coop while preserving ownership boundaries between the game, Coop, and the campaign module.
+This context describes how Bannerlord Coop Manager makes a third-party Bannerlord campaign module usable with Bannerlord Coop while preserving ownership boundaries between the game, Coop, and the campaign module.
 
 ## Language
 

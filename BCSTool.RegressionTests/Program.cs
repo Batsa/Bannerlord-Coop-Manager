@@ -516,6 +516,7 @@ Run("client campaign imports never overwrite server saves", TestClientSaveImport
 Run("Coop save names stay safe across config and startup", TestCoopSafeServerSaveNames);
 Run("Coop port guard distinguishes UDP from TCP", TestCoopUdpPortGuard);
 Run("module-row text supports visual ancestor lookup", TestModuleRowTextAncestorLookup);
+Run("application branding uses Bannerlord Coop Manager", TestApplicationBranding);
 
 if (failures.Count > 0)
 {
@@ -523,7 +524,7 @@ if (failures.Count > 0)
     return 1;
 }
 
-Console.WriteLine("All BCS Tool regression checks passed.");
+Console.WriteLine("All Bannerlord Coop Manager regression checks passed.");
 return 0;
 
 void Run(string name, Action test)
@@ -548,6 +549,19 @@ void TestModuleRowTextAncestorLookup()
 
     var result = findAncestor.Invoke(null, [new Run("Europe1700")]);
     Assert(result is null, "A detached text Run should have no ListBoxItem ancestor.");
+}
+
+void TestApplicationBranding()
+{
+    var applicationAssembly = typeof(BCSTool.ViewModels.MainViewModel).Assembly;
+    Assert(
+        applicationAssembly.GetName().Name == "Bannerlord Coop Manager",
+        "Application assembly still uses the previous product name.");
+    Assert(
+        BCSTool.Infrastructure.AppVersion.DisplayName.StartsWith(
+            "Bannerlord Coop Manager ",
+            StringComparison.Ordinal),
+        "Application version title still uses the previous product name.");
 }
 
 string ReadIlOperand(
@@ -1063,6 +1077,36 @@ void TestCoopSafeServerSaveNames()
         configService.SaveServerConfig(loaded);
         Assert(configService.LoadServerConfig().SaveName == "EOE_Seed_1",
             "Safe server save name did not persist.");
+
+        Directory.CreateDirectory(configService.ServerSaveDirectory);
+        Assert(configService.IsFirstJoinCharacterSetupRequired(),
+            "Missing Coop sidecar was not identified as first-join setup.");
+
+        var sidecarPath = Path.Combine(
+            configService.ServerSaveDirectory,
+            "EOE_Seed_1.json");
+        File.WriteAllText(sidecarPath, "{\"Players\":[]}");
+        Assert(configService.IsFirstJoinCharacterSetupRequired(),
+            "Empty Coop player list was not identified as first-join setup.");
+
+        File.WriteAllText(sidecarPath, "{}");
+        var malformedSidecarRejected = false;
+        try
+        {
+            configService.IsFirstJoinCharacterSetupRequired();
+        }
+        catch (InvalidDataException)
+        {
+            malformedSidecarRejected = true;
+        }
+        Assert(malformedSidecarRejected,
+            "Malformed Coop player sidecar was silently treated as valid setup state.");
+
+        File.WriteAllText(
+            sidecarPath,
+            "{\"Players\":[{\"ControllerId\":\"test-player\"}]}");
+        Assert(!configService.IsFirstJoinCharacterSetupRequired(),
+            "Established Coop player was incorrectly treated as first-join setup.");
 
         WriteServerConfig("EOE Seed");
         var executablePath = Path.Combine(root, "BannerlordCoopServer.exe");

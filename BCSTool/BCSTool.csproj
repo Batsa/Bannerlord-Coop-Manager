@@ -17,9 +17,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
-    <AssemblyName>BCS Tool</AssemblyName>
-    <Title>BCS Tool</Title>
-    <Product>BCS Tool</Product>
+    <AssemblyName>Bannerlord Coop Manager</AssemblyName>
+    <Title>Bannerlord Coop Manager</Title>
+    <Product>Bannerlord Coop Manager</Product>
     <Description>Bannerlord Coop Server management tool</Description>
     <RootNamespace>BCSTool</RootNamespace>
 	<Version>0.3.0-beta.6</Version>

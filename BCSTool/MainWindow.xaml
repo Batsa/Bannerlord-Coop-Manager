@@ -11,7 +11,7 @@
       3. Restart settings
       4. Manual server controls
       5. Embedded server console
-      6. BCS Tool console
+      6. Bannerlord Coop Manager console
       7. Manual command input
       8. Status/footer
 -->
@@ -20,7 +20,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:models="clr-namespace:BCSTool.Models"
         xmlns:controls="clr-namespace:BCSTool.Controls"
-        Title="BCS Tool"
+        Title="Bannerlord Coop Manager"
         Width="1180"
         Height="820"
         MinWidth="950"
@@ -379,7 +379,7 @@
                             Command="{Binding StopCommand}"
                             Margin="4"/>
 
-                    <Button Content="Clear BCS Tool Console"
+                    <Button Content="Clear Bannerlord Coop Manager Console"
                             Command="{Binding ClearConsoleCommand}"
                             Margin="4"/>
 
@@ -399,8 +399,8 @@
             Server Console
                 Bannerlord's live ANSI/VT ConPTY terminal.
 
-            BCS Tool Console
-                BCS Tool scheduling, restart, save, recovery, and diagnostic
+            Bannerlord Coop Manager Console
+                Bannerlord Coop Manager scheduling, restart, save, recovery, and diagnostic
                 information produced by AddToolMessage(...).
 
             Command input remains below BOTH consoles.
@@ -409,7 +409,7 @@
             <Grid.RowDefinitions>
                 <!--
                     Favor the native server terminal while giving the
-                    BCS Tool console a larger working area. The two panes use
+                    Bannerlord Coop Manager console a larger working area. The two panes use
                     a 3:1 proportional split.
                 -->
                 <RowDefinition Height="3*" MinHeight="240"/>
@@ -434,9 +434,9 @@
                 </Grid>
             </GroupBox>
 
-            <!-- BCS Tool's own scheduler/lifecycle log -->
+            <!-- Bannerlord Coop Manager's own scheduler/lifecycle log -->
             <GroupBox Grid.Row="1"
-                      Header="BCS Tool Console"
+                      Header="Bannerlord Coop Manager Console"
                       Margin="0,0,0,8">
                 <Grid Margin="8">
                     <ListBox x:Name="BcsToolConsoleList"

@@ -95,7 +95,7 @@ public partial class MainWindow : Window
         TerminalDisplay.SizeChanged +=
             TerminalDisplay_SizeChanged;
 
-        // Keep the newest BCS Tool information visible.
+        // Keep the newest Bannerlord Coop Manager information visible.
         _viewModel.ConsoleLines.CollectionChanged +=
             BcsToolConsoleLines_CollectionChanged;
 
@@ -256,7 +256,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Auto-scrolls the BCS Tool Console to its newest message.
+    /// Auto-scrolls the Bannerlord Coop Manager Console to its newest message.
     ///
     /// ScrollIntoView is deferred until after WPF finishes processing the
     /// ObservableCollection notification. This avoids the ItemsControl
@@ -374,7 +374,7 @@ public partial class MainWindow : Window
 
 
     /// <summary>
-    /// Opens BCS Tool's dedicated-server module selection and order editor.
+    /// Opens Bannerlord Coop Manager's dedicated-server module selection and order editor.
     /// Module state is immutable while the managed server is not fully stopped.
     /// </summary>
     private void ServerMods_Click(
@@ -485,7 +485,7 @@ public partial class MainWindow : Window
                 $"Expected file:\n{configurationPath}\n\n" +
                 "Bannerlord Coop generates this configuration file when the " +
                 "server is started for the first time.\n\n" +
-                "Would you like BCS Tool to start the server now?\n\n" +
+                "Would you like Bannerlord Coop Manager to start the server now?\n\n" +
                 "After the server finishes its first startup, open this " +
                 "configuration again.",
                 $"{configurationName} Not Found",
@@ -508,7 +508,7 @@ public partial class MainWindow : Window
 
         MessageBox.Show(
             this,
-            "BCS Tool cannot start the server right now. Check the server " +
+            "Bannerlord Coop Manager cannot start the server right now. Check the server " +
             "executable path and current server status, then press Start.",
             "Unable to Start Server",
             MessageBoxButton.OK,
@@ -1290,7 +1290,7 @@ public partial class MainWindow : Window
     }
 
 
-    // If BCS Tool owns a running server, closing the application should not
+    // If Bannerlord Coop Manager owns a running server, closing the application should not
     // simply abandon it. We first offer a graceful save + stop sequence.
     private async void Window_Closing(object? sender, CancelEventArgs e)
     {
@@ -1306,10 +1306,10 @@ public partial class MainWindow : Window
         e.Cancel = true;
 
         var result = MessageBox.Show(
-            "BCS Tool currently owns the server process.\n\n" +
-            "Closing BCS Tool will save and stop the server gracefully.\n\n" +
+            "Bannerlord Coop Manager currently owns the server process.\n\n" +
+            "Closing Bannerlord Coop Manager will save and stop the server gracefully.\n\n" +
             "Continue?",
-            "Exit BCS Tool",
+            "Exit Bannerlord Coop Manager",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning);
 

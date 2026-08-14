@@ -15,18 +15,18 @@ namespace BCSTool.Services;
 ///
 /// This tells Windows:
 ///
-///     "If BCS Tool itself disappears and this Job Object handle is closed,
+///     "If Bannerlord Coop Manager itself disappears and this Job Object handle is closed,
 ///      terminate any server processes that are still inside the job."
 ///
 /// Why this matters during development:
 ///
-/// Pressing Visual Studio's Stop Debugging button can terminate BCS Tool
+/// Pressing Visual Studio's Stop Debugging button can terminate Bannerlord Coop Manager
 /// immediately without giving MainWindow a chance to run its normal
 /// save/stop shutdown sequence.
 ///
 /// Without KILL_ON_JOB_CLOSE:
 ///
-///     BCS Tool exits
+///     Bannerlord Coop Manager exits
 ///         ↓
 ///     BannerlordCoopServer.exe survives in background
 ///         ↓
@@ -36,13 +36,13 @@ namespace BCSTool.Services;
 ///
 /// With KILL_ON_JOB_CLOSE:
 ///
-///     BCS Tool exits unexpectedly
+///     Bannerlord Coop Manager exits unexpectedly
 ///         ↓
 ///     Windows closes the Job Object handle
 ///         ↓
 ///     Windows terminates the managed server process tree
 ///
-/// Normal BCS Tool shutdown is still graceful:
+/// Normal Bannerlord Coop Manager shutdown is still graceful:
 ///
 ///     save
 ///       ↓

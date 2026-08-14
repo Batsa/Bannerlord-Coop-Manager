@@ -45,7 +45,7 @@ namespace BCS.CoopBridge
                 "module. Its navigation cache references " + missingIds.Count + " settlement " +
                 "ID(s) that are absent from the save (for example: " + examples + "). " +
                 "Create and save a new campaign with the same module enabled, then select that " +
-                "save in BCS Tool. No navigation data was removed or rewritten.");
+                "save in Bannerlord Coop Manager. No navigation data was removed or rewritten.");
         }
 
         private static int ReadNavigationType(object cacheInstance)

@@ -323,7 +323,11 @@ public partial class ServerConfigurationWindow : Window
 
             MessageBox.Show(
                 this,
-                detail + "\n\nClick Save or Save & Close to make it the server's active campaign.",
+                detail +
+                "\n\nClick Save or Save & Close to make it the server's active campaign." +
+                "\n\nFirst Coop join: the campaign intro may look like a loading screen " +
+                "for about three minutes. Wait or press Esc once to skip it safely, " +
+                "then complete and confirm character creation. Save transfer begins afterward.",
                 "Client Save Imported",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);

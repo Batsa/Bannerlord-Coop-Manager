@@ -7,7 +7,7 @@ using BCSTool.Models;
 namespace BCSTool.Services;
 
 /// <summary>
-/// Scans dedicated-server modules and persists BCS Tool's own reversible
+/// Scans dedicated-server modules and persists Bannerlord Coop Manager's own reversible
 /// enabled-state and load-order profile. No external mod manager is required.
 /// </summary>
 public sealed class ModuleManager
