@@ -32,9 +32,9 @@ using TaleWorlds.Library;
 using TaleWorlds.MountAndBlade;
 using TaleWorlds.ObjectSystem;
 
-[assembly: AssemblyVersion("0.6.64.0")]
-[assembly: AssemblyFileVersion("0.6.64.0")]
-[assembly: AssemblyInformationalVersion("0.6.64")]
+[assembly: AssemblyVersion("0.6.65.0")]
+[assembly: AssemblyFileVersion("0.6.65.0")]
+[assembly: AssemblyInformationalVersion("0.6.65")]
 
 namespace BCS.CoopBridge
 {
@@ -5580,7 +5580,37 @@ namespace BCS.CoopBridge
         private const string BridgeIdPrefix = "BCS.CoopBridge.";
         private const string ConfigurationName = "bcs-coop-bridge.config";
         private const string BridgeAssemblyFileName = "BCS.CoopBridge.dll";
+        internal const string ClientMapEventCompatibilityFeature = "ClientMapEventCompatibility";
+        internal const string ClientRegistryLifecycleCompatibilityFeature =
+            "ClientRegistryLifecycleCompatibility";
+        internal const string ClientMapEventPositionAuthorityFeature =
+            "ClientMapEventPositionAuthority";
+        internal const string ClientTroopUpgradeLoadRepairFeature =
+            "ClientTroopUpgradeLoadRepair";
+        internal const string ClientSetDisorganizedDiagnosticFeature =
+            "ClientSetDisorganizedDiagnostic";
+        internal const string ClientTroopRosterSequenceDiagnosticFeature =
+            "ClientTroopRosterSequenceDiagnostic";
+        internal const string ServerRegistryLifecycleCompatibilityFeature =
+            "ServerRegistryLifecycleCompatibility";
+        internal const string ServerPopulationControlFeature = "ServerPopulationControl";
+        internal const string ServerFailedIdCompatibilityFeature = "ServerFailedIdCompatibility";
+        private static readonly HashSet<string> SupportedRuntimeFeatures =
+            new HashSet<string>(StringComparer.Ordinal)
+            {
+                ClientMapEventCompatibilityFeature,
+                ClientRegistryLifecycleCompatibilityFeature,
+                ClientMapEventPositionAuthorityFeature,
+                ClientTroopUpgradeLoadRepairFeature,
+                ClientSetDisorganizedDiagnosticFeature,
+                ClientTroopRosterSequenceDiagnosticFeature,
+                ServerRegistryLifecycleCompatibilityFeature,
+                ServerPopulationControlFeature,
+                ServerFailedIdCompatibilityFeature
+            };
         private static readonly object Sync = new object();
+        private static HashSet<string> activeRuntimeFeatures =
+            new HashSet<string>(StringComparer.Ordinal);
         private static bool validated;
         internal static void ValidateInstalledPackage()
         {
@@ -5653,7 +5683,14 @@ namespace BCS.CoopBridge
                 var installed = ReadInstalledModules(modulesRoot.FullName);
                 var lines = Encoding.UTF8.GetString(configurationBytes)
                     .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
-                if (lines.Length == 0 || !string.Equals(lines[0], "BCS-COOP-BRIDGE|1", StringComparison.Ordinal))
+                var configurationSchema = lines.Length == 0
+                    ? 0
+                    : string.Equals(lines[0], "BCS-COOP-BRIDGE|1", StringComparison.Ordinal)
+                        ? 1
+                        : string.Equals(lines[0], "BCS-COOP-BRIDGE|2", StringComparison.Ordinal)
+                            ? 2
+                            : 0;
+                if (configurationSchema == 0)
                     throw new InvalidDataException("Unsupported BCS Coop bridge configuration schema.");
 
                 var authorityRules = new List<AuthorityRule>();
@@ -5663,9 +5700,25 @@ namespace BCS.CoopBridge
                 ServerMapTerrainSizeRule serverMapTerrainSize = null;
                 GameVersionCompatibilityRule gameVersionCompatibility = null;
                 var ignoredContent = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+                var runtimeFeatures = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var line in lines.Skip(1))
                 {
                     var fields = line.Split('|');
+                    if (fields.Length == 2 &&
+                        string.Equals(fields[0], "RUNTIME_FEATURE", StringComparison.Ordinal))
+                    {
+                        if (configurationSchema != 2)
+                        {
+                            throw new InvalidDataException(
+                                "Runtime feature records require bridge configuration schema 2.");
+                        }
+                        var feature = Decode(fields[1]);
+                        if (!SupportedRuntimeFeatures.Contains(feature))
+                            throw new InvalidDataException("Unsupported bridge runtime feature: " + feature + ".");
+                        if (!runtimeFeatures.Add(feature))
+                            throw new InvalidDataException("Duplicate bridge runtime feature: " + feature + ".");
+                        continue;
+                    }
                     if (fields.Length == 5 &&
                         string.Equals(fields[0], "GAME_VERSION_COMPAT", StringComparison.Ordinal))
                     {
@@ -5988,6 +6041,10 @@ namespace BCS.CoopBridge
                         "Required Coop bridge assembly");
                 }
 
+                if (configurationSchema == 1)
+                    runtimeFeatures.UnionWith(SupportedRuntimeFeatures);
+                activeRuntimeFeatures = runtimeFeatures;
+
                 ApplyClientAssemblyResolves(clientAssemblyResolves);
                 ApplyGameVersionCompatibility(installed, gameVersionCompatibility, actualId);
 #if BCS_SERVER
@@ -5997,7 +6054,8 @@ namespace BCS.CoopBridge
                 ApplyServerXmlOverlays(serverXmlOverlays, actualId);
                 ApplyAuthorityRules(installed, authorityRules, actualId);
 #if !BCS_SERVER
-                ClientMapEventCompatibility.Install(actualId);
+                if (runtimeFeatures.Contains(ClientMapEventCompatibilityFeature))
+                    ClientMapEventCompatibility.Install(actualId);
                 ModuleIdentity coopModule;
                 if (!installed.TryGetValue("Coop", out coopModule))
                     throw new InvalidDataException("Coop is missing for client handler registration.");
@@ -6049,6 +6107,15 @@ namespace BCS.CoopBridge
             ValidateInstalledPackage();
             Trace.WriteLine("BCS Coop bridge handler discovered by Coop.");
             Console.WriteLine("[BCS Coop Bridge] Handler discovered by Coop.");
+        }
+
+        internal static bool IsRuntimeFeatureEnabled(string feature)
+        {
+            if (string.IsNullOrWhiteSpace(feature) || !SupportedRuntimeFeatures.Contains(feature))
+                throw new InvalidDataException("Unknown bridge runtime feature: " + feature + ".");
+            ValidateInstalledPackage();
+            lock (Sync)
+                return activeRuntimeFeatures.Contains(feature);
         }
 
         internal static bool IsServerProcess()
@@ -7333,11 +7400,21 @@ namespace BCS.CoopBridge
                 throw new InvalidOperationException(
                     "Delayed Coop compatibility was activated before registration completed.");
             }
-            CoopRegistryLifecycleCompatibility.Install(false);
-            ClientMapEventPositionAuthority.Install(coopModuleRoot, bridgeId);
-            ClientTroopUpgradeTrackerLoadRepair.Install(coopModuleRoot, bridgeId);
-            ClientSetDisorganizedDiagnostic.Install(coopModuleRoot, bridgeId);
-            ClientTroopRosterSequenceDiagnostic.Install(coopModuleRoot, bridgeId);
+            if (BridgeRuntime.IsRuntimeFeatureEnabled(
+                    BridgeRuntime.ClientRegistryLifecycleCompatibilityFeature))
+                CoopRegistryLifecycleCompatibility.Install(false);
+            if (BridgeRuntime.IsRuntimeFeatureEnabled(
+                    BridgeRuntime.ClientMapEventPositionAuthorityFeature))
+                ClientMapEventPositionAuthority.Install(coopModuleRoot, bridgeId);
+            if (BridgeRuntime.IsRuntimeFeatureEnabled(
+                    BridgeRuntime.ClientTroopUpgradeLoadRepairFeature))
+                ClientTroopUpgradeTrackerLoadRepair.Install(coopModuleRoot, bridgeId);
+            if (BridgeRuntime.IsRuntimeFeatureEnabled(
+                    BridgeRuntime.ClientSetDisorganizedDiagnosticFeature))
+                ClientSetDisorganizedDiagnostic.Install(coopModuleRoot, bridgeId);
+            if (BridgeRuntime.IsRuntimeFeatureEnabled(
+                    BridgeRuntime.ClientTroopRosterSequenceDiagnosticFeature))
+                ClientTroopRosterSequenceDiagnostic.Install(coopModuleRoot, bridgeId);
             BridgeRuntime.MarkCoopContainerReady();
         }
 
@@ -7898,7 +7975,7 @@ namespace BCS.CoopBridge
                 bannerPaletteLoaded = true;
             }
             const string message =
-                "Initialized Bannerlord banner palette before EOE faction deserialization.";
+                "Initialized Bannerlord banner palette before merged faction deserialization.";
             Console.WriteLine("[BCS Coop Bridge] " + message);
             CachePathRedirectPrefix.WriteTrace(message);
         }
@@ -7968,10 +8045,16 @@ namespace GameInterface.BCSCoopBridge.Registration
         {
             if (messageBroker == null)
                 throw new ArgumentNullException("messageBroker");
-            BCS.CoopBridge.CoopRegistryLifecycleCompatibility.Install(true);
-            BCS.CoopBridge.ServerPopulationControl.Install();
+            if (BCS.CoopBridge.BridgeRuntime.IsRuntimeFeatureEnabled(
+                    BCS.CoopBridge.BridgeRuntime.ServerRegistryLifecycleCompatibilityFeature))
+                BCS.CoopBridge.CoopRegistryLifecycleCompatibility.Install(true);
+            if (BCS.CoopBridge.BridgeRuntime.IsRuntimeFeatureEnabled(
+                    BCS.CoopBridge.BridgeRuntime.ServerPopulationControlFeature))
+                BCS.CoopBridge.ServerPopulationControl.Install();
             BCS.CoopBridge.BridgeRuntime.MarkCoopContainerReady();
-            BCS.CoopBridge.ServerFailedIdCompatibility.Install();
+            if (BCS.CoopBridge.BridgeRuntime.IsRuntimeFeatureEnabled(
+                    BCS.CoopBridge.BridgeRuntime.ServerFailedIdCompatibilityFeature))
+                BCS.CoopBridge.ServerFailedIdCompatibility.Install();
         }
 
         public void Dispose()

@@ -21,6 +21,31 @@ $serverCoopBin = Join-Path $CoopModuleRoot 'DedicatedServer\engine\Modules\Coop\
 $serverHarmonyBin = $serverCoopBin
 $serverGameInterfaceAssembly = Join-Path $serverCoopBin 'GameInterface.dll'
 
+function Get-BridgeModuleId(
+    [byte[]] $ConfigurationBytes,
+    [byte[]] $ServerAssemblyBytes,
+    [byte[]] $ClientAssemblyBytes) {
+    $identityPayload = New-Object System.IO.MemoryStream
+    try {
+        $identityPayload.Write($ConfigurationBytes, 0, $ConfigurationBytes.Length)
+        $identityPayload.Write($ServerAssemblyBytes, 0, $ServerAssemblyBytes.Length)
+        $identityPayload.Write($ClientAssemblyBytes, 0, $ClientAssemblyBytes.Length)
+        $identityBytes = $identityPayload.ToArray()
+    }
+    finally {
+        $identityPayload.Dispose()
+    }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $configurationHash = ([BitConverter]::ToString(
+            $sha.ComputeHash($identityBytes))).Replace('-', '')
+    }
+    finally {
+        $sha.Dispose()
+    }
+    return 'BCS.CoopBridge.' + $configurationHash.Substring(0, 24).ToLowerInvariant()
+}
+
 try {
     [System.IO.Directory]::CreateDirectory($content) | Out-Null
     [System.IO.Directory]::CreateDirectory($contentBin) | Out-Null
@@ -109,7 +134,22 @@ try {
     $clientGameVersion64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.8'))
     $serverRuntimeVersion64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.8.123456'))
     $clientRuntimeVersion64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.8.123457'))
-    $configText = 'BCS-COOP-BRIDGE|1' + [char]10 +
+    $runtimeFeatures = @(
+        'ClientMapEventCompatibility',
+        'ClientRegistryLifecycleCompatibility',
+        'ClientMapEventPositionAuthority',
+        'ClientTroopUpgradeLoadRepair',
+        'ClientSetDisorganizedDiagnostic',
+        'ClientTroopRosterSequenceDiagnostic',
+        'ServerRegistryLifecycleCompatibility',
+        'ServerPopulationControl',
+        'ServerFailedIdCompatibility'
+    )
+    $runtimeFeatureText = (($runtimeFeatures | Sort-Object | ForEach-Object {
+        'RUNTIME_FEATURE|' + [Convert]::ToBase64String($utf8.GetBytes($_))
+    }) -join [char]10) + [char]10
+    $configText = 'BCS-COOP-BRIDGE|2' + [char]10 +
+        $runtimeFeatureText +
         'GAME_VERSION_COMPAT|' + $serverGameVersion64 + '|' + $clientGameVersion64 + '|' + $serverRuntimeVersion64 + '|' + $clientRuntimeVersion64 + [char]10 +
         'MODULE|' + $id64 + '|' + $version64 + '|' + $dll64 + '|' + $fixtureHash + [char]10 +
         'MODULE|' + $id64 + '|' + $version64 + '|' + $gameInterfaceDll64 + '|' + $gameInterfaceFixtureHash + [char]10 +
@@ -146,7 +186,7 @@ try {
     $clientBridgeBin = Join-Path $bridgeRoot 'bin\Win64_Shipping_Client'
     [System.IO.Directory]::CreateDirectory($serverBridgeBin) | Out-Null
     [System.IO.Directory]::CreateDirectory($clientBridgeBin) | Out-Null
-    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.64"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
+    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.65"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
     [System.IO.File]::WriteAllText((Join-Path $bridgeRoot 'SubModule.xml'), $bridgeManifest, $utf8)
     [System.IO.File]::WriteAllBytes((Join-Path $bridgeRoot 'bcs-coop-bridge.config'), $configBytes)
     Copy-Item -LiteralPath $serverBridgeAssemblySource -Destination (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll')
@@ -193,6 +233,7 @@ try {
 
     $env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY = $serverGameInterfaceAssembly
     $env:BCS_BRIDGE_SMOKE_VALIDATE_GAME_VERSION = '1'
+    $env:BCS_BRIDGE_SMOKE_EXPECTED_FEATURES = $runtimeFeatures -join '|'
     try {
         & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
         if ($LASTEXITCODE -ne 0) {
@@ -245,6 +286,90 @@ try {
     }
     Write-Output 'PASS: client bridge discovered an active external Workshop-style module root.'
 
+    # A schema 2 package without feature records is the generic baseline. It
+    # must validate without silently activating compatibility written for EOE.
+    $genericConfigLines = $configText.Split(
+        [string[]] @("`r`n", "`n"),
+        [System.StringSplitOptions]::RemoveEmptyEntries) |
+        Where-Object { -not $_.StartsWith('RUNTIME_FEATURE|', [StringComparison]::Ordinal) }
+    $genericConfigText = ($genericConfigLines -join [char]10) + [char]10
+    $genericConfigBytes = $utf8.GetBytes($genericConfigText)
+    $genericBridgeId = Get-BridgeModuleId `
+        $genericConfigBytes `
+        $serverBridgeAssemblyBytes `
+        $clientBridgeAssemblyBytes
+    $genericBridgeManifest = $bridgeManifest.Replace($bridgeId, $genericBridgeId)
+    [System.IO.File]::WriteAllText(
+        (Join-Path $bridgeRoot 'SubModule.xml'),
+        $genericBridgeManifest,
+        $utf8)
+    [System.IO.File]::WriteAllBytes(
+        (Join-Path $bridgeRoot 'bcs-coop-bridge.config'),
+        $genericConfigBytes)
+    $bridgeId = $genericBridgeId
+    $bridgeManifest = $genericBridgeManifest
+    Remove-Item Env:BCS_BRIDGE_SMOKE_EXPECTED_FEATURES -ErrorAction SilentlyContinue
+    $env:BCS_BRIDGE_SMOKE_DISABLED_FEATURES = $runtimeFeatures -join '|'
+    $env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY = $serverGameInterfaceAssembly
+    try {
+        & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Generic server bridge runtime activated a target-specific compatibility feature.'
+        }
+    }
+    finally {
+        Remove-Item Env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY -ErrorAction SilentlyContinue
+    }
+    & $hostPath (Join-Path $clientBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Generic client bridge runtime activated a target-specific compatibility feature.'
+    }
+    Remove-Item Env:BCS_BRIDGE_SMOKE_DISABLED_FEATURES -ErrorAction SilentlyContinue
+    $env:BCS_BRIDGE_SMOKE_EXPECTED_FEATURES = $runtimeFeatures -join '|'
+    Write-Output 'PASS: generic schema 2 kept all target-specific runtime features disabled.'
+
+    # Schema 1 packages predate explicit feature records. Re-identify the same
+    # package with a legacy configuration and prove that every historical hook
+    # remains enabled on both runtime roles.
+    $legacyConfigLines = $configText.Split(
+        [string[]] @("`r`n", "`n"),
+        [System.StringSplitOptions]::RemoveEmptyEntries) |
+        Select-Object -Skip 1 |
+        Where-Object { -not $_.StartsWith('RUNTIME_FEATURE|', [StringComparison]::Ordinal) }
+    $legacyConfigText = 'BCS-COOP-BRIDGE|1' + [char]10 +
+        ($legacyConfigLines -join [char]10) + [char]10
+    $legacyConfigBytes = $utf8.GetBytes($legacyConfigText)
+    $legacyBridgeId = Get-BridgeModuleId `
+        $legacyConfigBytes `
+        $serverBridgeAssemblyBytes `
+        $clientBridgeAssemblyBytes
+    $legacyBridgeManifest = $bridgeManifest.Replace($bridgeId, $legacyBridgeId)
+    [System.IO.File]::WriteAllText(
+        (Join-Path $bridgeRoot 'SubModule.xml'),
+        $legacyBridgeManifest,
+        $utf8)
+    [System.IO.File]::WriteAllBytes(
+        (Join-Path $bridgeRoot 'bcs-coop-bridge.config'),
+        $legacyConfigBytes)
+    $bridgeId = $legacyBridgeId
+    $bridgeManifest = $legacyBridgeManifest
+
+    $env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY = $serverGameInterfaceAssembly
+    try {
+        & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Server bridge runtime did not preserve schema 1 compatibility features.'
+        }
+    }
+    finally {
+        Remove-Item Env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY -ErrorAction SilentlyContinue
+    }
+    & $hostPath (Join-Path $clientBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Client bridge runtime did not preserve schema 1 compatibility features.'
+    }
+    Write-Output 'PASS: legacy schema 1 preserved all historical runtime compatibility features.'
+
     [System.IO.File]::WriteAllText($visualXmlPath, '<Visuals particle="server_headless" />', $utf8)
     & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
     if ($LASTEXITCODE -ne 0) {
@@ -276,6 +401,8 @@ try {
     exit 0
 }
 finally {
+    Remove-Item Env:BCS_BRIDGE_SMOKE_EXPECTED_FEATURES -ErrorAction SilentlyContinue
+    Remove-Item Env:BCS_BRIDGE_SMOKE_DISABLED_FEATURES -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $smokeRoot) {
         Remove-Item -LiteralPath $smokeRoot -Recurse -Force
     }

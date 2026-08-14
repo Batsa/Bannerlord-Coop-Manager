@@ -17,20 +17,20 @@ namespace BCSTool.Services;
 public sealed class CoopBridgePackageBuilder
 {
     public const string BridgeIdPrefix = "BCS.CoopBridge.";
-    public const string BridgeVersion = "v0.6.64";
+    public const string BridgeVersion = "v0.6.65";
     private const string ProjectUrl =
         "https://github.com/Batsa/Bannerlord-Coop-Manager";
 
     private const string ServerBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Server.dll";
     private const string ServerBridgeAssemblyHash =
-        "4F38B76C49BD5D0F374EC0A37A08449F0E42C2DD93BA733FE76442E7966E716C";
+        "459261DC1A37355B77DAAC9D4D653A28438DBEDC91D4D7459BF92143564AC5C9";
     private const string ClientBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Client.dll";
     private const string LicenseResource = "BCSTool.LICENSE";
     private const string NoticeResource = "BCSTool.NOTICE.md";
     private const string ClientBridgeAssemblyHash =
-        "0EBB9730AF2694C12F2F1D4FC1B6C7295A8A11C2DBB751A81749E1D1688AE8E9";
+        "A9360BACA132935276230EC85132CB986765EFD434F6D9FB6ECC565DBAA42032";
     private static readonly UTF8Encoding Utf8NoBom = new(false, true);
 
     public CoopBridgePackage Build(
@@ -43,7 +43,8 @@ public sealed class CoopBridgePackageBuilder
         IReadOnlyList<BridgeServerXmlOverlay>? serverXmlOverlays = null,
         BridgeGameVersionCompatibility? gameVersionCompatibility = null,
         IReadOnlyList<BridgeClientAssemblyResolve>? clientAssemblyResolves = null,
-        IReadOnlyList<BridgeServerMapTerrainSize>? serverMapTerrainSizes = null)
+        IReadOnlyList<BridgeServerMapTerrainSize>? serverMapTerrainSizes = null,
+        IReadOnlyList<BridgeRuntimeFeature>? runtimeFeatures = null)
     {
         ArgumentNullException.ThrowIfNull(modules);
         if (modules.Count == 0)
@@ -115,6 +116,8 @@ public sealed class CoopBridgePackageBuilder
         ValidateClientAssemblyResolves(clientAssemblyResolves);
         serverMapTerrainSizes ??= Array.Empty<BridgeServerMapTerrainSize>();
         ValidateServerMapTerrainSizes(serverMapTerrainSizes, modules);
+        runtimeFeatures ??= Array.Empty<BridgeRuntimeFeature>();
+        ValidateRuntimeFeatures(runtimeFeatures);
         var configuration = BuildConfiguration(
             records,
             contentRecords,
@@ -124,7 +127,8 @@ public sealed class CoopBridgePackageBuilder
             serverXmlOverlays,
             gameVersionCompatibility,
             clientAssemblyResolves,
-            serverMapTerrainSizes);
+            serverMapTerrainSizes,
+            runtimeFeatures);
         var serverAssembly = ReadBridgeAssembly(
             ServerBridgeAssemblyResource,
             ServerBridgeAssemblyHash);
@@ -164,6 +168,7 @@ public sealed class CoopBridgePackageBuilder
             $"Bannerlord game-version compatibility: {gameVersionCompatibility is not null}.\r\n" +
             $"Client assembly resolvers: {clientAssemblyResolves.Count}.\r\n" +
             $"Server map terrain sizes: {serverMapTerrainSizes.Count}.\r\n" +
+            $"Explicit runtime features: {runtimeFeatures.Count}.\r\n" +
             "It is a compatibility/authority extension point, not proof that arbitrary custom gameplay state is synchronized.\r\n" +
             "\r\n" +
             "License: GNU GPL version 3 only (GPL-3.0-only).\r\n" +
@@ -198,7 +203,8 @@ public sealed class CoopBridgePackageBuilder
             serverXmlOverlays,
             gameVersionCompatibility,
             clientAssemblyResolves,
-            serverMapTerrainSizes);
+            serverMapTerrainSizes,
+            runtimeFeatures);
     }
 
     private static byte[] BuildConfiguration(
@@ -210,9 +216,16 @@ public sealed class CoopBridgePackageBuilder
         IReadOnlyList<BridgeServerXmlOverlay> serverXmlOverlays,
         BridgeGameVersionCompatibility? gameVersionCompatibility,
         IReadOnlyList<BridgeClientAssemblyResolve> clientAssemblyResolves,
-        IReadOnlyList<BridgeServerMapTerrainSize> serverMapTerrainSizes)
+        IReadOnlyList<BridgeServerMapTerrainSize> serverMapTerrainSizes,
+        IReadOnlyList<BridgeRuntimeFeature> runtimeFeatures)
     {
-        var builder = new StringBuilder("BCS-COOP-BRIDGE|1\n");
+        var builder = new StringBuilder("BCS-COOP-BRIDGE|2\n");
+        foreach (var feature in runtimeFeatures.OrderBy(value => value.ToString(), StringComparer.Ordinal))
+        {
+            builder.Append("RUNTIME_FEATURE|")
+                .Append(Encode(feature.ToString()))
+                .Append('\n');
+        }
         if (gameVersionCompatibility is not null)
         {
             builder.Append("GAME_VERSION_COMPAT|")
@@ -319,6 +332,18 @@ public sealed class CoopBridgePackageBuilder
                 .Append('\n');
         }
         return Utf8NoBom.GetBytes(builder.ToString());
+    }
+
+    private static void ValidateRuntimeFeatures(IReadOnlyList<BridgeRuntimeFeature> runtimeFeatures)
+    {
+        var seen = new HashSet<BridgeRuntimeFeature>();
+        foreach (var feature in runtimeFeatures)
+        {
+            if (!Enum.IsDefined(feature))
+                throw new InvalidDataException($"Unsupported bridge runtime feature: {(int)feature}.");
+            if (!seen.Add(feature))
+                throw new InvalidDataException($"Duplicate bridge runtime feature: {feature}.");
+        }
     }
 
     private static void ValidateClientAssemblyResolves(
@@ -1090,6 +1115,19 @@ public enum BridgeInvocationScope
     ServerSettingsFallback
 }
 
+public enum BridgeRuntimeFeature
+{
+    ClientMapEventCompatibility,
+    ClientRegistryLifecycleCompatibility,
+    ClientMapEventPositionAuthority,
+    ClientTroopUpgradeLoadRepair,
+    ClientSetDisorganizedDiagnostic,
+    ClientTroopRosterSequenceDiagnostic,
+    ServerRegistryLifecycleCompatibility,
+    ServerPopulationControl,
+    ServerFailedIdCompatibility
+}
+
 public sealed record BridgeContentExclusion(
     string ModuleId,
     string RelativePath);
@@ -1146,4 +1184,5 @@ public sealed record CoopBridgePackage(
     IReadOnlyList<BridgeServerXmlOverlay> ServerXmlOverlays,
     BridgeGameVersionCompatibility? GameVersionCompatibility,
     IReadOnlyList<BridgeClientAssemblyResolve> ClientAssemblyResolves,
-    IReadOnlyList<BridgeServerMapTerrainSize> ServerMapTerrainSizes);
+    IReadOnlyList<BridgeServerMapTerrainSize> ServerMapTerrainSizes,
+    IReadOnlyList<BridgeRuntimeFeature> RuntimeFeatures);

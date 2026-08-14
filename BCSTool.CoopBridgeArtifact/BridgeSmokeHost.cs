@@ -54,6 +54,8 @@ internal static class BridgeSmokeHost
             if (validate == null)
                 throw new MissingMethodException(runtime.FullName, "ValidateInstalledPackage");
             validate.Invoke(null, null);
+            VerifyRuntimeFeaturesIfRequested(runtime);
+            VerifyDisabledRuntimeFeaturesIfRequested(runtime);
             VerifyGameVersionCompatibilityIfRequested(args[0]);
             VerifyAuthorityRuleIfPresent(args[0]);
             Console.WriteLine("PASS: bridge runtime accepted the exact generated package.");
@@ -69,6 +71,54 @@ internal static class BridgeSmokeHost
             Console.Error.WriteLine(exception);
             return 1;
         }
+    }
+
+    private static void VerifyRuntimeFeaturesIfRequested(Type runtime)
+    {
+        var expectedText = Environment.GetEnvironmentVariable(
+            "BCS_BRIDGE_SMOKE_EXPECTED_FEATURES");
+        if (expectedText == null)
+            return;
+
+        var isEnabled = runtime.GetMethod(
+            "IsRuntimeFeatureEnabled",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        if (isEnabled == null)
+            throw new MissingMethodException(runtime.FullName, "IsRuntimeFeatureEnabled");
+        var expected = expectedText.Split(
+            new[] { '|' },
+            StringSplitOptions.RemoveEmptyEntries);
+        foreach (var feature in expected)
+        {
+            if (!(bool)isEnabled.Invoke(null, new object[] { feature }))
+                throw new InvalidOperationException("Expected runtime feature is disabled: " + feature);
+        }
+        Console.WriteLine(
+            "PASS: bridge runtime enabled " + expected.Length + " requested compatibility features.");
+    }
+
+    private static void VerifyDisabledRuntimeFeaturesIfRequested(Type runtime)
+    {
+        var disabledText = Environment.GetEnvironmentVariable(
+            "BCS_BRIDGE_SMOKE_DISABLED_FEATURES");
+        if (disabledText == null)
+            return;
+
+        var isEnabled = runtime.GetMethod(
+            "IsRuntimeFeatureEnabled",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        if (isEnabled == null)
+            throw new MissingMethodException(runtime.FullName, "IsRuntimeFeatureEnabled");
+        var disabled = disabledText.Split(
+            new[] { '|' },
+            StringSplitOptions.RemoveEmptyEntries);
+        foreach (var feature in disabled)
+        {
+            if ((bool)isEnabled.Invoke(null, new object[] { feature }))
+                throw new InvalidOperationException("Unexpected runtime feature is enabled: " + feature);
+        }
+        Console.WriteLine(
+            "PASS: bridge runtime kept " + disabled.Length + " compatibility features disabled.");
     }
 
     private static void VerifyGameVersionCompatibilityIfRequested(string bridgePath)

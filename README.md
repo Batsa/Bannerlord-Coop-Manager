@@ -13,7 +13,7 @@ logging, and a version-scoped compatibility path for **Empires of Europe 1700
 
 > Current application version: `0.3.0-beta.6`
 >
-> Current generated bridge runtime: `0.6.64`
+> Current generated bridge runtime: `0.6.65`
 >
 > Upstream base: [`AppleDeath318/BCSTool@f7bc05c`](https://github.com/AppleDeath318/BCSTool/commit/f7bc05c672dad169663f9c8b245e5b01b5422742)
 
@@ -32,7 +32,7 @@ release**.
 | EOE server startup and client join | Demonstrated in the prior hand test |
 | EOE 1696x1696 map/weather correction | Hand-tested; observed weather/MapEvent index failures stopped |
 | Ordinary Coop battles | Multiple battles completed in the prior hand test |
-| Bridge `0.6.64` overlays, registry/population/workshop-cache fixes, and semantic runtime-version compatibility | Built and regression-tested; live hand retest pending |
+| Bridge `0.6.65` recipe-scoped runtime features, overlays, registry/population/workshop-cache fixes, and semantic runtime-version compatibility | Built and regression-tested; live hand retest pending |
 | Optional caravan/villager/bandit population controls | Implemented as server-only soft limits; live campaign retest pending |
 | World-map client movement | Still under investigation; teleporting/stalls were observed |
 | Save/reconnect, late join, and long-duration acceptance | Not yet proven on the final build |
@@ -52,7 +52,7 @@ The current EOE path was developed and tested against:
 | Bannerlord Coop | `0.1.2` |
 | Empires of Europe 1700 | `1.4.7.1` |
 | Dedicated-server game runtime | `1.4.8` |
-| Generated bridge | `0.6.64` |
+| Generated bridge | `0.6.65` |
 
 These are supported compatibility versions, not floating minimum versions. The
 bridge installation validates versions, required files, paths, assembly identities,
@@ -160,6 +160,15 @@ The UI is recipe-driven. EOE is the first built-in, tested recipe; a future
 overhaul receives the same two-action lifecycle only after a specific bridge
 recipe has been supplied and registered. Static generic analysis is not treated
 as a compatibility recipe.
+
+Target identity, supported versions, preparation logic, bridge rules, runtime
+features, lifecycle metadata, and optional population guidance are registered
+as one recipe. Generic executable targets still receive the conservative
+manifest/bridge projection, but their schema-2 bridge configuration declares no
+target-specific runtime features. EOE's recipe explicitly declares its nine
+proven runtime features. Existing schema-1 bridge packages remain accepted and
+retain all historical hooks, so previously generated EOE packages do not lose
+behavior during an upgrade.
 
 The resulting enabled order is:
 
@@ -398,7 +407,7 @@ player-identifying information.
   the last hand test. New diagnostics can determine whether party
   disorganization or missing TroopRoster registration contributes, but no
   speculative movement rewrite has been added.
-- The `0.6.64` bridge targets proven server `Failed to get ID` roots: orphaned
+- The `0.6.65` bridge targets proven server `Failed to get ID` roots: orphaned
   load-time party visuals, headless map-event visuals, deterministic loaded-Armies,
   nullable Army targets, pre-registration PartyComponent links, and synthetic
   workshop warehouse-roster copies. The previous log also contained a separate

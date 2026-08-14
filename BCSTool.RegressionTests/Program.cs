@@ -497,6 +497,7 @@ Run("bridge authority rules are module-bound", TestBridgeAuthorityRuleConfigurat
 Run("bridge server file redirects require safe existing sources", TestBridgeServerFileRedirectConfiguration);
 Run("bridge server XML overlays require safe source and payload", TestBridgeServerXmlOverlayConfiguration);
 Run("bridge server map terrain size is version-scoped and fail closed", TestBridgeServerMapTerrainSizeConfiguration);
+Run("bridge runtime features are explicit and target scoped", TestBridgeRuntimeFeatureConfiguration);
 Run("bridge excludes campaign seeding and save rewriting", TestBridgeExcludesCampaignIntervention);
 Run("generic executable preparation projects DLL and creates bridge", TestGenericExecutablePrepareAndRevert);
 Run("prepared profile normalizes dependency order", TestPreparedProfileNormalizesDependencyOrder);
@@ -3413,6 +3414,10 @@ void TestGenericExecutablePrepareAndRevert()
             Assert(plan.CanApply, plan.Summary);
             Assert(plan.RuleId == "generic-executable-bridge-v1",
                 "Executable mod did not select the generic bridge rule.");
+            Assert(!plan.Warnings.Any(warning =>
+                    warning.Contains("EOE", StringComparison.OrdinalIgnoreCase) ||
+                    warning.Contains("Europe1700", StringComparison.OrdinalIgnoreCase)),
+                "Generic executable plan leaked EOE-specific user guidance.");
 
             var result = patcher.Apply(plan);
             Assert(File.Exists(serverDll) && File.ReadAllBytes(serverDll).SequenceEqual(originalDll),
@@ -3428,6 +3433,11 @@ void TestGenericExecutablePrepareAndRevert()
                 "bcs-coop-bridge.config"));
             Assert(bridgeConfiguration.Contains("MODULE|", StringComparison.Ordinal),
                 "Bridge configuration omitted its module/version record.");
+            Assert(bridgeConfiguration.StartsWith(
+                       "BCS-COOP-BRIDGE|2\n",
+                       StringComparison.Ordinal) &&
+                   !bridgeConfiguration.Contains("RUNTIME_FEATURE|", StringComparison.Ordinal),
+                "Generic executable bridge inherited target-specific runtime features.");
 
             patcher.Revert(result.ManifestPath);
             Assert(File.ReadAllBytes(serverDll).SequenceEqual(staleServerDll),
@@ -3700,6 +3710,62 @@ void TestBridgeServerMapTerrainSizeConfiguration()
             AssertThrowsInvalidData(
                 () => builder.Build(modules, serverMapTerrainSizes: [rule, rule]),
                 "Bridge accepted duplicate server map terrain rules.");
+        });
+}
+
+void TestBridgeRuntimeFeatureConfiguration()
+{
+    WithTemporaryModules(
+        (serverRoot, modulesDirectory) =>
+        {
+            CreateModule(modulesDirectory, "Coop", "v0.1.2", ["Native"]);
+            var modules = new ModuleScanner().Scan(modulesDirectory)
+                .Where(module => module.Id == "Coop")
+                .ToArray();
+            var builder = new CoopBridgePackageBuilder();
+
+            var generic = builder.Build(modules);
+            var genericConfiguration = System.Text.Encoding.UTF8.GetString(generic.Configuration);
+            Assert(genericConfiguration.StartsWith(
+                       "BCS-COOP-BRIDGE|2\n",
+                       StringComparison.Ordinal) &&
+                   !genericConfiguration.Contains("RUNTIME_FEATURE|", StringComparison.Ordinal) &&
+                   generic.RuntimeFeatures.Count == 0,
+                "Generic bridge package inherited target-specific runtime features.");
+
+            var eoeFeatures = BridgeRuntimeFeatureSets.Europe1700;
+            var eoe = builder.Build(modules, runtimeFeatures: eoeFeatures);
+            var featureNames = System.Text.Encoding.UTF8.GetString(eoe.Configuration)
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Where(line => line.StartsWith("RUNTIME_FEATURE|", StringComparison.Ordinal))
+                .Select(line => line.Split('|'))
+                .Select(fields => System.Text.Encoding.UTF8.GetString(
+                    Convert.FromBase64String(fields[1])))
+                .ToArray();
+            var expectedNames = eoeFeatures
+                .Select(feature => feature.ToString())
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray();
+            Assert(featureNames.SequenceEqual(expectedNames, StringComparer.Ordinal) &&
+                   eoe.RuntimeFeatures.SequenceEqual(eoeFeatures),
+                "EOE runtime feature set did not round-trip through deterministic bridge configuration.");
+            Assert(eoe.ModuleId != generic.ModuleId,
+                "Runtime feature selection did not contribute to bridge identity.");
+
+            AssertThrowsInvalidData(
+                () => builder.Build(
+                    modules,
+                    runtimeFeatures:
+                    [
+                        BridgeRuntimeFeature.ServerPopulationControl,
+                        BridgeRuntimeFeature.ServerPopulationControl
+                    ]),
+                "Bridge accepted duplicate runtime features.");
+            AssertThrowsInvalidData(
+                () => builder.Build(
+                    modules,
+                    runtimeFeatures: [(BridgeRuntimeFeature)int.MaxValue]),
+                "Bridge accepted an unknown runtime feature.");
         });
 }
 
