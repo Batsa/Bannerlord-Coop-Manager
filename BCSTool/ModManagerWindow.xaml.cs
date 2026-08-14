@@ -15,6 +15,7 @@ namespace BCSTool;
 public partial class ModManagerWindow : Window
 {
     private readonly ModManagerViewModel _viewModel;
+    private readonly BridgePopulationSettingsService _bridgePopulationSettingsService;
     private bool _allowClose;
     private Point _dragStartPoint;
     private BannerlordModule? _draggedModule;
@@ -23,12 +24,23 @@ public partial class ModManagerWindow : Window
     private bool _folderDropIndicatorVisible;
 
     public ModManagerWindow(ModManagerViewModel viewModel)
+        : this(
+            viewModel,
+            new BridgePopulationSettingsService(viewModel.ServerRoot))
+    {
+    }
+
+    public ModManagerWindow(
+        ModManagerViewModel viewModel,
+        BridgePopulationSettingsService bridgePopulationSettingsService)
     {
         InitializeComponent();
         _viewModel = viewModel;
+        _bridgePopulationSettingsService = bridgePopulationSettingsService;
         DataContext = viewModel;
         _viewModel.CompatibilityReportReady += ShowCompatibilityReport;
         _viewModel.BridgeInstallationCompleted += CompleteBridgeInstallation;
+        _viewModel.BridgePopulationSettingsRequested += ShowBridgePopulationSettings;
     }
 
     private void CompleteBridgeInstallation(BridgeInstallationResult result)
@@ -46,6 +58,29 @@ public partial class ModManagerWindow : Window
         window.ShowDialog();
     }
 
+    private void ShowBridgePopulationSettings(BridgePopulationSettingsTarget target)
+    {
+        try
+        {
+            var window = new BridgePopulationSettingsWindow(
+                _bridgePopulationSettingsService,
+                target)
+            {
+                Owner = this
+            };
+            window.ShowDialog();
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "Could Not Open Bridge Population Settings",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
         await _viewModel.InitializeAsync();
@@ -57,6 +92,7 @@ public partial class ModManagerWindow : Window
         {
             _viewModel.CompatibilityReportReady -= ShowCompatibilityReport;
             _viewModel.BridgeInstallationCompleted -= CompleteBridgeInstallation;
+            _viewModel.BridgePopulationSettingsRequested -= ShowBridgePopulationSettings;
             return;
         }
 
@@ -74,6 +110,7 @@ public partial class ModManagerWindow : Window
         _allowClose = true;
         _viewModel.CompatibilityReportReady -= ShowCompatibilityReport;
         _viewModel.BridgeInstallationCompleted -= CompleteBridgeInstallation;
+        _viewModel.BridgePopulationSettingsRequested -= ShowBridgePopulationSettings;
     }
 
     private void ModuleList_PreviewMouseLeftButtonDown(

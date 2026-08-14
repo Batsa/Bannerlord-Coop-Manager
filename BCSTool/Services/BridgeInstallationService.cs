@@ -21,7 +21,10 @@ public sealed class BridgeInstallationService
             "Empires of Europe 1700",
             "Europe1700",
             ["Europe1700"],
-            ["europe-1700-1.4.7.1-server-v55"])
+            [
+                "europe-1700-1.4.7.1-server-v55",
+                "europe-1700-1.4.7.1-server-v57"
+            ])
     ];
 
     private readonly ModuleScanner _moduleScanner;

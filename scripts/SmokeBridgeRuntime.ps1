@@ -16,14 +16,18 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 $gameBin = Join-Path $BannerlordRoot 'bin\Win64_Shipping_Client'
 $coopBin = Join-Path $CoopModuleRoot 'bin\Win64_Shipping_Client'
 $harmonyBin = $coopBin
+$serverGameBin = Join-Path $CoopModuleRoot 'DedicatedServer\engine\bin\Win64_Shipping_Server'
+$serverCoopBin = Join-Path $CoopModuleRoot 'DedicatedServer\engine\Modules\Coop\bin\Win64_Shipping_Server'
+$serverHarmonyBin = $serverCoopBin
+$serverGameInterfaceAssembly = Join-Path $serverCoopBin 'GameInterface.dll'
 
 try {
     [System.IO.Directory]::CreateDirectory($content) | Out-Null
     [System.IO.Directory]::CreateDirectory($contentBin) | Out-Null
     $native = Join-Path $modules 'Native'
     [System.IO.Directory]::CreateDirectory($native) | Out-Null
-    $serverNativeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="Native"/><Id value="Native"/><Version value="v1.4.7"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules/><SubModules/></Module>'
-    $clientNativeManifest = $serverNativeManifest.Replace('v1.4.7', 'v1.4.8')
+    $serverNativeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="Native"/><Id value="Native"/><Version value="v1.4.8"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules/><SubModules/></Module>'
+    $clientNativeManifest = $serverNativeManifest
     $nativeManifestPath = Join-Path $native 'SubModule.xml'
     [System.IO.File]::WriteAllText($nativeManifestPath, $serverNativeManifest, $utf8)
     $contentManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="Coop"/><Id value="Coop"/><Version value="v1.0.0"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules/><SubModules/></Module>'
@@ -77,6 +81,8 @@ try {
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
+    Copy-Item -LiteralPath (Join-Path $coopBin 'Common.dll') `
+        -Destination (Join-Path $contentBin 'Common.dll')
     $fixtureSha = [System.Security.Cryptography.SHA256]::Create()
     try {
         $fixtureHash = ([BitConverter]::ToString($fixtureSha.ComputeHash([System.IO.File]::ReadAllBytes($fixturePath)))).Replace('-', '')
@@ -99,45 +105,12 @@ try {
     $method64 = [Convert]::ToBase64String($utf8.GetBytes('Mutate'))
     $clientMethod64 = [Convert]::ToBase64String($utf8.GetBytes('MutateClientOnly'))
     $visualPath64 = [Convert]::ToBase64String($utf8.GetBytes('ModuleData/visual.xml'))
-    $serverGameVersion64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.7'))
+    $serverGameVersion64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.8'))
     $clientGameVersion64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.8'))
-    $runtimePayload = New-Object System.IO.MemoryStream
-    try {
-        foreach ($runtimeFile in @(
-            'TaleWorlds.CampaignSystem.dll',
-            'TaleWorlds.Core.dll',
-            'TaleWorlds.Library.dll',
-            'TaleWorlds.Localization.dll',
-            'TaleWorlds.ModuleManager.dll',
-            'TaleWorlds.MountAndBlade.dll',
-            'TaleWorlds.ObjectSystem.dll') | Sort-Object) {
-            $nameBytes = $utf8.GetBytes($runtimeFile)
-            $runtimePayload.Write($nameBytes, 0, $nameBytes.Length)
-            $runtimePayload.WriteByte(0)
-            $runtimeFileSha = [System.Security.Cryptography.SHA256]::Create()
-            try {
-                $runtimeFileHash = $runtimeFileSha.ComputeHash(
-                    [System.IO.File]::ReadAllBytes((Join-Path $gameBin $runtimeFile)))
-            }
-            finally {
-                $runtimeFileSha.Dispose()
-            }
-            $runtimePayload.Write($runtimeFileHash, 0, $runtimeFileHash.Length)
-        }
-        $runtimeSha = [System.Security.Cryptography.SHA256]::Create()
-        try {
-            $runtimeHash = ([BitConverter]::ToString(
-                $runtimeSha.ComputeHash($runtimePayload.ToArray()))).Replace('-', '')
-        }
-        finally {
-            $runtimeSha.Dispose()
-        }
-    }
-    finally {
-        $runtimePayload.Dispose()
-    }
+    $serverRuntimeVersion64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.8.123456'))
+    $clientRuntimeVersion64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.8.123457'))
     $configText = 'BCS-COOP-BRIDGE|1' + [char]10 +
-        'GAME_VERSION_COMPAT|' + $serverGameVersion64 + '|' + $clientGameVersion64 + '|' + $runtimeHash + '|' + $runtimeHash + [char]10 +
+        'GAME_VERSION_COMPAT|' + $serverGameVersion64 + '|' + $clientGameVersion64 + '|' + $serverRuntimeVersion64 + '|' + $clientRuntimeVersion64 + [char]10 +
         'MODULE|' + $id64 + '|' + $version64 + '|' + $dll64 + '|' + $fixtureHash + [char]10 +
         'MODULE|' + $id64 + '|' + $version64 + '|' + $gameInterfaceDll64 + '|' + $gameInterfaceFixtureHash + [char]10 +
         'IGNORE_CONTENT|' + $id64 + '|' + $visualPath64 + [char]10 +
@@ -173,7 +146,7 @@ try {
     $clientBridgeBin = Join-Path $bridgeRoot 'bin\Win64_Shipping_Client'
     [System.IO.Directory]::CreateDirectory($serverBridgeBin) | Out-Null
     [System.IO.Directory]::CreateDirectory($clientBridgeBin) | Out-Null
-    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.60"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
+    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.64"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
     [System.IO.File]::WriteAllText((Join-Path $bridgeRoot 'SubModule.xml'), $bridgeManifest, $utf8)
     [System.IO.File]::WriteAllBytes((Join-Path $bridgeRoot 'bcs-coop-bridge.config'), $configBytes)
     Copy-Item -LiteralPath $serverBridgeAssemblySource -Destination (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll')
@@ -186,10 +159,42 @@ try {
         exit $LASTEXITCODE
     }
 
-    $env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY = $gameInterfaceFixturePath
+    $serverHostProjectRoot = Join-Path $smokeRoot 'ServerBridgeSmokeHost'
+    $serverHostOutput = Join-Path $serverHostProjectRoot 'out'
+    [System.IO.Directory]::CreateDirectory($serverHostProjectRoot) | Out-Null
+    $serverHostProjectPath = Join-Path $serverHostProjectRoot 'BridgeSmokeHost.Server.csproj'
+    $serverHostSource = [Security.SecurityElement]::Escape(
+        (Join-Path $WorkspaceRoot 'BCSTool.CoopBridgeArtifact\BridgeSmokeHost.cs'))
+    $serverHostProject = @"
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <UseAppHost>false</UseAppHost>
+    <AssemblyName>BridgeSmokeHost.Server</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$serverHostSource" Link="BridgeSmokeHost.cs" />
+  </ItemGroup>
+</Project>
+"@
+    [System.IO.File]::WriteAllText($serverHostProjectPath, $serverHostProject, $utf8)
+    & dotnet build $serverHostProjectPath --nologo --configuration Release --verbosity quiet --output $serverHostOutput
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+    $serverHostPath = Join-Path $serverHostOutput 'BridgeSmokeHost.Server.dll'
+    if (-not (Test-Path -LiteralPath $serverHostPath -PathType Leaf)) {
+        throw 'The temporary net6 server bridge smoke host was not produced.'
+    }
+
+    $env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY = $serverGameInterfaceAssembly
     $env:BCS_BRIDGE_SMOKE_VALIDATE_GAME_VERSION = '1'
     try {
-        & $hostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
+        & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
         if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
         }
@@ -241,24 +246,29 @@ try {
     Write-Output 'PASS: client bridge discovered an active external Workshop-style module root.'
 
     [System.IO.File]::WriteAllText($visualXmlPath, '<Visuals particle="server_headless" />', $utf8)
-    & $hostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
+    & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
     if ($LASTEXITCODE -ne 0) {
         throw 'Bridge runtime rejected an explicit server-only visual difference.'
     }
     Write-Output 'PASS: bridge runtime allowed the declared server-only visual difference.'
     [System.IO.File]::WriteAllText($visualXmlPath, $visualXml, $utf8)
 
-    [System.IO.File]::WriteAllText($contentXmlPath, '<Items><Item id="content_b" /></Items>', $utf8)
-    & $hostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
-    if ($LASTEXITCODE -eq 0) {
-        throw 'Bridge runtime accepted tampered gameplay content.'
+    $fixtureBytes = [System.IO.File]::ReadAllBytes($fixturePath)
+    try {
+        [System.IO.File]::WriteAllBytes($fixturePath, [byte[]](0x42, 0x43, 0x53))
+        & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
+        if ($LASTEXITCODE -eq 0) {
+            throw 'Bridge runtime accepted an unreadable required managed assembly.'
+        }
+        Write-Output 'PASS: bridge runtime rejected an unreadable required managed assembly.'
     }
-    Write-Output 'PASS: bridge runtime rejected tampered gameplay content.'
+    finally {
+        [System.IO.File]::WriteAllBytes($fixturePath, $fixtureBytes)
+    }
 
-    [System.IO.File]::WriteAllText($contentXmlPath, $contentXml, $utf8)
     $tamperedManifest = $contentManifest.Replace('v1.0.0', 'v1.0.1')
     [System.IO.File]::WriteAllText((Join-Path $content 'SubModule.xml'), $tamperedManifest, $utf8)
-    & $hostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
+    & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
     if ($LASTEXITCODE -eq 0) {
         throw 'Bridge runtime accepted a tampered module version.'
     }

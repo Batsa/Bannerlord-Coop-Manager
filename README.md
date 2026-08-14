@@ -10,9 +10,9 @@ client bridge packaging, client-save import, persistent server
 logging, and a version-scoped compatibility path for **Empires of Europe 1700
 (EOE)**.
 
-> Current application version: `0.3.0-beta.5`
+> Current application version: `0.3.0-beta.6`
 >
-> Current generated bridge runtime: `0.6.60`
+> Current generated bridge runtime: `0.6.64`
 >
 > Upstream base: [`AppleDeath318/BCSTool@f7bc05c`](https://github.com/AppleDeath318/BCSTool/commit/f7bc05c672dad169663f9c8b245e5b01b5422742)
 
@@ -23,7 +23,7 @@ release**.
 
 | Area | Current status |
 |---|---|
-| GUI server lifecycle, configuration, backups, and console | Implemented and regression-tested |
+| GUI server lifecycle, configuration, logging, and console | Implemented and regression-tested |
 | Dedicated-server module profile and enforced UDP port `4200` | Implemented and regression-tested |
 | Client campaign import into the server | Implemented and regression-tested |
 | Version-scoped server/client bridge generation | Implemented and regression-tested |
@@ -31,7 +31,8 @@ release**.
 | EOE server startup and client join | Demonstrated in the prior hand test |
 | EOE 1696x1696 map/weather correction | Hand-tested; observed weather/MapEvent index failures stopped |
 | Ordinary Coop battles | Multiple battles completed in the prior hand test |
-| Bridge `0.6.60` overlays, lifecycle fixes, and version-scoped compatibility | Built and regression-tested; live hand retest pending |
+| Bridge `0.6.64` overlays, registry/population/workshop-cache fixes, and semantic runtime-version compatibility | Built and regression-tested; live hand retest pending |
+| Optional caravan/villager/bandit population controls | Implemented as server-only soft limits; live campaign retest pending |
 | World-map client movement | Still under investigation; teleporting/stalls were observed |
 | Save/reconnect, late join, and long-duration acceptance | Not yet proven on the final build |
 
@@ -49,8 +50,8 @@ The current EOE path was developed and tested against:
 | Mount & Blade II: Bannerlord client | `1.4.8` |
 | Bannerlord Coop | `0.1.2` |
 | Empires of Europe 1700 | `1.4.7.1` |
-| Dedicated-server game runtime | `1.4.7` |
-| Generated bridge | `0.6.60` |
+| Dedicated-server game runtime | `1.4.8` |
+| Generated bridge | `0.6.64` |
 
 These are supported compatibility versions, not floating minimum versions. The
 bridge installation validates versions, required files, paths, assembly identities,
@@ -84,7 +85,7 @@ No installer, .NET SDK, or source build is required.
 
 1. Open [GitHub Releases](https://github.com/Batsa/Bannerlord-Coop-Manager/releases).
 2. Under the newest release's **Assets**, download the file named like
-   `Bannerlord-Coop-Manager-v0.3.0-beta.5-win-x64.zip`. Do not download the
+   `Bannerlord-Coop-Manager-v0.3.0-beta.6-win-x64.zip`. Do not download the
    automatically generated **Source code** archives.
 3. Right-click the downloaded ZIP and select **Extract All**. Extract it to a
    normal writable folder, such as `Documents\Bannerlord Coop Manager`.
@@ -193,6 +194,41 @@ projects either DLL only while its submodule is actively declared in EOE's
 `SubModule.xml`. Commenting out, removing, or disabling that declaration keeps
 the DLL out of the server projection even when a loose copy remains on disk.
 
+### Optional bridge population settings
+
+After installing the bridge, reopen **Server Mods**, click the enabled current
+`BCS.CoopBridge.<identity>` row, and select **Bridge Population Settings**.
+The editor can set:
+
+- a soft global maximum for future automatically created NPC caravans;
+- automatic NPC caravans per town, defaulting to `2`;
+- a soft maximum for active villager trade parties; and
+- a multiplier for regular bandit parties spawned around hideouts.
+
+The per-town caravan ceiling defaults to `2`; the global caravan and villager
+ceilings default to native behavior. Player-clan caravans are excluded from both
+bridge caravan ceilings. These controls never delete existing parties from an
+imported save; global or per-town counts above a ceiling decline only through
+normal campaign attrition. Lower villager limits can reduce food and trade
+delivery and should be changed cautiously. Changes are read on the next server
+start.
+
+For the EOE bridge, the editor reads the installed overhaul's settlement data
+and shows an advisory native-scale guide beside both limits. Bannerlord normally
+targets two merchant caravans per non-castle town and one active villager party
+per village. The editor also multiplies the detected town count by the selected
+per-town value, so EOE's 236 towns show targets of 472 at the default or 236 at
+one caravan per town. These calculated values guide custom limits; they are not
+hard engine maxima, and imported or customized campaign state can exceed them.
+
+The server-only values are stored at
+`<DedicatedServer>\bcs-coop-bridge-population.config`. They survive bridge
+updates, are not included in the client ZIP, and do not change the bridge ID.
+Schema-v1 files retain their existing global ceiling and receive the per-town
+default of `2`; the next settings save writes schema v2.
+Coop remains the single owner of its existing looter multiplier and
+wanderer/companion limits in **Mod Configuration**.
+
 ### What the EOE bridge installation currently addresses
 
 - The dedicated server's incorrect 848x848 terrain size for EOE's 1696x1696
@@ -200,10 +236,16 @@ the DLL out of the server projection even when a loose copy remains on disk.
 - Delayed client handler discovery so the bridge does not hard-reference
   Coop's `Common.dll` before Coop loads
 - Headless action/action-type and malformed trebuchet XML adaptation
-- Exact workshop recipe repair for EOE's populated ranged-weapon tier
+- Reversible server `Items.xsd` support for EOE firearm alternate Weapon modes;
+  EOE's `items_guns.xml` remains unchanged
+- Exact workshop ranged-tier repair plus a live-item category-cache repair
 - Invalid Bearskin Cape references and legacy civilian equipment attributes
 - Direct XSLT-load redirection through Bannerlord's required `ApplyXslt` path
 - Narrow client MapEvent removal authority and troop-upgrade after-load repair
+- Server `MBSaveLoad.CurrentVersion` recovery from the exact observed server
+  runtime version when Bannerlord's virtual file system returns an empty value
+- Deterministic loaded-Army identities, nullable Army AI targets, and deferred
+  PartyComponent links replayed before Coop publishes registry readiness
 - Bounded diagnostics for disorganization and missing TroopRoster sequencing
 
 The bridge does not invent campaign state and does not replace Bannerlord or
@@ -319,7 +361,7 @@ BCS Tool's own lifecycle log is stored under:
 Before sharing logs, remove server passwords, public addresses, Steam IDs, and
 player-identifying information.
 
-## Backups, rollback, and safety
+## Coop backups, bridge rollback, and safety
 
 - Stop Bannerlord and the server before campaign import, bridge installation, or
   revert.
@@ -329,11 +371,14 @@ player-identifying information.
   edit that manifest.
 - Do not manually copy Harmony, Coop, game, or mod DLLs into the dedicated
   server's engine root.
-- Save backups treat `<name>.sav` and `<name>.json` as one pair.
-- One to five rotating generations are kept under
-  `DedicatedServer\Game Saves\BCS Backups`.
-- Manual restore is available only while the managed server is stopped.
-- Automatic corruption detection and automatic rollback are not implemented.
+- Bannerlord Coop owns campaign-save rotation and retains two paired native
+  generations: `<name>.backup1.sav/.json` and `<name>.backup2.sav/.json`.
+- BCS Tool does not create a second campaign-save rotation or restore those
+  native generations. Existing `Game Saves\BCS Backups` folders from older BCS
+  Tool builds are preserved as legacy data and are not deleted automatically.
+- BCS Tool still creates narrow safety copies for its own configuration/profile
+  writes and reversible bridge-install manifests under
+  `bcs-compatibility-backups`; these are not campaign-save backups.
 
 ## Known limitations
 
@@ -341,9 +386,14 @@ player-identifying information.
   the last hand test. New diagnostics can determine whether party
   disorganization or missing TroopRoster registration contributes, but no
   speculative movement rewrite has been added.
-- The `0.6.60` workshop/Bearskin/civilian overlays and client lifecycle
-  fixes have deterministic build and regression coverage but still need a new
-  full hand test.
+- The `0.6.64` bridge targets proven server `Failed to get ID` roots: orphaned
+  load-time party visuals, headless map-event visuals, deterministic loaded-Armies,
+  nullable Army targets, pre-registration PartyComponent links, and synthetic
+  workshop warehouse-roster copies. The previous log also contained a separate
+  daily ItemRoster family that cannot be identified from that log alone. The
+  bridge now records the missing roster's owner and synchronous caller for up to
+  32 unique rosters while leaving Coop's original error visible and behavior
+  unchanged; the next hand test is required before applying an owner-specific fix.
 - Final-build save/reconnect, late join, long-duration synchronization, and
   repeated battle acceptance are not complete.
 - Large EOE campaign saves around 100 MiB previously caused multi-second
@@ -353,9 +403,8 @@ player-identifying information.
   test logged 4,762 heroes and 3,042 parties; a claim of more than 2,000 lords
   was not confirmed. Sustained Play_1x CPU/network saturation still needs a
   timed live capture because the measured client session remained paused.
-- Sixteen EOE firearm `Weapon` schema warnings remain intentionally: the second
-  nodes carry functional alternate melee modes and removing them would break
-  weapons.
+- EOE firearm alternate melee modes remain intact; bridge installation validates
+  the complete `items_guns.xml` against its reversible server schema correction.
 - Manual pause events are not currently classified as server failures.
 - EOE/RF combat AI behavior is owned by EOE and is outside this manager's fix
   scope.
@@ -377,7 +426,7 @@ dotnet build .\BCSTool.sln -c Release --no-restore
 dotnet run --project .\BCSTool.RegressionTests\BCSTool.RegressionTests.csproj -c Release --no-build
 ```
 
-The regression runner currently contains 53 named checks and finishes with:
+The regression runner currently contains 57 named checks and finishes with:
 
 ```text
 All BCS Tool regression checks passed.

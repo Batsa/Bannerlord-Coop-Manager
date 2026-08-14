@@ -47,11 +47,6 @@ public sealed class ServerSettings
     // launches BannerlordCoopServer.exe by itself.
     public bool AutoRestartOnCrash { get; set; } = true;
 
-    // BCS Tool save-backup rotation. These are BCS Tool settings and are not
-    // written into Bannerlord Coop's server-config.json.
-    public bool SaveBackupsEnabled { get; set; } = true;
-    public int SaveBackupCount { get; set; } = 5;
-
     public string BroadcastSaving { get; set; } = "Saving Files...";
     public string BroadcastRestarting { get; set; } = "Restarting...";
 
@@ -94,9 +89,6 @@ public sealed class ServerSettings
             if (WarningMinutesBefore is < 0 or > 10)
                 errors.Add("Restart warning lead time must be between 0 and 10 minutes.");
         }
-
-        if (SaveBackupCount is < 1 or > 5)
-            errors.Add("Save backup count must be between 1 and 5.");
 
         if (SaveWaitSeconds < 0)
             errors.Add("Save wait cannot be negative.");

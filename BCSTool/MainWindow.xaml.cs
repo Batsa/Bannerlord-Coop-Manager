@@ -405,6 +405,8 @@ public partial class MainWindow : Window
                 new ModuleRemovalService(
                     moduleManager,
                     new WindowsModuleDirectoryRecycler());
+            var bridgePopulationSettingsService =
+                new BridgePopulationSettingsService(moduleManager.ServerRoot);
             var viewModel =
                 new ModManagerViewModel(
                     moduleManager,
@@ -412,9 +414,10 @@ public partial class MainWindow : Window
                     moduleRemovalService,
                     _dependencyValidator,
                     new CoopCompatibilityAnalyzer(),
-                    _bridgeInstallationService);
+                    _bridgeInstallationService,
+                    bridgePopulationSettingsService);
             var window =
-                new ModManagerWindow(viewModel)
+                new ModManagerWindow(viewModel, bridgePopulationSettingsService)
                 {
                     Owner = this
                 };

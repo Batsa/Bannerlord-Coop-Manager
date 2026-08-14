@@ -81,6 +81,22 @@ internal static class BridgeSmokeHost
             return;
         }
 
+        var versionRecord = ReadGameVersionRecord(bridgePath);
+        var serverBaseVersion = versionRecord[0];
+        var clientBaseVersion = versionRecord[1];
+        var serverRuntimeVersion = versionRecord[2];
+        var clientRuntimeVersion = versionRecord[3];
+        if (!serverRuntimeVersion.StartsWith(
+                serverBaseVersion + ".",
+                StringComparison.OrdinalIgnoreCase) ||
+            !clientRuntimeVersion.StartsWith(
+                clientBaseVersion + ".",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Bridge smoke runtime versions do not match their declared base versions.");
+        }
+
         var gameInterface = AppDomain.CurrentDomain.GetAssemblies().First(assembly =>
             string.Equals(
                 assembly.GetName().Name,
@@ -124,12 +140,12 @@ internal static class BridgeSmokeHost
             moduleInfo,
             moduleConstructor,
             fromString,
-            "v1.4.7.117131");
+            serverRuntimeVersion);
         var client = CreateModuleInfoArray(
             moduleInfo,
             moduleConstructor,
             fromString,
-            "v1.4.8.119303");
+            clientRuntimeVersion);
         var arguments = new object[] { server, client, null };
         var accepted = (bool)validate.Invoke(null, arguments);
         if (!accepted || arguments[2] != null)
@@ -139,11 +155,17 @@ internal static class BridgeSmokeHost
             moduleInfo,
             moduleConstructor,
             fromString,
-            "v1.4.6.113456");
+            CreateUnsupportedRuntimeVersion(serverRuntimeVersion));
         arguments = new object[] { unsupportedServer, client, null };
         accepted = (bool)validate.Invoke(null, arguments);
         if (accepted || string.IsNullOrWhiteSpace(arguments[2] as string))
             throw new InvalidOperationException("Unsupported game-version pair bypassed Coop validation.");
+
+        VerifyCurrentVersionRepair(
+            bridgePath,
+            applicationVersion,
+            fromString,
+            serverRuntimeVersion);
 
         if (bridgePath.IndexOf(
                 "Win64_Shipping_Server",
@@ -159,13 +181,13 @@ internal static class BridgeSmokeHost
             fromString,
             "Native",
             true,
-            "v1.4.7.117131");
+            serverRuntimeVersion);
         var clientNative = CreateModuleInfo(
             moduleConstructor,
             fromString,
             "Native",
             true,
-            "v1.4.8.119303");
+            clientRuntimeVersion);
         var harmony = CreateModuleInfo(
             moduleConstructor,
             fromString,
@@ -205,6 +227,113 @@ internal static class BridgeSmokeHost
         }
         Console.WriteLine(
             "PASS: game-version and client-only-module adapters accepted only supported releases.");
+    }
+
+    private static string[] ReadGameVersionRecord(string bridgePath)
+    {
+        var directory = Directory.GetParent(Path.GetFullPath(bridgePath));
+        string configurationPath = null;
+        for (var depth = 0; depth < 4 && directory != null; depth++)
+        {
+            var candidate = Path.Combine(directory.FullName, "bcs-coop-bridge.config");
+            if (File.Exists(candidate))
+            {
+                configurationPath = candidate;
+                break;
+            }
+            directory = directory.Parent;
+        }
+        if (configurationPath == null)
+            throw new FileNotFoundException("Bridge smoke configuration was not found.");
+
+        var records = File.ReadAllLines(configurationPath)
+            .Where(line => line.StartsWith("GAME_VERSION_COMPAT|", StringComparison.Ordinal))
+            .ToArray();
+        if (records.Length != 1)
+            throw new InvalidDataException("Bridge smoke requires one game-version compatibility record.");
+        var fields = records[0].Split('|');
+        if (fields.Length != 5)
+            throw new InvalidDataException("Bridge game-version compatibility record is malformed.");
+        return new[]
+        {
+            Decode(fields[1]),
+            Decode(fields[2]),
+            Decode(fields[3]),
+            Decode(fields[4])
+        };
+    }
+
+    private static string Decode(string value)
+    {
+        return System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(value));
+    }
+
+    private static string CreateUnsupportedRuntimeVersion(string value)
+    {
+        var components = value.Substring(1).Split('.');
+        int major;
+        if (components.Length != 4 ||
+            !int.TryParse(components[0], out major) ||
+            major == int.MaxValue)
+        {
+            throw new InvalidDataException("Could not derive an unsupported game version for smoke testing.");
+        }
+        components[0] = (major + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return value[0] + string.Join(".", components);
+    }
+
+    private static void VerifyCurrentVersionRepair(
+        string bridgePath,
+        Type applicationVersion,
+        MethodInfo fromString,
+        string serverRuntimeVersion)
+    {
+        var bridge = Assembly.LoadFrom(Path.GetFullPath(bridgePath));
+        var repairType = bridge.GetType(
+            "BCS.CoopBridge.ServerCurrentVersionCompatibility",
+            false);
+        var isServer = bridgePath.IndexOf(
+            "Win64_Shipping_Server",
+            StringComparison.OrdinalIgnoreCase) >= 0;
+        if (!isServer)
+        {
+            if (repairType != null)
+                throw new InvalidOperationException("Client bridge contains the server CurrentVersion repair.");
+            return;
+        }
+        if (repairType == null)
+            throw new TypeLoadException("Server bridge CurrentVersion repair type was not found.");
+
+        var repair = repairType.GetMethod(
+            "Repair",
+            BindingFlags.Static | BindingFlags.Public);
+        var empty = applicationVersion.GetField(
+            "Empty",
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+        if (repair == null || empty == null)
+            throw new MissingMemberException("Server CurrentVersion repair smoke fixture is incomplete.");
+
+        var valid = fromString.Invoke(null, new object[] { serverRuntimeVersion, 0 });
+        var validArguments = new[] { valid };
+        repair.Invoke(null, validArguments);
+        if (!string.Equals(
+                validArguments[0].ToString(),
+                serverRuntimeVersion,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("CurrentVersion repair changed a valid version.");
+        }
+
+        var emptyArguments = new[] { empty.GetValue(null) };
+        repair.Invoke(null, emptyArguments);
+        if (!string.Equals(
+                emptyArguments[0].ToString(),
+                serverRuntimeVersion,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("CurrentVersion repair did not replace ApplicationVersion.Empty.");
+        }
+        Console.WriteLine("PASS: server CurrentVersion repair is empty-only and semantic-version scoped.");
     }
 
     private static Array CreateModuleInfoArray(

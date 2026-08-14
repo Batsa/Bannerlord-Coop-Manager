@@ -40,8 +40,18 @@
                            TextTrimming="CharacterEllipsis" ToolTip="{Binding ServerRoot}"/>
             </StackPanel>
 
-            <Button Grid.Column="1" Content="Rescan" Command="{Binding RescanCommand}"
-                    MinWidth="100" VerticalAlignment="Center"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Content="Open Server Modules"
+                        Command="{Binding OpenServerModulesFolderCommand}"
+                        MinWidth="150" Margin="0,0,8,0"
+                        ToolTip="Open the dedicated server's engine\Modules folder in File Explorer"/>
+                <Button Content="Open Game Modules"
+                        Command="{Binding OpenGameModulesFolderCommand}"
+                        MinWidth="150" Margin="0,0,8,0"
+                        ToolTip="Open the installed Bannerlord game's Modules folder in File Explorer"/>
+                <Button Content="Rescan" Command="{Binding RescanCommand}"
+                        MinWidth="100"/>
+            </StackPanel>
         </Grid>
 
         <Grid Grid.Row="1">
@@ -135,8 +145,12 @@
                                    Text="1. Drop the overhaul folder onto the module list.&#x0a;2. Click the button below."/>
                         <Button Content="Prepare / Install Bridge"
                                 Command="{Binding InstallOrUpdateBridgeCommand}"
-                                MinWidth="165" FontWeight="SemiBold"
+                                MinWidth="165" FontWeight="SemiBold" Margin="0,0,0,8"
                                 ToolTip="Validate and install the selected known bridge recipe, enable its modules, set load order, repair server files, and create the client ZIP"/>
+                        <Button Content="Bridge Population Settings"
+                                Command="{Binding OpenBridgePopulationSettingsCommand}"
+                                MinWidth="165"
+                                ToolTip="Select the enabled current generated BCS Coop Bridge row to edit server-only population limits"/>
                     </StackPanel>
                 </Border>
                 <Expander Header="Advanced (optional)" Foreground="Gray">

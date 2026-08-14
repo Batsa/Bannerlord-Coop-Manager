@@ -72,7 +72,6 @@ public partial class App : Application
         var playerRosterTracker = new PlayerRosterTracker();
         var serverExecutableLocator = new ServerExecutableLocator();
         var clientSaveImportService = new ClientSaveImportService(coopConfigService);
-        var saveBackupService = new SaveBackupService(coopConfigService);
         var dependencyValidator = new DependencyValidator();
         var coopPlayerListParser = new CoopPlayerListParser();
 
@@ -84,8 +83,7 @@ public partial class App : Application
             processManager,
             restartScheduler,
             playerRosterTracker,
-            serverExecutableLocator,
-            saveBackupService);
+            serverExecutableLocator);
 
         var window = new MainWindow(
             _viewModel,

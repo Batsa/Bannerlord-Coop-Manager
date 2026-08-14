@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Input;
@@ -20,7 +21,9 @@ public sealed class ModManagerViewModel : BindableBase
     private readonly DependencyValidator _validator;
     private readonly CoopCompatibilityAnalyzer _compatibilityAnalyzer;
     private readonly BridgeInstallationService _bridgeInstallationService;
+    private readonly BridgePopulationSettingsService _bridgePopulationSettingsService;
     private BannerlordModule? _selectedModule;
+    private BridgePopulationSettingsTarget? _selectedBridgeSettingsTarget;
     private string _statusMessage = "Ready to scan dedicated-server modules.";
     private string _validationSummary = string.Empty;
     private bool _isBusy;
@@ -34,7 +37,8 @@ public sealed class ModManagerViewModel : BindableBase
         ModuleRemovalService moduleRemovalService,
         DependencyValidator validator,
         CoopCompatibilityAnalyzer compatibilityAnalyzer,
-        BridgeInstallationService bridgeInstallationService)
+        BridgeInstallationService bridgeInstallationService,
+        BridgePopulationSettingsService? bridgePopulationSettingsService = null)
     {
         _moduleManager = moduleManager;
         _moduleImporter = moduleImporter;
@@ -42,7 +46,12 @@ public sealed class ModManagerViewModel : BindableBase
         _validator = validator;
         _compatibilityAnalyzer = compatibilityAnalyzer;
         _bridgeInstallationService = bridgeInstallationService;
+        _bridgePopulationSettingsService = bridgePopulationSettingsService ??
+                                           new BridgePopulationSettingsService(
+                                               moduleManager.ServerRoot);
 
+        OpenServerModulesFolderCommand = new RelayCommand(OpenServerModulesFolder);
+        OpenGameModulesFolderCommand = new RelayCommand(OpenGameModulesFolder);
         RescanCommand = new AsyncRelayCommand(RescanAsync, () => !IsBusy);
         SaveCommand = new AsyncRelayCommand(
             SaveAsync,
@@ -54,6 +63,9 @@ public sealed class ModManagerViewModel : BindableBase
         InstallOrUpdateBridgeCommand = new AsyncRelayCommand(
             InstallOrUpdateBridgeAsync,
             CanInstallOrUpdateBridge);
+        OpenBridgePopulationSettingsCommand = new RelayCommand(
+            OpenBridgePopulationSettings,
+            CanOpenBridgePopulationSettings);
         RevertBridgeInstallationCommand = new AsyncRelayCommand(
             RevertLatestBridgeInstallationAsync,
             () => !IsBusy && !IsDirty && HasRevertableBridgeInstallation);
@@ -69,6 +81,7 @@ public sealed class ModManagerViewModel : BindableBase
             if (!SetProperty(ref _selectedModule, value))
                 return;
 
+            RefreshSelectedBridgeSettingsTarget();
             CommandManager.InvalidateRequerySuggested();
         }
     }
@@ -129,6 +142,8 @@ public sealed class ModManagerViewModel : BindableBase
         }
     }
 
+    public ICommand OpenServerModulesFolderCommand { get; }
+    public ICommand OpenGameModulesFolderCommand { get; }
     public ICommand RescanCommand { get; }
     public ICommand SaveCommand { get; }
     public ICommand MoveUpCommand { get; }
@@ -136,6 +151,7 @@ public sealed class ModManagerViewModel : BindableBase
     public ICommand DeleteCommand { get; }
     public ICommand AnalyzeCommand { get; }
     public ICommand InstallOrUpdateBridgeCommand { get; }
+    public ICommand OpenBridgePopulationSettingsCommand { get; }
     public ICommand RevertBridgeInstallationCommand { get; }
 
     /// <summary>
@@ -144,12 +160,82 @@ public sealed class ModManagerViewModel : BindableBase
     /// </summary>
     public event Action<CoopCompatibilityReport>? CompatibilityReportReady;
     public event Action<BridgeInstallationResult>? BridgeInstallationCompleted;
+    public event Action<BridgePopulationSettingsTarget>? BridgePopulationSettingsRequested;
 
     public BridgeInstallationResult? LastBridgeInstallationResult { get; private set; }
 
     internal bool CanPrepareSelectedBridge => CanInstallOrUpdateBridge();
+    internal bool CanOpenSelectedBridgePopulationSettings =>
+        CanOpenBridgePopulationSettings();
 
     public Task InitializeAsync() => RescanAsync();
+
+    private void OpenServerModulesFolder()
+    {
+        try
+        {
+            var modulesDirectory = _moduleManager.ModulesDirectory;
+            if (!Directory.Exists(modulesDirectory))
+            {
+                throw new DirectoryNotFoundException(
+                    $"Dedicated-server Modules directory was not found: {modulesDirectory}");
+            }
+
+            Process.Start(
+                new ProcessStartInfo
+                {
+                    FileName = modulesDirectory,
+                    UseShellExecute = true
+                });
+            StatusMessage = $"Opened server Modules folder: {modulesDirectory}";
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = exception.Message;
+            MessageBox.Show(
+                exception.Message,
+                "Could Not Open Server Modules",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private void OpenGameModulesFolder()
+    {
+        try
+        {
+            var gameRoot = ServerExecutableLocator.FindBannerlordInstallRoot();
+            if (string.IsNullOrWhiteSpace(gameRoot))
+            {
+                throw new DirectoryNotFoundException(
+                    "The installed Bannerlord game directory could not be found in the configured Steam libraries.");
+            }
+
+            var modulesDirectory = Path.Combine(gameRoot, "Modules");
+            if (!Directory.Exists(modulesDirectory))
+            {
+                throw new DirectoryNotFoundException(
+                    $"Bannerlord game Modules directory was not found: {modulesDirectory}");
+            }
+
+            Process.Start(
+                new ProcessStartInfo
+                {
+                    FileName = modulesDirectory,
+                    UseShellExecute = true
+                });
+            StatusMessage = $"Opened game Modules folder: {modulesDirectory}";
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = exception.Message;
+            MessageBox.Show(
+                exception.Message,
+                "Could Not Open Game Modules",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
 
     public async Task ImportFoldersAsync(IReadOnlyList<string> droppedPaths)
     {
@@ -262,6 +348,7 @@ public sealed class ModManagerViewModel : BindableBase
             var snapshot = Modules.ToArray();
             await Task.Run(() => _moduleManager.Save(snapshot));
             IsDirty = false;
+            RefreshSelectedBridgeSettingsTarget();
             StatusMessage =
                 "Saved load order and enabled state. Backups use the .bak suffix.";
         }
@@ -423,6 +510,33 @@ public sealed class ModManagerViewModel : BindableBase
             BridgeInstallationCompleted?.Invoke(completed);
     }
 
+    private void OpenBridgePopulationSettings()
+    {
+        var module = SelectedModule;
+        if (module is null || IsBusy || IsDirty)
+            return;
+
+        try
+        {
+            var target = _bridgePopulationSettingsService.ValidateSelectedBridge(
+                module,
+                Modules.ToArray());
+            _selectedBridgeSettingsTarget = target;
+            BridgePopulationSettingsRequested?.Invoke(target);
+        }
+        catch (Exception exception)
+        {
+            _selectedBridgeSettingsTarget = null;
+            CommandManager.InvalidateRequerySuggested();
+            StatusMessage = exception.Message;
+            MessageBox.Show(
+                exception.Message,
+                "Could Not Open Bridge Population Settings",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
     private async Task RevertLatestBridgeInstallationAsync()
     {
         var manifest = _bridgeInstallationService.FindLatestInstallationBackup(ServerRoot);
@@ -552,6 +666,19 @@ public sealed class ModManagerViewModel : BindableBase
         _bridgeInstallationService.IsKnownRecipe(SelectedModule) &&
         SelectedModule is { IsServerCompatible: true } module &&
         !string.IsNullOrWhiteSpace(module.Path);
+
+    private bool CanOpenBridgePopulationSettings() =>
+        !IsBusy &&
+        !IsDirty &&
+        _selectedBridgeSettingsTarget is not null;
+
+    private void RefreshSelectedBridgeSettingsTarget()
+    {
+        _bridgePopulationSettingsService.TryValidateSelectedBridge(
+            SelectedModule,
+            Modules.ToArray(),
+            out _selectedBridgeSettingsTarget);
+    }
 
     private void Module_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {

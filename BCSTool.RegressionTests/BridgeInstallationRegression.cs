@@ -197,8 +197,13 @@ internal static class BridgeInstallationRegression
             var eoeManifest = CreateBackupManifest(
                 root,
                 "eoe-plan",
-                "europe-1700-1.4.7.1-server-v55",
+                "europe-1700-1.4.7.1-server-v57",
                 ["Europe1700", "BCS.CoopBridge.eoe"]);
+            var legacyEoeManifest = CreateBackupManifest(
+                root,
+                "legacy-eoe-plan",
+                "europe-1700-1.4.7.1-server-v55",
+                ["Europe1700", "BCS.CoopBridge.legacy"]);
             var unrelatedManifest = CreateBackupManifest(
                 root,
                 "newer-generic-plan",
@@ -206,11 +211,18 @@ internal static class BridgeInstallationRegression
                 ["UnrelatedMod", "BCS.CoopBridge.generic"]);
             File.SetLastWriteTimeUtc(eoeManifest, new DateTime(2026, 8, 13, 1, 0, 0, DateTimeKind.Utc));
             File.SetLastWriteTimeUtc(
+                legacyEoeManifest,
+                new DateTime(2026, 8, 13, 0, 0, 0, DateTimeKind.Utc));
+            File.SetLastWriteTimeUtc(
                 unrelatedManifest,
                 new DateTime(2026, 8, 13, 2, 0, 0, DateTimeKind.Utc));
 
             Assert(service.FindLatestInstallationBackup(root) == eoeManifest,
                 "A newer non-EOE backup hid the latest EOE bridge installation backup.");
+
+            File.Delete(eoeManifest);
+            Assert(service.FindLatestInstallationBackup(root) == legacyEoeManifest,
+                "The bridge lifecycle stopped recognizing a real v55 EOE backup.");
 
             var rejected = false;
             try

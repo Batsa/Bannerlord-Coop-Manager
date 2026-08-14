@@ -55,7 +55,6 @@ public sealed class MainViewModel : BindableBase, IDisposable
     private readonly RestartScheduler _restartScheduler;
     private readonly PlayerRosterTracker _playerRosterTracker;
     private readonly ServerExecutableLocator _serverExecutableLocator;
-    private readonly SaveBackupService _saveBackupService;
 
     private readonly Dispatcher _dispatcher;
     private readonly CancellationTokenSource _lifetimeCts = new();
@@ -79,13 +78,6 @@ public sealed class MainViewModel : BindableBase, IDisposable
     private string _commandText = "";
     private string _serverExecutableDetectionStatus =
         "Checking server executable...";
-
-    // Raw ConPTY output may split a message across chunks. Keep only enough
-    // trailing text to detect the next "Successfully saved" marker across a
-    // chunk boundary without retaining unbounded console data.
-    private const string SuccessfulSaveMarker = "Successfully saved";
-    private readonly object _saveMarkerLock = new();
-    private string _saveMarkerTail = "";
 
     // Bannerlord's native footer exposes a more detailed runtime state, e.g.
     // "SERVING". This value is display-only: the ServerState enum remains the
@@ -128,11 +120,6 @@ public sealed class MainViewModel : BindableBase, IDisposable
 
     public IReadOnlyList<int> WarningMinuteOptions { get; } =
         Enumerable.Range(0, 11).ToArray();
-
-    public IReadOnlyList<int> SaveBackupCountOptions { get; } =
-        Enumerable.Range(
-            SaveBackupService.MinimumBackupCount,
-            SaveBackupService.MaximumBackupCount).ToArray();
 
     public ServerSettings Settings
     {
@@ -298,9 +285,8 @@ public sealed class MainViewModel : BindableBase, IDisposable
         ServerState == ServerState.Ready;
 
     /// <summary>
-    /// Manual backup restore is intentionally stricter than merely checking
-    /// whether a process happens to be absent. The lifecycle state must also
-    /// explicitly be Stopped.
+    /// Operations that mutate stopped-server configuration require both the
+    /// process and lifecycle state to be explicitly stopped.
     /// </summary>
     public bool IsServerFullyStopped =>
         ServerState == ServerState.Stopped &&
@@ -415,8 +401,7 @@ public sealed class MainViewModel : BindableBase, IDisposable
         ServerProcessManager processManager,
         RestartScheduler restartScheduler,
         PlayerRosterTracker playerRosterTracker,
-        ServerExecutableLocator serverExecutableLocator,
-        SaveBackupService saveBackupService)
+        ServerExecutableLocator serverExecutableLocator)
     {
         _settingsService = settingsService;
         _logService = logService;
@@ -425,7 +410,6 @@ public sealed class MainViewModel : BindableBase, IDisposable
         _restartScheduler = restartScheduler;
         _playerRosterTracker = playerRosterTracker;
         _serverExecutableLocator = serverExecutableLocator;
-        _saveBackupService = saveBackupService;
 
         _dispatcher = Application.Current.Dispatcher;
 
@@ -503,10 +487,6 @@ public sealed class MainViewModel : BindableBase, IDisposable
         await DetectServerExecutableIfNeededAsync();
 
         AddToolMessage($"Server executable: {ServerExecutableDisplay}");
-        AddToolMessage(
-            Settings.SaveBackupsEnabled
-                ? $"Save backup rotation enabled; retaining {Settings.SaveBackupCount} generation(s)."
-                : "Save backup rotation disabled.");
 
         _schedulerTask = RunSchedulerLoopAsync(_lifetimeCts.Token);
 
@@ -1475,137 +1455,6 @@ public sealed class MainViewModel : BindableBase, IDisposable
 
 
     /// <summary>
-    /// Updates BCS Tool's save-backup settings from the Server Configuration
-    /// window. These settings are persisted separately from server-config.json
-    /// and take effect immediately.
-    /// </summary>
-    public async Task UpdateSaveBackupSettingsAsync(
-        bool enabled,
-        int backupCount)
-    {
-        backupCount =
-            Math.Clamp(
-                backupCount,
-                SaveBackupService.MinimumBackupCount,
-                SaveBackupService.MaximumBackupCount);
-
-        var previousEnabled =
-            Settings.SaveBackupsEnabled;
-
-        var previousBackupCount =
-            Settings.SaveBackupCount;
-
-        var settingsChanged =
-            previousEnabled != enabled ||
-            previousBackupCount != backupCount;
-
-        // Server Configuration always calls this method when Save is pressed.
-        // If the BCS backup settings themselves did not change, avoid Registry
-        // writes and, more importantly, avoid waiting on the backup rotation
-        // lock. This keeps ordinary Server Configuration saves responsive.
-        if (!settingsChanged)
-            return;
-
-        Settings.SaveBackupsEnabled =
-            enabled;
-
-        Settings.SaveBackupCount =
-            backupCount;
-
-        await _settingsService.SaveBackupSettingsAsync(
-            Settings);
-
-        // The filesystem only needs trimming when enabling backup rotation or
-        // when reducing the retention count. Increasing the count does not
-        // require touching any existing backup files.
-        var shouldTrim =
-            enabled &&
-            (
-                !previousEnabled ||
-                backupCount < previousBackupCount
-            );
-
-        if (shouldTrim)
-        {
-            try
-            {
-                await _saveBackupService.TrimBackupsAsync(
-                    backupCount,
-                    _lifetimeCts.Token);
-            }
-            catch (FileNotFoundException)
-            {
-                // No active save exists yet. The selected retention setting is
-                // still valid and will be applied when the first backup occurs.
-            }
-            catch (DirectoryNotFoundException)
-            {
-                // Same first-run case as above.
-            }
-        }
-
-        AddToolMessage(
-            enabled
-                ? $"Save backup rotation enabled; retaining {backupCount} generation(s)."
-                : "Save backup rotation disabled; existing backups were preserved.");
-    }
-
-
-    /// <summary>
-    /// Returns complete rotating backups for the currently configured save.
-    /// </summary>
-    public Task<IReadOnlyList<SaveBackupService.SaveBackupInfo>> GetSaveBackupsAsync()
-    {
-        return
-            _saveBackupService.GetBackupsAsync(
-                _lifetimeCts.Token);
-    }
-
-
-    /// <summary>
-    /// Replaces the current save pair with one selected backup generation.
-    ///
-    /// This operation shares the same operation lock as Start/Stop/Restart so
-    /// a server start cannot race a manual filesystem restore.
-    /// </summary>
-    public async Task<SaveBackupService.SaveBackupRestoreResult> RestoreSaveBackupAsync(
-        int generation)
-    {
-        await _operationLock.WaitAsync();
-
-        try
-        {
-            if (!IsServerFullyStopped)
-            {
-                throw new InvalidOperationException(
-                    "The server must be fully stopped before loading a backup save.");
-            }
-
-            var result =
-                await _saveBackupService.RestoreBackupAsync(
-                    generation,
-                    _lifetimeCts.Token);
-
-            StatusMessage =
-                $"Loaded save backup {result.BackupName}.";
-
-            AddToolMessage(
-                $"Loaded save backup {result.BackupName}: " +
-                $"{Path.GetFileName(result.ActiveSavPath)} + " +
-                $"{Path.GetFileName(result.ActiveJsonPath)} replaced.");
-
-            return
-                result;
-        }
-        finally
-        {
-            _operationLock.Release();
-            CommandManager.InvalidateRequerySuggested();
-        }
-    }
-
-
-    /// <summary>
     /// Handles raw ConPTY terminal chunks.
     ///
     /// Raw chunks can contain VT/ANSI control sequences, so they are not
@@ -1616,14 +1465,6 @@ public sealed class MainViewModel : BindableBase, IDisposable
         object? sender,
         string chunk)
     {
-        // Save completion is independent from server readiness. Bannerlord's
-        // engine emits "Successfully saved" only after the save process has
-        // completed, so this is the trigger for BCS Tool's rotation.
-        if (ConsumeSuccessfulSaveMarker(chunk))
-        {
-            _ = CreateSaveBackupAfterSuccessfulSaveAsync();
-        }
-
         if (
             _serverReady ||
             !_processManager.IsRunning ||
@@ -1649,101 +1490,6 @@ public sealed class MainViewModel : BindableBase, IDisposable
 
             RecalculateNextRestart();
         });
-    }
-
-
-    private bool ConsumeSuccessfulSaveMarker(
-        string chunk)
-    {
-        if (string.IsNullOrEmpty(chunk))
-            return false;
-
-        lock (_saveMarkerLock)
-        {
-            var combined =
-                _saveMarkerTail + chunk;
-
-            var markerIndex =
-                combined.IndexOf(
-                    SuccessfulSaveMarker,
-                    StringComparison.OrdinalIgnoreCase);
-
-            if (markerIndex >= 0)
-            {
-                // Keep only text after the LAST complete marker. That prevents
-                // the marker itself from surviving in the tail and being
-                // counted again on the next chunk.
-                var lastMarkerIndex =
-                    combined.LastIndexOf(
-                        SuccessfulSaveMarker,
-                        StringComparison.OrdinalIgnoreCase);
-
-                var afterMarker =
-                    combined[
-                        (lastMarkerIndex + SuccessfulSaveMarker.Length)..];
-
-                _saveMarkerTail =
-                    KeepSaveMarkerTail(
-                        afterMarker);
-
-                return true;
-            }
-
-            _saveMarkerTail =
-                KeepSaveMarkerTail(
-                    combined);
-
-            return false;
-        }
-    }
-
-
-    private static string KeepSaveMarkerTail(
-        string text)
-    {
-        var maxTailLength =
-            SuccessfulSaveMarker.Length - 1;
-
-        if (text.Length <= maxTailLength)
-            return text;
-
-        return
-            text[^maxTailLength..];
-    }
-
-
-    private async Task CreateSaveBackupAfterSuccessfulSaveAsync()
-    {
-        if (
-            !Settings.SaveBackupsEnabled ||
-            _applicationClosing)
-        {
-            return;
-        }
-
-        try
-        {
-            var backup =
-                await _saveBackupService.CreateBackupAsync(
-                    Settings.SaveBackupCount,
-                    _lifetimeCts.Token);
-
-            if (backup is not null)
-            {
-                AddToolMessage(
-                    $"Save backup pair created: {Path.GetFileName(backup.SavPath)} + {Path.GetFileName(backup.JsonPath)}");
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception ex)
-        {
-            // Backup failure must never affect the running Bannerlord server.
-            // Surface the error to the BCS Tool console and continue normally.
-            AddToolMessage(
-                $"Save backup failed: {ex.Message}");
-        }
     }
 
 

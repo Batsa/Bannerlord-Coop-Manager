@@ -22,6 +22,12 @@ That operation enables and orders the required modules, installs/repairs all
 bridge-owned server files, and creates the matching client ZIP. Analyze,
 checkboxes, manual ordering, and Save Load Order are not required.
 
+Optional population limits are available afterward by selecting the enabled
+generated bridge row and clicking "Bridge Population Settings". They are not
+required for initial setup and apply after the next server start. Automatic NPC
+caravans default to two per town; the editor shows the calculated overhaul-wide
+target and lets the server owner select zero through ten per town.
+
 This preview executable is not digitally signed. Windows may display an
 "Unknown publisher" or SmartScreen warning. Before running it, compare the
 ZIP's SHA-256 hash with the .sha256 file published beside the ZIP on GitHub.

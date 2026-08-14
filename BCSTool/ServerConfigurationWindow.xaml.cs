@@ -1,8 +1,5 @@
 ﻿using System;
 using System.ComponentModel;
-using System.Diagnostics;
-using System.IO;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -69,15 +66,6 @@ public partial class ServerConfigurationWindow : Window
             SetPasswordControls(
                 _config.Password);
 
-            SaveBackupsEnabledCheckBox.IsChecked =
-                _viewModel.Settings.SaveBackupsEnabled;
-
-            SaveBackupCountComboBox.ItemsSource =
-                _viewModel.SaveBackupCountOptions;
-
-            SaveBackupCountComboBox.SelectedItem =
-                _viewModel.Settings.SaveBackupCount;
-
             _savedConfigurationSnapshot =
                 CreateConfigurationSnapshot();
 
@@ -97,12 +85,9 @@ public partial class ServerConfigurationWindow : Window
 
 
     /// <summary>
-    /// Saves Bannerlord's server configuration and BCS Tool's backup-rotation
-    /// settings. The two setting groups intentionally use different storage:
-    /// server-config.json for Bannerlord and the BCS Tool Registry key for the
-    /// backup feature.
+    /// Saves Bannerlord's server configuration.
     /// </summary>
-    private async Task<bool> SaveConfigurationAsync()
+    private bool SaveConfiguration()
     {
         if (HasValidationErrors(this))
         {
@@ -120,15 +105,6 @@ public partial class ServerConfigurationWindow : Window
         {
             _configService.SaveServerConfig(
                 _config);
-
-            var backupCount =
-                SaveBackupCountComboBox.SelectedItem is int selectedCount
-                    ? selectedCount
-                    : _viewModel.Settings.SaveBackupCount;
-
-            await _viewModel.UpdateSaveBackupSettingsAsync(
-                SaveBackupsEnabledCheckBox.IsChecked == true,
-                backupCount);
 
             _savedConfigurationSnapshot =
                 CreateConfigurationSnapshot();
@@ -154,11 +130,6 @@ public partial class ServerConfigurationWindow : Window
 
     private ServerConfigurationSnapshot CreateConfigurationSnapshot()
     {
-        var backupCount =
-            SaveBackupCountComboBox.SelectedItem is int selectedCount
-                ? selectedCount
-                : _viewModel.Settings.SaveBackupCount;
-
         return
             new ServerConfigurationSnapshot(
                 _config.SaveName,
@@ -168,9 +139,7 @@ public partial class ServerConfigurationWindow : Window
                 _config.Steam,
                 _config.TraceTick,
                 _config.TracePublish,
-                _config.TraceBandits,
-                SaveBackupsEnabledCheckBox.IsChecked == true,
-                backupCount);
+                _config.TraceBandits);
     }
 
 
@@ -217,19 +186,19 @@ public partial class ServerConfigurationWindow : Window
     }
 
 
-    private async void Save_Click(
+    private void Save_Click(
         object sender,
         RoutedEventArgs e)
     {
-        await SaveConfigurationAsync();
+        SaveConfiguration();
     }
 
 
-    private async void SaveAndClose_Click(
+    private void SaveAndClose_Click(
         object sender,
         RoutedEventArgs e)
     {
-        if (await SaveConfigurationAsync())
+        if (SaveConfiguration())
         {
             Close();
         }
@@ -371,103 +340,6 @@ public partial class ServerConfigurationWindow : Window
     }
 
 
-    /// <summary>
-    /// Opens BCS Tool's rotating-save backup directory:
-    ///
-    /// Documents\Mount and Blade II Bannerlord\CoopData\DedicatedServer\
-    /// Game Saves\BCS Backups
-    ///
-    /// The directory is intentionally not created by this button. It appears
-    /// only after SaveBackupService successfully creates the first backup.
-    /// </summary>
-    private void OpenBackupFolder_Click(
-        object sender,
-        RoutedEventArgs e)
-    {
-        try
-        {
-            var dedicatedServerDirectory =
-                Path.GetDirectoryName(
-                    _configService.ServerConfigPath);
-
-            if (string.IsNullOrWhiteSpace(dedicatedServerDirectory))
-            {
-                throw new InvalidOperationException(
-                    "Could not determine the DedicatedServer directory.");
-            }
-
-            var backupFolder =
-                Path.Combine(
-                    dedicatedServerDirectory,
-                    "Game Saves",
-                    "BCS Backups");
-
-            if (!Directory.Exists(backupFolder))
-            {
-                MessageBox.Show(
-                    this,
-                    "The backup folder does not exist yet.\n\n" +
-                    "BCS Tool creates the backup folder after it has made at least one save backup.",
-                    "Save Backups",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Information);
-
-                return;
-            }
-
-            Process.Start(
-                new ProcessStartInfo
-                {
-                    FileName =
-                        backupFolder,
-                    UseShellExecute =
-                        true
-                });
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(
-                this,
-                $"Could not open the backup folder.\n\n{ex.Message}",
-                "Save Backups",
-                MessageBoxButton.OK,
-                MessageBoxImage.Error);
-        }
-    }
-
-
-    /// <summary>
-    /// Opens the manual backup selector only when the managed Bannerlord
-    /// server is completely stopped.
-    /// </summary>
-    private void LoadBackup_Click(
-        object sender,
-        RoutedEventArgs e)
-    {
-        if (!_viewModel.IsServerFullyStopped)
-        {
-            MessageBox.Show(
-                this,
-                "The server must be fully stopped before loading a backup save.\n\n" +
-                "Stop the server and wait until Server state shows Stopped, then try again.",
-                "Load Save Backup",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information);
-
-            return;
-        }
-
-        var window =
-            new BackupRestoreWindow(
-                _viewModel)
-            {
-                Owner = this
-            };
-
-        window.ShowDialog();
-    }
-
-
     private void ServerPasswordBox_PasswordChanged(
         object sender,
         RoutedEventArgs e)
@@ -583,9 +455,7 @@ public partial class ServerConfigurationWindow : Window
         bool Steam,
         bool TraceTick,
         bool TracePublish,
-        bool TraceBandits,
-        bool SaveBackupsEnabled,
-        int SaveBackupCount);
+        bool TraceBandits);
 
 
     private static bool HasValidationErrors(

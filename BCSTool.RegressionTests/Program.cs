@@ -12,6 +12,15 @@ using System.Xml;
 using BCSTool.Models;
 using BCSTool.Services;
 
+if (args is ["--module-manager-change-set", var moduleManagerPath, var moduleManagerRole])
+{
+    Console.WriteLine(
+        CoopCompatibilityPatcher.ReadModuleManagerChangeSet(
+            Path.GetFullPath(moduleManagerPath),
+            moduleManagerRole));
+    return 0;
+}
+
 if (args is ["--metadata-memberrefs", var memberAssemblyPath, var memberPattern])
 {
     using var memberStream = File.OpenRead(Path.GetFullPath(memberAssemblyPath));
@@ -466,6 +475,7 @@ Run("invalid enabled load order blocks server launch", TestInvalidManagedModuleL
 Run("ConPTY quotes Windows arguments safely", TestConPtyArgumentQuoting);
 Run("managed engine console logging is lossless and rotated", TestServerConsoleLogWriter);
 Run("bridge installation recipe and start preflight are scoped", BridgeInstallationRegression.Run);
+Run("bridge population settings are scoped, strict, and identity-neutral", BridgePopulationSettingsRegression.Run);
 Run("applied content-only module replans without pending state", TestAppliedContentModuleReplansAsNoOp);
 Run("content compatibility prepare and revert are lossless", TestContentCompatibilityPrepareAndRevert);
 Run("prepared module DLL unblock preserves assembly bytes", TestPreparedModuleDllUnblock);
@@ -479,11 +489,12 @@ Run("bridge builder rejects module DLL identity mismatch", TestBridgeBuilderReje
 Run("bridge builder ignores native support DLLs", TestBridgeBuilderIgnoresNativeSupportDll);
 Run("non-Coop bridge records only declared DLLs", TestBridgeBuilderOmitsUndeclaredManagedSidecars);
 Run("bridge game-version compatibility is version-scoped", TestBridgeGameVersionCompatibility);
+Run("ModuleManager semantic game revisions are observed fail closed", TestModuleManagerSemanticRevisionReader);
 Run("bridge authority rules are module-bound", TestBridgeAuthorityRuleConfiguration);
 Run("bridge server file redirects require safe existing sources", TestBridgeServerFileRedirectConfiguration);
 Run("bridge server XML overlays require safe source and payload", TestBridgeServerXmlOverlayConfiguration);
 Run("bridge server map terrain size is version-scoped and fail closed", TestBridgeServerMapTerrainSizeConfiguration);
-Run("bridge excludes campaign intervention", TestBridgeExcludesCampaignIntervention);
+Run("bridge excludes campaign seeding and save rewriting", TestBridgeExcludesCampaignIntervention);
 Run("generic executable preparation projects DLL and creates bridge", TestGenericExecutablePrepareAndRevert);
 Run("prepared profile normalizes dependency order", TestPreparedProfileNormalizesDependencyOrder);
 Run("prepared profile honors framework-before-Native metadata", TestFrameworkBeforeNativePreparationOrder);
@@ -492,10 +503,12 @@ Run("client-only and wildcard dependencies analyze correctly", TestClientOnlyAnd
 Run("EOE headless action projection uses native server animations", TestEurope1700HeadlessActionProjection);
 Run("EOE headless action types repair the bomb reload ID", TestEurope1700HeadlessActionTypeProjection);
 Run("EOE malformed trebuchet prefab receives exact syntax repair", TestEurope1700TrebuchetPrefabRepair);
+Run("EOE repeated Weapon schema repair is semantic and fail closed", TestEurope1700ItemsSchemaRepair);
 Run("EOE dedicated-server schema repairs are exact and fail closed", TestEurope1700SchemaRepairs);
 Run("EOE optional server DLLs follow active manifest declarations", TestEurope1700OptionalServerDllSelection);
 Run("compatibility rules accept only verified Coop releases", TestSupportedReleasedCoopVersions);
-Run("campaign save discovery uses live client saves and hides backups", TestCampaignSaveDiscovery);
+Run("campaign save discovery hides Coop-owned backup generations", TestCampaignSaveDiscovery);
+Run("launcher delegates campaign save backups to Coop", TestLauncherDelegatesCampaignBackupsToCoop);
 Run("client campaign imports never overwrite server saves", TestClientSaveImport);
 Run("Coop save names stay safe across config and startup", TestCoopSafeServerSaveNames);
 Run("Coop port guard distinguishes UDP from TCP", TestCoopUdpPortGuard);
@@ -1059,39 +1072,6 @@ void TestCoopSafeServerSaveNames()
                 StringComparison.OrdinalIgnoreCase) == true,
             "Server startup did not reject an unsafe configured save name before launch.");
 
-        var backupService = new SaveBackupService(configService);
-        var backupRejected = false;
-        try
-        {
-            _ = backupService.CreateBackupAsync(1, CancellationToken.None)
-                .GetAwaiter()
-                .GetResult();
-        }
-        catch (InvalidOperationException exception)
-        {
-            backupRejected = exception.Message.Contains(
-                "letters, digits, and underscores",
-                StringComparison.OrdinalIgnoreCase);
-        }
-        Assert(backupRejected,
-            "Save backup preflight did not reject an unsafe configured save name.");
-
-        WriteServerConfig(" EOE_Seed ");
-        backupRejected = false;
-        try
-        {
-            _ = backupService.CreateBackupAsync(1, CancellationToken.None)
-                .GetAwaiter()
-                .GetResult();
-        }
-        catch (InvalidOperationException exception)
-        {
-            backupRejected = exception.Message.Contains(
-                "letters, digits, and underscores",
-                StringComparison.OrdinalIgnoreCase);
-        }
-        Assert(backupRejected,
-            "Save backup preflight silently trimmed an unsafe configured save name.");
     }
     finally
     {
@@ -1140,7 +1120,9 @@ void TestCampaignSaveDiscovery()
         File.WriteAllBytes(Path.Combine(legacyNativeDirectory, "StaleNative.sav"), [4]);
         File.WriteAllBytes(Path.Combine(serverDirectory, "Campaign.sav"), [5]);
         File.WriteAllBytes(Path.Combine(serverDirectory, "Campaign.backup1.sav"), [6]);
+        File.WriteAllBytes(Path.Combine(serverDirectory, "Campaign.backup1.json"), [6]);
         File.WriteAllBytes(Path.Combine(serverDirectory, "Campaign.backup2.sav"), [7]);
+        File.WriteAllBytes(Path.Combine(serverDirectory, "Campaign.backup2.json"), [7]);
         File.WriteAllBytes(Path.Combine(serverDirectory, "default_new_game.sav"), [8]);
 
         var configService = new CoopConfigService(coopDataDirectory);
@@ -1161,6 +1143,18 @@ void TestCampaignSaveDiscovery()
     {
         Directory.Delete(root, recursive: true);
     }
+}
+
+void TestLauncherDelegatesCampaignBackupsToCoop()
+{
+    var applicationAssembly = typeof(SettingsService).Assembly;
+    Assert(
+        applicationAssembly.GetType("BCSTool.Services.SaveBackupService") is null,
+        "Launcher-owned campaign save backup service is still present.");
+    Assert(
+        typeof(ServerSettings).GetProperty("SaveBackupsEnabled") is null &&
+        typeof(ServerSettings).GetProperty("SaveBackupCount") is null,
+        "Launcher-owned campaign save backup settings are still exposed.");
 }
 
 void TestEurope1700HeadlessActionTypeProjection()
@@ -1277,6 +1271,114 @@ void TestEurope1700OptionalServerDllSelection()
         Assert(actual.SequenceEqual(expected, StringComparer.OrdinalIgnoreCase),
             $"EOE {scenario} selected [{string.Join(", ", actual)}], expected [{string.Join(", ", expected)}].");
     }
+}
+
+void TestEurope1700ItemsSchemaRepair()
+{
+    const string schema = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+          <xs:element name="Items">
+            <xs:complexType>
+              <xs:choice minOccurs="0" maxOccurs="unbounded">
+                <xs:element name="Item">
+                  <xs:complexType>
+                    <xs:sequence>
+                      <xs:element name="ItemComponent" minOccurs="0" maxOccurs="1">
+                        <xs:complexType>
+                          <xs:choice>
+                            <xs:element name="Weapon" minOccurs="0" maxOccurs="1">
+                              <xs:complexType>
+                                <xs:anyAttribute processContents="skip" />
+                              </xs:complexType>
+                            </xs:element>
+                          </xs:choice>
+                        </xs:complexType>
+                      </xs:element>
+                    </xs:sequence>
+                    <xs:attribute name="id" use="required" />
+                  </xs:complexType>
+                </xs:element>
+              </xs:choice>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>
+        """;
+    const string items = """
+        <Items>
+          <Item id="musket">
+            <ItemComponent>
+              <Weapon weapon_class="Crossbow" />
+              <Weapon weapon_class="TwoHandedMace" />
+            </ItemComponent>
+          </Item>
+        </Items>
+        """;
+    var schemaBytes = System.Text.Encoding.UTF8.GetBytes(schema);
+    var itemsBytes = System.Text.Encoding.UTF8.GetBytes(items);
+    var originalSchema = schemaBytes.ToArray();
+    var originalItems = itemsBytes.ToArray();
+
+    var transformed = CoopCompatibilityPatcher.TransformEurope1700ItemsSchema(
+        schemaBytes,
+        itemsBytes);
+    var expected = System.Text.Encoding.UTF8.GetBytes(schema.Replace(
+        "<xs:element name=\"Weapon\" minOccurs=\"0\" maxOccurs=\"1\">",
+        "<xs:element name=\"Weapon\" minOccurs=\"0\" maxOccurs=\"unbounded\">",
+        StringComparison.Ordinal));
+    Assert(transformed.SequenceEqual(expected),
+        "EOE Items.xsd repair changed content beyond the Weapon maxOccurs value.");
+    Assert(schemaBytes.SequenceEqual(originalSchema) && itemsBytes.SequenceEqual(originalItems),
+        "EOE Items.xsd repair mutated an input buffer.");
+
+    var secondPass = CoopCompatibilityPatcher.TransformEurope1700ItemsSchema(
+        transformed,
+        itemsBytes);
+    Assert(secondPass.SequenceEqual(transformed),
+        "EOE Items.xsd repair was not byte-for-byte idempotent.");
+
+    AssertThrowsInvalidData(
+        () => CoopCompatibilityPatcher.TransformEurope1700ItemsSchema(
+            schemaBytes,
+            System.Text.Encoding.UTF8.GetBytes(items.Replace(
+                "<Weapon weapon_class=\"TwoHandedMace\" />",
+                string.Empty,
+                StringComparison.Ordinal))),
+        "EOE Items.xsd repair accepted an items file without repeated Weapon modes.");
+    AssertThrowsInvalidData(
+        () => CoopCompatibilityPatcher.TransformEurope1700ItemsSchema(
+            schemaBytes,
+            System.Text.Encoding.UTF8.GetBytes(items.Replace(
+                " id=\"musket\"",
+                string.Empty,
+                StringComparison.Ordinal))),
+        "EOE Items.xsd repair ignored a full-file schema validation error.");
+    AssertThrowsInvalidData(
+        () => CoopCompatibilityPatcher.TransformEurope1700ItemsSchema(
+            System.Text.Encoding.UTF8.GetBytes(schema.Replace(
+                "<xs:element name=\"Weapon\" minOccurs=\"0\" maxOccurs=\"1\">",
+                "<xs:element name=\"Weapon\" minOccurs=\"0\" maxOccurs=\"2\">",
+                StringComparison.Ordinal)),
+            itemsBytes),
+        "EOE Items.xsd repair accepted an unsupported Weapon maxOccurs value.");
+    AssertThrowsInvalidData(
+        () => CoopCompatibilityPatcher.TransformEurope1700ItemsSchema(
+            System.Text.Encoding.UTF8.GetBytes(schema.Replace(
+                "<xs:element name=\"Weapon\" minOccurs=\"0\" maxOccurs=\"1\">",
+                "<xs:element name=\"Weapon\" minOccurs=\"0\" maxOccurs=\"1\">" +
+                "<xs:complexType /></xs:element>" +
+                "<xs:element name=\"Weapon\" minOccurs=\"0\" maxOccurs=\"1\">",
+                StringComparison.Ordinal)),
+            itemsBytes),
+        "EOE Items.xsd repair accepted ambiguous Weapon declarations.");
+    AssertThrowsInvalidData(
+        () => CoopCompatibilityPatcher.TransformEurope1700ItemsSchema(
+            System.Text.Encoding.UTF8.GetBytes(schema.Replace(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+                "<!DOCTYPE schema [<!ENTITY injected \"Weapon\">]>",
+                StringComparison.Ordinal)),
+            itemsBytes),
+        "EOE Items.xsd repair accepted a DTD-bearing schema.");
 }
 
 void TestEurope1700SchemaRepairs()
@@ -1454,12 +1556,16 @@ void TestEurope1700SchemaRepairs()
     Assert(rejectedXsltDrift,
         "EOE merged NPC XSLT repair accepted changed stylesheet structure.");
 
-    const string workshopSource = """
+    const string workshopXml = """
         <WorkshopTypes>
           <WorkshopType id="artisans">
             <Production conversion_speed="0.1"><Outputs>
               <Output output="ItemCategory.ranged_weapons_3" output_count="1" />
               <Output output="ItemCategory.ranged_weapons_5" output_count="1" />
+              <Output
+                output="ItemCategory.meat"
+                output_count="2" />
+              <Output output="ItemCategory.hides" output_count="1" />
             </Outputs></Production>
           </WorkshopType>
           <WorkshopType id="gunsmith">
@@ -1471,8 +1577,29 @@ void TestEurope1700SchemaRepairs()
               <Output output="ItemCategory.ranged_weapons_5" output_count="1" />
             </Outputs></Production>
           </WorkshopType>
+          <WorkshopType id="butcher">
+            <Production conversion_speed="2"><Outputs>
+              <Output
+                output="ItemCategory.meat"
+                output_count="6" />
+              <Output output="ItemCategory.hides" output_count="2" />
+            </Outputs></Production>
+            <Production conversion_speed="2"><Outputs>
+              <Output
+                output="ItemCategory.meat"
+                output_count="2" />
+              <Output output="ItemCategory.hides" output_count="1" />
+            </Outputs></Production>
+            <Production conversion_speed="2"><Outputs>
+              <Output
+                output="ItemCategory.meat"
+                output_count="1" />
+              <Output output="ItemCategory.hides" output_count="1" />
+            </Outputs></Production>
+          </WorkshopType>
         </WorkshopTypes>
         """;
+    var workshopSource = "\uFEFF" + workshopXml;
     var workshopSourceBytes = System.Text.Encoding.UTF8.GetBytes(workshopSource);
     var workshopResult = CoopCompatibilityPatcher.TransformEurope1700SchemaRepairForHeadless(
         "ModuleData/spworkshops.xml",
@@ -1492,6 +1619,15 @@ void TestEurope1700SchemaRepairs()
                "output=\"ItemCategory.ranged_weapons_5\"",
                StringSplitOptions.None).Length - 1 == 7,
         "EOE workshop repair did not map the exact five empty outputs to the populated tier.");
+    Assert(workshopText.Split(
+               "output=\"ItemCategory.meat\"",
+               StringSplitOptions.None).Length - 1 == 4 &&
+           workshopText.Contains("output_count=\"6\"", StringComparison.Ordinal),
+        "EOE workshop repair removed valid engine-provided meat production.");
+    Assert(workshopText.Split(
+               "output=\"ItemCategory.hides\"",
+               StringSplitOptions.None).Length - 1 == 4,
+        "EOE workshop repair removed or changed valid hides co-outputs.");
 
     var rejectedChangedWorkshopInput = false;
     try
@@ -2617,6 +2753,30 @@ void TestGenericBridgePackage()
                     .Select(handle => clientMetadata.GetString(
                         clientMetadata.GetMethodDefinition(handle).Name))
                     .ToHashSet(StringComparer.Ordinal);
+                var serverFailedIdMethods = serverMetadata.TypeDefinitions
+                    .Select(handle => serverMetadata.GetTypeDefinition(handle))
+                    .Where(type => serverMetadata.GetString(type.Name)
+                        .Equals("ServerFailedIdCompatibility", StringComparison.Ordinal))
+                    .SelectMany(type => type.GetMethods())
+                    .Select(handle => serverMetadata.GetString(
+                        serverMetadata.GetMethodDefinition(handle).Name))
+                    .ToHashSet(StringComparer.Ordinal);
+                var serverRegistryLifecycleMethods = serverMetadata.TypeDefinitions
+                    .Select(handle => serverMetadata.GetTypeDefinition(handle))
+                    .Where(type => serverMetadata.GetString(type.Name)
+                        .Equals("CoopRegistryLifecycleCompatibility", StringComparison.Ordinal))
+                    .SelectMany(type => type.GetMethods())
+                    .Select(handle => serverMetadata.GetString(
+                        serverMetadata.GetMethodDefinition(handle).Name))
+                    .ToHashSet(StringComparer.Ordinal);
+                var clientRegistryLifecycleMethods = clientMetadata.TypeDefinitions
+                    .Select(handle => clientMetadata.GetTypeDefinition(handle))
+                    .Where(type => clientMetadata.GetString(type.Name)
+                        .Equals("CoopRegistryLifecycleCompatibility", StringComparison.Ordinal))
+                    .SelectMany(type => type.GetMethods())
+                    .Select(handle => clientMetadata.GetString(
+                        clientMetadata.GetMethodDefinition(handle).Name))
+                    .ToHashSet(StringComparer.Ordinal);
                 var serverBridgeRuntimeMethods = serverMetadata.TypeDefinitions
                     .Select(handle => serverMetadata.GetTypeDefinition(handle))
                     .Where(type => serverMetadata.GetString(type.Name)
@@ -2649,6 +2809,57 @@ void TestGenericBridgePackage()
                 Assert(clientCompatibilityMethods.Contains("BeforeGetLeaderParty") &&
                        clientCompatibilityMethods.Contains("BeforeGetNumberOfInvolvedMen"),
                     "Client bridge runtime lost an EOE invalid-map-event-side guard.");
+                Assert(serverTypes.Contains("BCS.CoopBridge.ServerFailedIdCompatibility") &&
+                       serverFailedIdMethods.Contains("BeforePartyVisualDestroyed") &&
+                       serverFailedIdMethods.Contains("BeforeWorkshopWarehouseRosterConstruction") &&
+                       serverFailedIdMethods.Contains("FinalizeWorkshopWarehouseRosterConstruction") &&
+                       serverFailedIdMethods.Contains("InstallItemRosterMissingIdDiagnostic") &&
+                       serverFailedIdMethods.Contains("BeforeMissingItemRosterId") &&
+                       serverFailedIdMethods.Contains("BeforeWorkshopOutputCategoryLookup") &&
+                       serverFailedIdMethods.Contains("AfterAutoSyncPatchAll") &&
+                       serverFailedIdMethods.Contains("BeforeHeadlessMapEventVisual"),
+                    "Server bridge runtime lost a targeted failed-ID lifecycle fix.");
+                Assert(!clientTypes.Contains("BCS.CoopBridge.ServerFailedIdCompatibility"),
+                    "Client bridge runtime contains server-only failed-ID lifecycle fixes.");
+                Assert(serverTypes.Contains("BCS.CoopBridge.CoopRegistryLifecycleCompatibility") &&
+                       clientTypes.Contains("BCS.CoopBridge.CoopRegistryLifecycleCompatibility") &&
+                       serverRegistryLifecycleMethods.Contains("BeforeRegisterAllArmies") &&
+                       serverRegistryLifecycleMethods.Contains("BeforeArmyAiBehaviorObjectChanged") &&
+                       serverRegistryLifecycleMethods.Contains("BeforeNetworkSetArmyAiBehaviorObject") &&
+                       serverRegistryLifecycleMethods.Contains("BeforePartyComponentMobilePartyUpdated") &&
+                       serverRegistryLifecycleMethods.Contains("TranspileRegisterAllGameObjects") &&
+                       serverRegistryLifecycleMethods.Contains("ReplayDeferredPartyComponentUpdates") &&
+                       clientRegistryLifecycleMethods.Contains("BeforeRegisterAllArmies") &&
+                       clientRegistryLifecycleMethods.Contains("BeforeArmyAiBehaviorObjectChanged") &&
+                       clientRegistryLifecycleMethods.Contains("BeforeNetworkSetArmyAiBehaviorObject"),
+                    "Packaged bridge runtimes lost deterministic Army or PartyComponent lifecycle compatibility.");
+                Assert(serverTypes.Contains("BCS.CoopBridge.ServerCurrentVersionCompatibility") &&
+                       !clientTypes.Contains("BCS.CoopBridge.ServerCurrentVersionCompatibility"),
+                    "MBSaveLoad current-version repair is missing from the server or leaked into the client runtime.");
+                var serverPopulationMethods = serverMetadata.TypeDefinitions
+                    .Select(handle => serverMetadata.GetTypeDefinition(handle))
+                    .Where(type => serverMetadata.GetString(type.Name)
+                        .Equals("ServerPopulationControl", StringComparison.Ordinal))
+                    .SelectMany(type => type.GetMethods())
+                    .Select(handle => serverMetadata.GetString(
+                        serverMetadata.GetMethodDefinition(handle).Name))
+                    .ToHashSet(StringComparer.Ordinal);
+                Assert(serverTypes.Contains("BCS.CoopBridge.ServerPopulationControl") &&
+                       serverPopulationMethods.Contains("BeforeSpawnCaravan") &&
+                       serverPopulationMethods.Contains("ResolveCaravanTown") &&
+                       serverPopulationMethods.Contains("BeforeCreateVillagerParty") &&
+                       serverPopulationMethods.Contains(
+                           "AfterGetMaximumBanditPartiesAroundEachHideout"),
+                    "Server bridge runtime lost a population-control seam.");
+                Assert(!clientTypes.Contains("BCS.CoopBridge.ServerPopulationControl"),
+                    "Client bridge runtime contains server-only population controls.");
+                Assert(first.Assembly.AsSpan().IndexOf(
+                           System.Text.Encoding.Unicode.GetBytes(
+                               "AUTOMATIC_NPC_CARAVANS_PER_TOWN")) >= 0 &&
+                       first.Assembly.AsSpan().IndexOf(
+                           System.Text.Encoding.Unicode.GetBytes(
+                               "BCS-BRIDGE-POPULATION|2")) >= 0,
+                    "Packaged server bridge lost population schema v2 or its per-town caravan setting.");
             }
             VerifyRuntimeModuleAssemblyValidation(first.Assembly);
             VerifyRuntimeModuleAssemblyValidation(first.ClientAssembly);
@@ -2679,6 +2890,11 @@ void TestGenericBridgePackage()
                 "Client package omitted its attribution notice.");
             Assert(archive.GetEntry("README.txt") is null,
                 "Client package would overwrite a game-root README during extraction.");
+            Assert(archive.Entries.All(entry =>
+                    !entry.FullName.EndsWith(
+                        BridgePopulationSettingsService.SettingsFileName,
+                        StringComparison.OrdinalIgnoreCase)),
+                "Client bridge package included mutable server population settings.");
             var manifestEntry = archive.GetEntry($"Modules/{first.ModuleId}/SubModule.xml");
             Assert(manifestEntry is not null,
                 "Client package omitted the bridge manifest.");
@@ -2906,10 +3122,10 @@ void TestBridgeGameVersionCompatibility()
             CreateModule(modulesDirectory, "Coop", "v0.1.2");
             var coop = new ModuleScanner().Scan(modulesDirectory).Single();
             var rule = new BridgeGameVersionCompatibility(
-                "v1.4.7",
                 "v1.4.8",
-                new string('A', 64),
-                new string('B', 64));
+                "v1.4.8",
+                "v1.4.8.123456",
+                "v1.4.8.123457");
             var packageBuilder = new CoopBridgePackageBuilder();
             var package = packageBuilder.Build(
                 [coop],
@@ -2920,10 +3136,183 @@ void TestBridgeGameVersionCompatibility()
                 "Game-version compatibility rule was omitted from the package model.");
             Assert(configuration.Contains("GAME_VERSION_COMPAT|", StringComparison.Ordinal),
                 "Game-version compatibility rule was omitted from bridge configuration.");
-            Assert(!configuration.Contains(new string('A', 64), StringComparison.Ordinal) &&
-                   !configuration.Contains(new string('B', 64), StringComparison.Ordinal),
-                "Game-version compatibility retained role-specific runtime byte pins.");
+            var fields = configuration.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Single(line => line.StartsWith("GAME_VERSION_COMPAT|", StringComparison.Ordinal))
+                .Split('|');
+            Assert(fields.Length == 5 &&
+                   System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(fields[3])) ==
+                       rule.ServerRuntimeVersion &&
+                   System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(fields[4])) ==
+                       rule.ClientRuntimeVersion,
+                "Game-version compatibility omitted exact semantic runtime versions.");
+
+            var sameBaseWarning =
+                CoopCompatibilityPatcher.CreateGameVersionCompatibilityWarning(rule);
+            Assert(
+                sameBaseWarning.Contains(
+                    rule.ServerRuntimeVersion + " -> " + rule.ClientRuntimeVersion,
+                    StringComparison.Ordinal) &&
+                sameBaseWarning.Contains(
+                    "No Coop base-version bypass is installed",
+                    StringComparison.Ordinal) &&
+                !sameBaseWarning.Contains(
+                    "bypasses only Coop's game-version gate",
+                    StringComparison.Ordinal),
+                "Same-base semantic observation incorrectly reported a Coop version-gate bypass.");
+
+            var differingBaseRule = new BridgeGameVersionCompatibility(
+                "v1.4.7",
+                "v1.4.8",
+                "v1.4.7.118999",
+                "v1.4.8.119303");
+            var differingBaseWarning =
+                CoopCompatibilityPatcher.CreateGameVersionCompatibilityWarning(
+                    differingBaseRule);
+            Assert(
+                differingBaseWarning.Contains(
+                    differingBaseRule.ServerRuntimeVersion + " -> " +
+                    differingBaseRule.ClientRuntimeVersion,
+                    StringComparison.Ordinal) &&
+                differingBaseWarning.Contains(
+                    "different supported base game versions",
+                    StringComparison.Ordinal) &&
+                differingBaseWarning.Contains(
+                    "bypasses only Coop's game-version gate",
+                    StringComparison.Ordinal) &&
+                !differingBaseWarning.Contains(
+                    "No Coop base-version bypass is installed",
+                    StringComparison.Ordinal),
+                "Supported differing-base compatibility did not report its scoped Coop version-gate bypass.");
+
+            AssertThrowsInvalidData(
+                () => packageBuilder.Build(
+                    [coop],
+                    gameVersionCompatibility: rule with
+                    {
+                        ServerRuntimeVersion = "v1.4.7.123456"
+                    }),
+                "Bridge accepted an exact runtime version outside its declared base version.");
         });
+}
+
+void TestModuleManagerSemanticRevisionReader()
+{
+    var root = Path.Combine(
+        Path.GetTempPath(),
+        "bcs-module-manager-version-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    try
+    {
+        var cases = new[]
+        {
+            (Value: 8, OpCode: OpCodes.Ldc_I4_8),
+            (Value: 42, OpCode: OpCodes.Ldc_I4_S),
+            (Value: 123456, OpCode: OpCodes.Ldc_I4)
+        };
+        foreach (var testCase in cases)
+        {
+            var path = Path.Combine(root, "valid-" + testCase.Value + ".dll");
+            WriteModuleManagerVersionFixture(
+                path,
+                testCase.Value,
+                testCase.OpCode,
+                testCase.Value,
+                testCase.OpCode);
+            Assert(
+                CoopCompatibilityPatcher.ReadModuleManagerChangeSet(path, "fixture") ==
+                testCase.Value,
+                "ModuleManager semantic revision reader rejected " +
+                testCase.OpCode.Name + ".");
+        }
+
+        var divergent = Path.Combine(root, "divergent.dll");
+        WriteModuleManagerVersionFixture(
+            divergent,
+            123456,
+            OpCodes.Ldc_I4,
+            123457,
+            OpCodes.Ldc_I4);
+        AssertThrowsInvalidData(
+            () => CoopCompatibilityPatcher.ReadModuleManagerChangeSet(divergent, "fixture"),
+            "ModuleManager semantic revision reader accepted divergent type revisions.");
+
+        var zero = Path.Combine(root, "zero.dll");
+        WriteModuleManagerVersionFixture(
+            zero,
+            0,
+            OpCodes.Ldc_I4_0,
+            0,
+            OpCodes.Ldc_I4_0);
+        AssertThrowsInvalidData(
+            () => CoopCompatibilityPatcher.ReadModuleManagerChangeSet(zero, "fixture"),
+            "ModuleManager semantic revision reader accepted a nonpositive revision.");
+
+        var missing = Path.Combine(root, "missing-type.dll");
+        WriteModuleManagerVersionFixture(
+            missing,
+            123456,
+            OpCodes.Ldc_I4,
+            123456,
+            OpCodes.Ldc_I4,
+            includeDependedModule: false);
+        AssertThrowsInvalidData(
+            () => CoopCompatibilityPatcher.ReadModuleManagerChangeSet(missing, "fixture"),
+            "ModuleManager semantic revision reader accepted a missing DependedModule type.");
+
+        var ambiguous = Path.Combine(root, "ambiguous.dll");
+        WriteModuleManagerVersionFixture(
+            ambiguous,
+            123456,
+            OpCodes.Ldc_I4,
+            123456,
+            OpCodes.Ldc_I4,
+            duplicateConstruction: true);
+        AssertThrowsInvalidData(
+            () => CoopCompatibilityPatcher.ReadModuleManagerChangeSet(ambiguous, "fixture"),
+            "ModuleManager semantic revision reader accepted ambiguous constructor sequences.");
+
+        var wrongConstructorParameter = Path.Combine(root, "wrong-constructor-parameter.dll");
+        WriteModuleManagerVersionFixture(
+            wrongConstructorParameter,
+            123456,
+            OpCodes.Ldc_I4,
+            123456,
+            OpCodes.Ldc_I4,
+            applicationVersionTypeParameter: false);
+        AssertThrowsInvalidData(
+            () => CoopCompatibilityPatcher.ReadModuleManagerChangeSet(
+                wrongConstructorParameter,
+                "fixture"),
+            "ModuleManager semantic revision reader accepted an ApplicationVersion constructor with the wrong parameter types.");
+
+        var staticUpdateMethod = Path.Combine(root, "static-update-method.dll");
+        WriteModuleManagerVersionFixture(
+            staticUpdateMethod,
+            123456,
+            OpCodes.Ldc_I4,
+            123456,
+            OpCodes.Ldc_I4,
+            staticUpdateVersionChangeSet: true);
+        AssertThrowsInvalidData(
+            () => CoopCompatibilityPatcher.ReadModuleManagerChangeSet(staticUpdateMethod, "fixture"),
+            "ModuleManager semantic revision reader accepted a static UpdateVersionChangeSet method.");
+
+        var nonVoidUpdateMethod = Path.Combine(root, "non-void-update-method.dll");
+        WriteModuleManagerVersionFixture(
+            nonVoidUpdateMethod,
+            123456,
+            OpCodes.Ldc_I4,
+            123456,
+            OpCodes.Ldc_I4,
+            nonVoidUpdateVersionChangeSet: true);
+        AssertThrowsInvalidData(
+            () => CoopCompatibilityPatcher.ReadModuleManagerChangeSet(nonVoidUpdateMethod, "fixture"),
+            "ModuleManager semantic revision reader accepted a non-void UpdateVersionChangeSet method.");
+    }
+    finally
+    {
+        Directory.Delete(root, recursive: true);
+    }
 }
 
 void TestGenericExecutablePrepareAndRevert()
@@ -3704,6 +4093,133 @@ void WriteManagedAssembly(string path, string assemblyName)
             TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed)
         .CreateType();
     builder.Save(path);
+}
+
+void WriteModuleManagerVersionFixture(
+    string path,
+    int moduleInfoChangeSet,
+    OpCode moduleInfoOpCode,
+    int dependedModuleChangeSet,
+    OpCode dependedModuleOpCode,
+    bool includeDependedModule = true,
+    bool duplicateConstruction = false,
+    bool applicationVersionTypeParameter = true,
+    bool staticUpdateVersionChangeSet = false,
+    bool nonVoidUpdateVersionChangeSet = false)
+{
+    var fixtureId = Guid.NewGuid().ToString("N");
+    var libraryPath = Path.Combine(
+        Path.GetDirectoryName(path)!,
+        "semantic-library-" + fixtureId + ".dll");
+    var libraryBuilder = new PersistedAssemblyBuilder(
+        new AssemblyName("SemanticVersionLibrary." + fixtureId),
+        typeof(object).Assembly);
+    var libraryModule = libraryBuilder.DefineDynamicModule("SemanticVersionLibrary." + fixtureId);
+    var applicationVersionType = libraryModule.DefineEnum(
+            "TaleWorlds.Library.ApplicationVersionType",
+            TypeAttributes.Public,
+            typeof(int))
+        .CreateTypeInfo()!
+        .AsType();
+    var applicationVersionBuilder = libraryModule.DefineType(
+        "TaleWorlds.Library.ApplicationVersion",
+        TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed);
+    var applicationVersionConstructor = applicationVersionBuilder.DefineConstructor(
+        MethodAttributes.Public,
+        CallingConventions.Standard,
+        [
+            applicationVersionTypeParameter ? applicationVersionType : typeof(int),
+            typeof(int),
+            typeof(int),
+            typeof(int),
+            typeof(int)
+        ]);
+    var constructorIl = applicationVersionConstructor.GetILGenerator();
+    constructorIl.Emit(OpCodes.Ldarg_0);
+    constructorIl.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
+    constructorIl.Emit(OpCodes.Ret);
+    applicationVersionBuilder.CreateType();
+    libraryBuilder.Save(libraryPath);
+
+    var fixtureLibrary = Assembly.Load(File.ReadAllBytes(libraryPath));
+    var fixtureApplicationVersion = fixtureLibrary.GetType(
+        "TaleWorlds.Library.ApplicationVersion",
+        throwOnError: true)!;
+    var fixtureApplicationVersionType = fixtureLibrary.GetType(
+        "TaleWorlds.Library.ApplicationVersionType",
+        throwOnError: true)!;
+    var fixtureConstructor = fixtureApplicationVersion.GetConstructor(
+        [
+            applicationVersionTypeParameter ? fixtureApplicationVersionType : typeof(int),
+            typeof(int),
+            typeof(int),
+            typeof(int),
+            typeof(int)
+        ])!;
+
+    var moduleManagerBuilder = new PersistedAssemblyBuilder(
+        new AssemblyName("TaleWorlds.ModuleManager"),
+        typeof(object).Assembly);
+    var moduleManagerModule = moduleManagerBuilder.DefineDynamicModule(
+        "TaleWorlds.ModuleManager");
+
+    DefineVersionType(
+        "ModuleInfo",
+        moduleInfoChangeSet,
+        moduleInfoOpCode,
+        duplicateConstruction);
+    if (includeDependedModule)
+    {
+        DefineVersionType(
+            "DependedModule",
+            dependedModuleChangeSet,
+            dependedModuleOpCode,
+            duplicateConstruction);
+    }
+    moduleManagerBuilder.Save(path);
+
+    void DefineVersionType(
+        string typeName,
+        int changeSet,
+        OpCode loadOpCode,
+        bool emitTwice)
+    {
+        var type = moduleManagerModule.DefineType(
+            "TaleWorlds.ModuleManager." + typeName,
+            TypeAttributes.Public | TypeAttributes.Class | TypeAttributes.Sealed);
+        var methodAttributes = MethodAttributes.Public;
+        if (staticUpdateVersionChangeSet)
+            methodAttributes |= MethodAttributes.Static;
+        var method = type.DefineMethod(
+            "UpdateVersionChangeSet",
+            methodAttributes,
+            nonVoidUpdateVersionChangeSet ? typeof(int) : typeof(void),
+            Type.EmptyTypes);
+        var il = method.GetILGenerator();
+        EmitConstruction(il, changeSet, loadOpCode);
+        if (emitTwice)
+            EmitConstruction(il, changeSet, loadOpCode);
+        if (nonVoidUpdateVersionChangeSet)
+            il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ret);
+        type.CreateType();
+    }
+
+    void EmitConstruction(ILGenerator il, int changeSet, OpCode loadOpCode)
+    {
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ldc_I4_0);
+        il.Emit(OpCodes.Ldc_I4_0);
+        if (loadOpCode == OpCodes.Ldc_I4)
+            il.Emit(loadOpCode, changeSet);
+        else if (loadOpCode == OpCodes.Ldc_I4_S)
+            il.Emit(loadOpCode, checked((sbyte)changeSet));
+        else
+            il.Emit(loadOpCode);
+        il.Emit(OpCodes.Newobj, fixtureConstructor);
+        il.Emit(OpCodes.Pop);
+    }
 }
 
 void CreateDirectoryJunction(string path, string target)

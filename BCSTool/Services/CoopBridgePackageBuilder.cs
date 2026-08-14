@@ -17,20 +17,20 @@ namespace BCSTool.Services;
 public sealed class CoopBridgePackageBuilder
 {
     public const string BridgeIdPrefix = "BCS.CoopBridge.";
-    public const string BridgeVersion = "v0.6.60";
+    public const string BridgeVersion = "v0.6.64";
     private const string ProjectUrl =
         "https://github.com/Batsa/Bannerlord-Coop-Manager";
 
     private const string ServerBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Server.dll";
     private const string ServerBridgeAssemblyHash =
-        "6156313216D8E342E2EA63AEB8B47706922B23D375146AD01F303C5E62091591";
+        "4F38B76C49BD5D0F374EC0A37A08449F0E42C2DD93BA733FE76442E7966E716C";
     private const string ClientBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Client.dll";
     private const string LicenseResource = "BCSTool.LICENSE";
     private const string NoticeResource = "BCSTool.NOTICE.md";
     private const string ClientBridgeAssemblyHash =
-        "1AB981E4D4EB13E6C16E298A9F4CAEDDF474ED411220147078F8F889487D21FF";
+        "0EBB9730AF2694C12F2F1D4FC1B6C7295A8A11C2DBB751A81749E1D1688AE8E9";
     private static readonly UTF8Encoding Utf8NoBom = new(false, true);
 
     public CoopBridgePackage Build(
@@ -159,7 +159,8 @@ public sealed class CoopBridgePackageBuilder
             $"Allowed server-only visual files: {contentExclusions.Count}.\r\n" +
             $"Server file redirects: {serverFileRedirects.Count}.\r\n" +
             $"Server XML overlays: {serverXmlOverlays.Count}.\r\n" +
-            "Campaign intervention: none.\r\n" +
+            "Campaign seeding/save rewriting: none.\r\n" +
+            "Optional server population controls use bcs-coop-bridge-population.config and preserve native behavior by default.\r\n" +
             $"Bannerlord game-version compatibility: {gameVersionCompatibility is not null}.\r\n" +
             $"Client assembly resolvers: {clientAssemblyResolves.Count}.\r\n" +
             $"Server map terrain sizes: {serverMapTerrainSizes.Count}.\r\n" +
@@ -217,8 +218,8 @@ public sealed class CoopBridgePackageBuilder
             builder.Append("GAME_VERSION_COMPAT|")
                 .Append(Encode(gameVersionCompatibility.ServerVersion)).Append('|')
                 .Append(Encode(gameVersionCompatibility.ClientVersion)).Append('|')
-                .Append(string.Empty).Append('|')
-                .Append(string.Empty)
+                .Append(Encode(gameVersionCompatibility.ServerRuntimeVersion)).Append('|')
+                .Append(Encode(gameVersionCompatibility.ClientRuntimeVersion))
                 .Append('\n');
         }
         foreach (var resolver in clientAssemblyResolves
@@ -653,11 +654,50 @@ public sealed class CoopBridgePackageBuilder
             return;
         if (string.IsNullOrWhiteSpace(rule.ServerVersion) ||
             string.IsNullOrWhiteSpace(rule.ClientVersion) ||
-            rule.ServerVersion.Equals(rule.ClientVersion, StringComparison.OrdinalIgnoreCase))
+            string.IsNullOrWhiteSpace(rule.ServerRuntimeVersion) ||
+            string.IsNullOrWhiteSpace(rule.ClientRuntimeVersion) ||
+            !IsSemanticGameVersion(rule.ServerVersion, 3) ||
+            !IsSemanticGameVersion(rule.ClientVersion, 3) ||
+            !IsSemanticGameVersion(rule.ServerRuntimeVersion, 4) ||
+            !IsSemanticGameVersion(rule.ClientRuntimeVersion, 4) ||
+            !rule.ServerRuntimeVersion.StartsWith(
+                rule.ServerVersion + ".",
+                StringComparison.OrdinalIgnoreCase) ||
+            !rule.ClientRuntimeVersion.StartsWith(
+                rule.ClientVersion + ".",
+                StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException(
-                "Game-version compatibility requires two different non-empty Bannerlord versions.");
+                "Game-version compatibility requires valid base versions and matching exact runtime versions.");
         }
+    }
+
+    private static bool IsSemanticGameVersion(string value, int componentCount)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length < 2 ||
+            value[0] is not ('a' or 'b' or 'd' or 'e' or 'v'))
+        {
+            return false;
+        }
+
+        var components = value[1..].Split('.');
+        if (components.Length != componentCount)
+            return false;
+        for (var index = 0; index < components.Length; index++)
+        {
+            if (!int.TryParse(
+                    components[index],
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out var component) ||
+                component < 0 ||
+                (index == 0 && component == 0) ||
+                (index == components.Length - 1 && componentCount == 4 && component == 0))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static byte[] BuildManifest(
@@ -1070,8 +1110,8 @@ public sealed record BridgeServerXmlOverlay(
 public sealed record BridgeGameVersionCompatibility(
     string ServerVersion,
     string ClientVersion,
-    string ServerRuntimeSha256,
-    string ClientRuntimeSha256);
+    string ServerRuntimeVersion,
+    string ClientRuntimeVersion);
 
 public sealed record BridgeClientAssemblyResolve(
     string ModuleId,

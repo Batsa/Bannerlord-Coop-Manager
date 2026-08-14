@@ -1,12 +1,15 @@
 using System.IO;
 using System.Reflection;
+using System.Reflection.Emit;
 using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml;
+using System.Xml.Schema;
 using BCSTool.Models;
 
 namespace BCSTool.Services;
@@ -18,7 +21,7 @@ namespace BCSTool.Services;
 public sealed class CoopCompatibilityPatcher
 {
     private const string RealmOfThronesRule = "realm-of-thrones-8.1.7-server-v2";
-    private const string Europe1700Rule = "europe-1700-1.4.7.1-server-v55";
+    private const string Europe1700Rule = "europe-1700-1.4.7.1-server-v57";
     private const string ContentOnlyRule = "content-only-server-v1";
     private const string GenericExecutableRule = "generic-executable-bridge-v1";
     private const long MaximumManifestCharacters = 4 * 1024 * 1024;
@@ -63,6 +66,12 @@ public sealed class CoopCompatibilityPatcher
         "TaleWorlds.MountAndBlade.dll",
         "TaleWorlds.ObjectSystem.dll"
     ];
+
+    private static readonly IReadOnlyDictionary<ushort, OpCode> IlOpCodes =
+        typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static)
+            .Where(field => field.FieldType == typeof(OpCode))
+            .Select(field => (OpCode)field.GetValue(null)!)
+            .ToDictionary(opCode => unchecked((ushort)opCode.Value));
 
     private static readonly HashSet<string> SupportedGameVersionCompatibilityPairs =
         new(StringComparer.OrdinalIgnoreCase)
@@ -248,7 +257,7 @@ public sealed class CoopCompatibilityPatcher
             9),
         new(
             "ModuleData/spworkshops.xml",
-            Europe1700SchemaRepairKind.WorkshopRangedOutputCategory,
+            Europe1700SchemaRepairKind.WorkshopOutputCategories,
             5)
     ];
 
@@ -1019,6 +1028,7 @@ public sealed class CoopCompatibilityPatcher
         if (blockers.Count > 0)
             return;
 
+        AddEurope1700ItemsSchemaTransformation(module, engineRoot!, proposed);
         AddManifestTransformation(
             module,
             addCoopOrdering: false,
@@ -1068,9 +1078,8 @@ public sealed class CoopCompatibilityPatcher
         warnings.Add(
             "The generated bridge redirects EOE XML reads to bridge-owned casing, terminator, workshop-output, " +
             "legacy NPC equipment-type, and invalid equipment-slot overlays. EOE files remain unchanged. " +
-            "Firearm alternate melee modes are retained; " +
-            "the v1.4.7 server schema " +
-            "warnings for multiple Weapon elements are not silently stripped.");
+            "Firearm alternate melee modes are retained through a reversible server Items.xsd correction, " +
+            "which must validate the complete EOE items_guns.xml before installation.");
         warnings.Add(
             "BattleArtilleryReworked references StoryMode.CampaignStoryMode while EOE declares no StoryMode " +
             "dependency and the dedicated-server package omits StoryMode.dll. BCS locates the installed official " +
@@ -1141,6 +1150,209 @@ public sealed class CoopCompatibilityPatcher
         }
         return overlays;
     }
+
+    private static void AddEurope1700ItemsSchemaTransformation(
+        BannerlordModule module,
+        string engineRoot,
+        ICollection<PendingChange> proposed)
+    {
+        var schemaPath = Path.Combine(engineRoot, "XmlSchemas", "Items.xsd");
+        if (!IsRegularUnlinkedFileWithin(schemaPath, engineRoot))
+        {
+            throw new InvalidDataException(
+                "Dedicated-server Items.xsd is missing, linked, or outside the engine root: " + schemaPath);
+        }
+
+        var itemsPath = Path.Combine(module.Path, "ModuleData", "items", "items_guns.xml");
+        if (!IsRegularUnlinkedFileWithin(itemsPath, module.Path))
+        {
+            throw new InvalidDataException(
+                "EOE items_guns.xml is missing, linked, or outside the module root: " + itemsPath);
+        }
+
+        AddPendingChange(
+            proposed,
+            schemaPath,
+            TransformEurope1700ItemsSchema(
+                File.ReadAllBytes(schemaPath),
+                File.ReadAllBytes(itemsPath)),
+            "Allow runtime-supported repeated EOE Weapon modes in the server Items.xsd");
+    }
+
+    internal static byte[] TransformEurope1700ItemsSchema(
+        byte[] schemaBytes,
+        byte[] itemsBytes)
+    {
+        ArgumentNullException.ThrowIfNull(schemaBytes);
+        ArgumentNullException.ThrowIfNull(itemsBytes);
+
+        var schemaDocument = LoadSecureXmlDocument(schemaBytes, "Dedicated-server Items.xsd");
+        var schemaNamespaces = new XmlNamespaceManager(schemaDocument.NameTable);
+        schemaNamespaces.AddNamespace("xs", XmlSchema.Namespace);
+        const string weaponDeclarationPath =
+            "/xs:schema/xs:element[@name='Items']/xs:complexType/xs:choice/" +
+            "xs:element[@name='Item']/xs:complexType/xs:sequence/" +
+            "xs:element[@name='ItemComponent']/xs:complexType/xs:choice/" +
+            "xs:element[@name='Weapon']";
+        var weaponDeclarations = schemaDocument.SelectNodes(
+            weaponDeclarationPath,
+            schemaNamespaces);
+        if (weaponDeclarations?.Count != 1 || weaponDeclarations[0] is not XmlElement weaponDeclaration)
+        {
+            throw new InvalidDataException(
+                "Dedicated-server Items.xsd must contain exactly one Weapon declaration under ItemComponent.");
+        }
+
+        var itemsDocument = LoadSecureXmlDocument(itemsBytes, "EOE items_guns.xml");
+        var repeatedWeaponItems = itemsDocument.SelectNodes(
+            "/Items/Item/ItemComponent[count(Weapon) > 1]");
+        if (repeatedWeaponItems is null || repeatedWeaponItems.Count == 0)
+        {
+            throw new InvalidDataException(
+                "EOE items_guns.xml does not contain an item with repeated Weapon modes.");
+        }
+
+        var maximum = weaponDeclaration.GetAttribute("maxOccurs");
+        if (maximum.Equals("unbounded", StringComparison.Ordinal))
+        {
+            ValidateItemsAgainstSchema(schemaBytes, itemsBytes);
+            return schemaBytes.ToArray();
+        }
+        if (!maximum.Equals("1", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The EOE ItemComponent Weapon declaration must have maxOccurs=\"1\" or \"unbounded\", " +
+                $"but found \"{maximum}\".");
+        }
+
+        var schemaText = Utf8NoBom.GetString(schemaBytes);
+        const string weaponOpeningPattern =
+            @"<(?:(?:[A-Za-z_][\w.-]*):)?element\b" +
+            @"(?=[^>]*\bname\s*=\s*(?<nameQuote>[""'])Weapon\k<nameQuote>)[^>]*>";
+        var weaponOpenings = Regex.Matches(
+            schemaText,
+            weaponOpeningPattern,
+            RegexOptions.CultureInvariant);
+        if (weaponOpenings.Count != 1)
+        {
+            throw new InvalidDataException(
+                "Dedicated-server Items.xsd must contain exactly one textual Weapon declaration.");
+        }
+
+        var opening = weaponOpenings[0];
+        var maximumAttributes = Regex.Matches(
+            opening.Value,
+            @"\bmaxOccurs\s*=\s*(?<quote>[""'])(?<value>[^""']*)\k<quote>",
+            RegexOptions.CultureInvariant);
+        if (maximumAttributes.Count != 1 ||
+            !maximumAttributes[0].Groups["value"].Value.Equals("1", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The EOE ItemComponent Weapon declaration must contain exactly one maxOccurs=\"1\" attribute.");
+        }
+
+        var value = maximumAttributes[0].Groups["value"];
+        var valueOffset = opening.Index + value.Index;
+        var transformedText = schemaText.Remove(valueOffset, value.Length)
+            .Insert(valueOffset, "unbounded");
+        var transformedBytes = Utf8NoBom.GetBytes(transformedText);
+
+        var transformedDocument = LoadSecureXmlDocument(
+            transformedBytes,
+            "Transformed dedicated-server Items.xsd");
+        var transformedNamespaces = new XmlNamespaceManager(transformedDocument.NameTable);
+        transformedNamespaces.AddNamespace("xs", XmlSchema.Namespace);
+        var transformedDeclarations = transformedDocument.SelectNodes(
+            weaponDeclarationPath,
+            transformedNamespaces);
+        if (transformedDeclarations?.Count != 1 ||
+            transformedDeclarations[0] is not XmlElement transformedDeclaration ||
+            !transformedDeclaration.GetAttribute("maxOccurs").Equals(
+                "unbounded",
+                StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                "The transformed Items.xsd did not retain one unbounded ItemComponent Weapon declaration.");
+        }
+
+        ValidateItemsAgainstSchema(transformedBytes, itemsBytes);
+        return transformedBytes;
+    }
+
+    private static XmlDocument LoadSecureXmlDocument(byte[] bytes, string description)
+    {
+        if (bytes.Length == 0)
+            throw new InvalidDataException(description + " is empty.");
+
+        try
+        {
+            var document = new XmlDocument { XmlResolver = null };
+            using var stream = new MemoryStream(bytes, writable: false);
+            using var reader = XmlReader.Create(stream, SecureXmlReaderSettings());
+            document.Load(reader);
+            return document;
+        }
+        catch (XmlException exception)
+        {
+            throw new InvalidDataException(description + " is not secure, well-formed XML.", exception);
+        }
+    }
+
+    private static void ValidateItemsAgainstSchema(byte[] schemaBytes, byte[] itemsBytes)
+    {
+        var validationMessages = new List<string>();
+        void RecordValidation(object? _, ValidationEventArgs eventArgs) =>
+            validationMessages.Add(eventArgs.Message);
+
+        try
+        {
+            var schemas = new XmlSchemaSet { XmlResolver = null };
+            schemas.ValidationEventHandler += RecordValidation;
+            using (var schemaStream = new MemoryStream(schemaBytes, writable: false))
+            using (var schemaReader = XmlReader.Create(schemaStream, SecureXmlReaderSettings()))
+            {
+                schemas.Add(null, schemaReader);
+            }
+            schemas.Compile();
+            if (validationMessages.Count > 0)
+            {
+                throw new InvalidDataException(
+                    "Transformed dedicated-server Items.xsd did not compile cleanly: " +
+                    validationMessages[0]);
+            }
+
+            var settings = SecureXmlReaderSettings();
+            settings.ValidationType = ValidationType.Schema;
+            settings.Schemas = schemas;
+            settings.ValidationFlags = XmlSchemaValidationFlags.ReportValidationWarnings;
+            settings.ValidationEventHandler += RecordValidation;
+            using var itemsStream = new MemoryStream(itemsBytes, writable: false);
+            using var itemsReader = XmlReader.Create(itemsStream, settings);
+            while (itemsReader.Read())
+            {
+            }
+        }
+        catch (Exception exception) when (exception is XmlException or XmlSchemaException)
+        {
+            throw new InvalidDataException(
+                "The transformed Items.xsd or EOE items_guns.xml could not be validated.",
+                exception);
+        }
+
+        if (validationMessages.Count > 0)
+        {
+            throw new InvalidDataException(
+                "EOE items_guns.xml did not validate cleanly against the transformed Items.xsd: " +
+                validationMessages[0]);
+        }
+    }
+
+    private static XmlReaderSettings SecureXmlReaderSettings() => new()
+    {
+        DtdProcessing = DtdProcessing.Prohibit,
+        XmlResolver = null,
+        MaxCharactersInDocument = MaximumManifestCharacters
+    };
 
     internal static byte[] TransformEurope1700SchemaRepairForHeadless(
         string relativePath,
@@ -1239,7 +1451,7 @@ public sealed class CoopCompatibilityPatcher
                     RegexOptions.CultureInvariant);
                 break;
             }
-            case Europe1700SchemaRepairKind.WorkshopRangedOutputCategory:
+            case Europe1700SchemaRepairKind.WorkshopOutputCategories:
             {
                 const string rangedTierOne = "output=\"ItemCategory.ranged_weapons\"";
                 const string rangedTierTwo = "output=\"ItemCategory.ranged_weapons_2\"";
@@ -1262,6 +1474,7 @@ public sealed class CoopCompatibilityPatcher
                         $"{tierOneCount}/{tierTwoCount}/{tierThreeCount}/{tierFourCount}; " +
                         "expected 1/1/2/1.");
                 }
+
                 transformed = source
                     .Replace(rangedTierOne, rangedTierFive, StringComparison.Ordinal)
                     .Replace(rangedTierTwo, rangedTierFive, StringComparison.Ordinal)
@@ -1712,7 +1925,7 @@ public sealed class CoopCompatibilityPatcher
         MergedBearskinEquipmentXslt,
         MergedNpcCompatibilityXslt,
         InvalidBearskinCapeEquipment,
-        WorkshopRangedOutputCategory
+        WorkshopOutputCategories
     }
 
     private static void AddManifestTransformation(
@@ -2072,13 +2285,29 @@ public sealed class CoopCompatibilityPatcher
             "The bridge never creates or repairs campaign state. Select an existing EOE save before starting " +
             "the server; missing-save handling remains owned by Bannerlord Coop.");
         if (package.GameVersionCompatibility is not null)
+            warnings.Add(CreateGameVersionCompatibilityWarning(package.GameVersionCompatibility));
+    }
+
+    internal static string CreateGameVersionCompatibilityWarning(
+        BridgeGameVersionCompatibility compatibility)
+    {
+        ArgumentNullException.ThrowIfNull(compatibility);
+        if (compatibility.ServerVersion.Equals(
+                compatibility.ClientVersion,
+                StringComparison.OrdinalIgnoreCase))
         {
-            warnings.Add(
-                "The released Coop server and installed Bannerlord client use different supported game versions. " +
-                "The bridge records the supported server/client version pair and bypasses only Coop's game-version gate for " +
-                $"{package.GameVersionCompatibility.ServerVersion} -> " +
-                $"{package.GameVersionCompatibility.ClientVersion}; required runtime names and method signatures still fail closed.");
+            return
+                "The dedicated server and Bannerlord client use the same base game version. " +
+                "The bridge observed and records the exact semantic runtime pair " +
+                $"{compatibility.ServerRuntimeVersion} -> {compatibility.ClientRuntimeVersion}. " +
+                "No Coop base-version bypass is installed; required runtime names and method signatures still fail closed.";
         }
+
+        return
+            "The released Coop server and installed Bannerlord client use different supported base game versions. " +
+            "The bridge records the exact semantic runtime pair and bypasses only Coop's game-version gate for " +
+            $"{compatibility.ServerRuntimeVersion} -> {compatibility.ClientRuntimeVersion}; " +
+            "required runtime names and method signatures still fail closed.";
     }
 
     internal static BridgeGameVersionCompatibility? CreateGameVersionCompatibility(
@@ -2108,34 +2337,399 @@ public sealed class CoopCompatibilityPatcher
             bannerlordRoot,
             "bin",
             "Win64_Shipping_Client");
-        if (!File.Exists(serverManifestPath) ||
-            !File.Exists(clientManifestPath) ||
-            RequiredGameRuntimeFiles.Any(fileName =>
-                !File.Exists(Path.Combine(serverBin, fileName)) ||
-                !File.Exists(Path.Combine(clientBin, fileName))))
+        var missingRuntimeFiles = RequiredGameRuntimeFiles
+            .SelectMany(fileName => new[]
+            {
+                Path.Combine(serverBin, fileName),
+                Path.Combine(clientBin, fileName)
+            })
+            .Where(path => !File.Exists(path))
+            .ToArray();
+        if (!File.Exists(serverManifestPath) || !File.Exists(clientManifestPath) ||
+            missingRuntimeFiles.Length != 0)
         {
             return null;
         }
 
-        var serverVersion = Value(
+        var serverVersion = ValidateManifestGameVersion(
+            Value(
             LoadManifest(serverManifestPath).DocumentElement!,
-            "Version");
-        var clientVersion = Value(
+            "Version"),
+            "dedicated server");
+        var clientVersion = ValidateManifestGameVersion(
+            Value(
             LoadManifest(clientManifestPath).DocumentElement!,
-            "Version");
-        if (serverVersion.Equals(clientVersion, StringComparison.OrdinalIgnoreCase))
-            return null;
-        if (!SupportedGameVersionCompatibilityPairs.Contains(
+            "Version"),
+            "Bannerlord client");
+        if (!serverVersion.Equals(clientVersion, StringComparison.OrdinalIgnoreCase) &&
+            !SupportedGameVersionCompatibilityPairs.Contains(
                 serverVersion + "|" + clientVersion))
         {
-            return null;
+            throw new InvalidDataException(
+                "Unsupported Bannerlord server/client base-version pair: " +
+                serverVersion + " -> " + clientVersion + ".");
         }
+
+        var serverRuntimeVersion = serverVersion + "." +
+            ReadModuleManagerChangeSet(
+                Path.Combine(serverBin, "TaleWorlds.ModuleManager.dll"),
+                "dedicated server");
+        var clientRuntimeVersion = clientVersion + "." +
+            ReadModuleManagerChangeSet(
+                Path.Combine(clientBin, "TaleWorlds.ModuleManager.dll"),
+                "Bannerlord client");
 
         return new BridgeGameVersionCompatibility(
             serverVersion,
             clientVersion,
-            string.Empty,
-            string.Empty);
+            serverRuntimeVersion,
+            clientRuntimeVersion);
+    }
+
+    private static string ValidateManifestGameVersion(string version, string role)
+    {
+        if (string.IsNullOrWhiteSpace(version) ||
+            !Regex.IsMatch(
+                version,
+                @"^[abevd](?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$",
+                RegexOptions.CultureInvariant))
+        {
+            throw new InvalidDataException(
+                "The " + role + " Native manifest has an invalid game version: " +
+                (version ?? "<null>") + ".");
+        }
+        return version;
+    }
+
+    internal static int ReadModuleManagerChangeSet(string assemblyPath, string role)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(assemblyPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(role);
+
+        try
+        {
+            using var stream = new FileStream(
+                Path.GetFullPath(assemblyPath),
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read);
+            using var peReader = new PEReader(stream, PEStreamOptions.LeaveOpen);
+            if (!peReader.HasMetadata)
+                throw new InvalidDataException("The assembly has no managed metadata.");
+
+            var metadata = peReader.GetMetadataReader();
+            if (!metadata.IsAssembly ||
+                !metadata.GetString(metadata.GetAssemblyDefinition().Name).Equals(
+                    "TaleWorlds.ModuleManager",
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "The assembly identity is not TaleWorlds.ModuleManager.");
+            }
+
+            var constructorTokens = metadata.MemberReferences
+                .Where(handle => IsApplicationVersionConstructor(metadata, handle))
+                .Select(handle => MetadataTokens.GetToken(handle))
+                .ToArray();
+            if (constructorTokens.Length != 1)
+            {
+                throw new InvalidDataException(
+                    "Expected exactly one instance void TaleWorlds.Library.ApplicationVersion" +
+                    " constructor reference with parameters " +
+                    "(ApplicationVersionType, int, int, int, int).");
+            }
+
+            var values = new[] { "ModuleInfo", "DependedModule" }
+                .Select(typeName => ReadUpdateVersionChangeSet(
+                    peReader,
+                    metadata,
+                    typeName,
+                    constructorTokens[0]))
+                .ToArray();
+            if (values[0] <= 0 || values[0] != values[1])
+            {
+                throw new InvalidDataException(
+                    "ModuleInfo and DependedModule do not declare one matching positive change set.");
+            }
+            return values[0];
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new InvalidDataException(
+                "Could not read the " + role +
+                " TaleWorlds.ModuleManager semantic game revision from " + assemblyPath + ": " +
+                exception.Message,
+                exception);
+        }
+        catch (Exception exception) when (exception is BadImageFormatException or IOException)
+        {
+            throw new InvalidDataException(
+                "Could not read the " + role +
+                " TaleWorlds.ModuleManager semantic game revision from " + assemblyPath + ".",
+                exception);
+        }
+    }
+
+    private static bool IsApplicationVersionConstructor(
+        MetadataReader metadata,
+        MemberReferenceHandle handle)
+    {
+        var reference = metadata.GetMemberReference(handle);
+        if (!metadata.GetString(reference.Name).Equals(".ctor", StringComparison.Ordinal) ||
+            reference.Parent.Kind != HandleKind.TypeReference)
+        {
+            return false;
+        }
+
+        var parent = metadata.GetTypeReference((TypeReferenceHandle)reference.Parent);
+        if (!metadata.GetString(parent.Namespace).Equals(
+                "TaleWorlds.Library",
+                StringComparison.Ordinal) ||
+            !metadata.GetString(parent.Name).Equals(
+                "ApplicationVersion",
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var signature = metadata.GetBlobReader(reference.Signature);
+        var header = signature.ReadSignatureHeader();
+        if (header.Kind != SignatureKind.Method ||
+            header.CallingConvention != SignatureCallingConvention.Default ||
+            !header.IsInstance ||
+            header.HasExplicitThis ||
+            header.IsGeneric ||
+            signature.ReadCompressedInteger() != 5 ||
+            signature.ReadSignatureTypeCode() != SignatureTypeCode.Void ||
+            signature.ReadSignatureTypeCode() != SignatureTypeCode.TypeHandle)
+        {
+            return false;
+        }
+
+        var applicationVersionType = signature.ReadTypeHandle();
+        if (!IsNamedType(
+                metadata,
+                applicationVersionType,
+                "TaleWorlds.Library",
+                "ApplicationVersionType"))
+        {
+            return false;
+        }
+
+        for (var index = 0; index < 4; index++)
+        {
+            if (signature.ReadSignatureTypeCode() != SignatureTypeCode.Int32)
+                return false;
+        }
+        return signature.RemainingBytes == 0;
+    }
+
+    private static bool IsNamedType(
+        MetadataReader metadata,
+        EntityHandle handle,
+        string expectedNamespace,
+        string expectedName)
+    {
+        StringHandle namespaceHandle;
+        StringHandle nameHandle;
+        switch (handle.Kind)
+        {
+            case HandleKind.TypeDefinition:
+            {
+                var definition = metadata.GetTypeDefinition((TypeDefinitionHandle)handle);
+                namespaceHandle = definition.Namespace;
+                nameHandle = definition.Name;
+                break;
+            }
+            case HandleKind.TypeReference:
+            {
+                var reference = metadata.GetTypeReference((TypeReferenceHandle)handle);
+                namespaceHandle = reference.Namespace;
+                nameHandle = reference.Name;
+                break;
+            }
+            default:
+                return false;
+        }
+
+        return metadata.GetString(namespaceHandle).Equals(
+                   expectedNamespace,
+                   StringComparison.Ordinal) &&
+               metadata.GetString(nameHandle).Equals(
+                   expectedName,
+                   StringComparison.Ordinal);
+    }
+
+    private static int ReadUpdateVersionChangeSet(
+        PEReader peReader,
+        MetadataReader metadata,
+        string typeName,
+        int applicationVersionConstructorToken)
+    {
+        var types = metadata.TypeDefinitions
+            .Where(handle =>
+            {
+                var definition = metadata.GetTypeDefinition(handle);
+                return metadata.GetString(definition.Namespace).Equals(
+                           "TaleWorlds.ModuleManager",
+                           StringComparison.Ordinal) &&
+                       metadata.GetString(definition.Name).Equals(
+                           typeName,
+                           StringComparison.Ordinal);
+            })
+            .ToArray();
+        if (types.Length != 1)
+        {
+            throw new InvalidDataException(
+                "Expected exactly one TaleWorlds.ModuleManager." + typeName + " type.");
+        }
+
+        var methods = metadata.GetTypeDefinition(types[0]).GetMethods()
+            .Where(handle =>
+            {
+                var definition = metadata.GetMethodDefinition(handle);
+                return metadata.GetString(definition.Name).Equals(
+                           "UpdateVersionChangeSet",
+                           StringComparison.Ordinal) &&
+                       !definition.Attributes.HasFlag(MethodAttributes.Static) &&
+                       IsInstanceVoidParameterlessMethod(metadata, definition.Signature);
+            })
+            .ToArray();
+        if (methods.Length != 1)
+        {
+            throw new InvalidDataException(
+                typeName + " must contain exactly one instance void zero-parameter " +
+                "UpdateVersionChangeSet method.");
+        }
+
+        var method = metadata.GetMethodDefinition(methods[0]);
+        if (method.RelativeVirtualAddress == 0)
+            throw new InvalidDataException(typeName + ".UpdateVersionChangeSet has no IL body.");
+        var il = peReader.GetMethodBody(method.RelativeVirtualAddress).GetILBytes();
+        if (il is null || il.Length == 0)
+            throw new InvalidDataException(typeName + ".UpdateVersionChangeSet has empty IL.");
+
+        var candidates = new List<int>();
+        int? previousInteger = null;
+        var offset = 0;
+        while (offset < il.Length)
+        {
+            var opCode = ReadIlOpCode(il, ref offset);
+            var operandOffset = offset;
+            var operandSize = GetIlOperandSize(opCode, il, operandOffset);
+            EnsureIlRange(il, operandOffset, operandSize);
+            var integer = ReadLdcI4(opCode, il, operandOffset);
+            if (opCode == OpCodes.Newobj && operandSize == sizeof(int) &&
+                BitConverter.ToInt32(il, operandOffset) == applicationVersionConstructorToken &&
+                previousInteger.HasValue)
+            {
+                candidates.Add(previousInteger.Value);
+            }
+            offset += operandSize;
+            previousInteger = integer;
+        }
+
+        if (candidates.Count != 1 || candidates[0] <= 0)
+        {
+            throw new InvalidDataException(
+                typeName + ".UpdateVersionChangeSet must load one positive change set immediately " +
+                "before constructing ApplicationVersion.");
+        }
+        return candidates[0];
+    }
+
+    private static bool IsInstanceVoidParameterlessMethod(
+        MetadataReader metadata,
+        BlobHandle signatureHandle)
+    {
+        var signature = metadata.GetBlobReader(signatureHandle);
+        var header = signature.ReadSignatureHeader();
+        return header.Kind == SignatureKind.Method &&
+               header.CallingConvention == SignatureCallingConvention.Default &&
+               header.IsInstance &&
+               !header.HasExplicitThis &&
+               !header.IsGeneric &&
+               signature.ReadCompressedInteger() == 0 &&
+               signature.ReadSignatureTypeCode() == SignatureTypeCode.Void &&
+               signature.RemainingBytes == 0;
+    }
+
+    private static OpCode ReadIlOpCode(byte[] il, ref int offset)
+    {
+        EnsureIlRange(il, offset, 1);
+        ushort value = il[offset++];
+        if (value == 0xFE)
+        {
+            EnsureIlRange(il, offset, 1);
+            value = (ushort)(0xFE00 | il[offset++]);
+        }
+        if (!IlOpCodes.TryGetValue(value, out var opCode))
+            throw new InvalidDataException("Unknown IL opcode 0x" + value.ToString("X4") + ".");
+        return opCode;
+    }
+
+    private static int? ReadLdcI4(OpCode opCode, byte[] il, int operandOffset)
+    {
+        if (opCode == OpCodes.Ldc_I4_M1)
+            return -1;
+        if (opCode == OpCodes.Ldc_I4_0)
+            return 0;
+        if (opCode == OpCodes.Ldc_I4_1)
+            return 1;
+        if (opCode == OpCodes.Ldc_I4_2)
+            return 2;
+        if (opCode == OpCodes.Ldc_I4_3)
+            return 3;
+        if (opCode == OpCodes.Ldc_I4_4)
+            return 4;
+        if (opCode == OpCodes.Ldc_I4_5)
+            return 5;
+        if (opCode == OpCodes.Ldc_I4_6)
+            return 6;
+        if (opCode == OpCodes.Ldc_I4_7)
+            return 7;
+        if (opCode == OpCodes.Ldc_I4_8)
+            return 8;
+        if (opCode == OpCodes.Ldc_I4_S)
+            return unchecked((sbyte)il[operandOffset]);
+        return opCode == OpCodes.Ldc_I4
+            ? BitConverter.ToInt32(il, operandOffset)
+            : null;
+    }
+
+    private static int GetIlOperandSize(OpCode opCode, byte[] il, int operandOffset)
+    {
+        return opCode.OperandType switch
+        {
+            OperandType.InlineNone => 0,
+            OperandType.ShortInlineI or OperandType.ShortInlineVar or
+                OperandType.ShortInlineBrTarget => 1,
+            OperandType.InlineVar => 2,
+            OperandType.InlineI or OperandType.ShortInlineR or
+                OperandType.InlineBrTarget or OperandType.InlineString or
+                OperandType.InlineField or OperandType.InlineMethod or
+                OperandType.InlineType or OperandType.InlineTok or
+                OperandType.InlineSig => 4,
+            OperandType.InlineI8 or OperandType.InlineR => 8,
+            OperandType.InlineSwitch => ReadSwitchOperandSize(il, operandOffset),
+            _ => throw new InvalidDataException(
+                "Unsupported IL operand type " + opCode.OperandType + ".")
+        };
+    }
+
+    private static int ReadSwitchOperandSize(byte[] il, int operandOffset)
+    {
+        EnsureIlRange(il, operandOffset, sizeof(int));
+        var count = BitConverter.ToInt32(il, operandOffset);
+        if (count < 0 || count > (il.Length - operandOffset - sizeof(int)) / sizeof(int))
+            throw new InvalidDataException("Invalid IL switch operand.");
+        return sizeof(int) + count * sizeof(int);
+    }
+
+    private static void EnsureIlRange(byte[] il, int offset, int count)
+    {
+        if (offset < 0 || count < 0 || offset > il.Length - count)
+            throw new InvalidDataException("Truncated IL while reading the game revision.");
     }
 
     private static void AddProfileTransformation(
