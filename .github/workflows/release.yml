@@ -1,4 +1,4 @@
-name: Publish BCS Tool Release
+name: Publish Bannerlord Coop Manager Release
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    name: Build and publish BCS Tool
+    name: Build and publish Bannerlord Coop Manager
     runs-on: windows-latest
 
     steps:
@@ -47,7 +47,7 @@ jobs:
               throw "Release tag '$actualTag' does not match project version '$projectVersion'. Expected '$expectedTag'."
           }
 
-      - name: Publish BCS Tool
+      - name: Publish Bannerlord Coop Manager
         shell: pwsh
         run: |
           & ".\BCSTool\Publish-SingleExe.ps1"
@@ -63,7 +63,7 @@ jobs:
       - name: Verify release executable
         shell: pwsh
         run: |
-          $exe = ".\BCSTool\publish\BCS Tool.exe"
+          $exe = ".\BCSTool\publish\Bannerlord Coop Manager.exe"
           $bootstrap = ".\BCSTool\publish\BCSTool.RuntimeBootstrap.dll"
           $companions = @(
             ".\BCSTool\publish\START-HERE.txt",
@@ -93,7 +93,7 @@ jobs:
         run: |
           $archive = ".\BCSTool\publish\Bannerlord-Coop-Manager-${{ github.ref_name }}-win-x64.zip"
           Compress-Archive `
-            -LiteralPath ".\BCSTool\publish\BCS Tool.exe", ".\BCSTool\publish\BCSTool.RuntimeBootstrap.dll", ".\BCSTool\publish\START-HERE.txt", ".\BCSTool\publish\README.md", ".\BCSTool\publish\LICENSE", ".\BCSTool\publish\NOTICE.md" `
+            -LiteralPath ".\BCSTool\publish\Bannerlord Coop Manager.exe", ".\BCSTool\publish\BCSTool.RuntimeBootstrap.dll", ".\BCSTool\publish\START-HERE.txt", ".\BCSTool\publish\README.md", ".\BCSTool\publish\LICENSE", ".\BCSTool\publish\NOTICE.md" `
             -DestinationPath $archive `
             -CompressionLevel Optimal
 
@@ -124,7 +124,7 @@ jobs:
 
           1. Download **$([IO.Path]::GetFileName($archive))** below.
           2. Extract the ZIP completely.
-          3. Run **BCS Tool.exe** from the extracted folder.
+          3. Run **Bannerlord Coop Manager.exe** from the extracted folder.
 
           No .NET or source build is required. Keep BCSTool.RuntimeBootstrap.dll
           beside the executable. The ZIP contains the manager only; Bannerlord, Coop,

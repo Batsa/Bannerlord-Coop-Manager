@@ -1,7 +1,7 @@
 <Window x:Class="BCSTool.CheatConsoleWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Server Cheats - BCS Tool"
+        Title="Server Cheats - Bannerlord Coop Manager"
         Width="760"
         Height="690"
         MinWidth="680"
@@ -187,7 +187,7 @@
                     Padding="10"
                     Margin="0,0,0,10">
                 <TextBlock TextWrapping="Wrap"
-                           Text="Client-only commands such as coop.unstuck and coop.debug.clan.add_influence must be entered by that player in the in-game console. BCS Tool cannot execute inside a client process."/>
+                           Text="Client-only commands such as coop.unstuck and coop.debug.clan.add_influence must be entered by that player in the in-game console. Bannerlord Coop Manager cannot execute inside a client process."/>
             </Border>
 
             <TextBlock Text="{Binding StatusMessage}"

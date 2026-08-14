@@ -34,5 +34,5 @@ public static class AppVersion
         $"v{Version}";
 
     public static string DisplayName =>
-        $"BCS Tool {DisplayVersion}";
+        $"Bannerlord Coop Manager {DisplayVersion}";
 }

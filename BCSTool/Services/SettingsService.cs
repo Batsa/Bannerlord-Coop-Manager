@@ -6,7 +6,7 @@ using Microsoft.Win32;
 namespace BCSTool.Services;
 
 /// <summary>
-/// Loads and saves BCS Tool settings in the current Windows user's Registry.
+/// Loads and saves Bannerlord Coop Manager settings in the current Windows user's Registry.
 ///
 /// Registry location:
 ///
@@ -15,8 +15,8 @@ namespace BCSTool.Services;
 /// Why use HKEY_CURRENT_USER?
 ///
 /// - No administrator permission is required.
-/// - Each Windows user gets their own BCS Tool settings.
-/// - Settings survive replacing/updating BCS Tool.exe.
+/// - Each Windows user gets their own Bannerlord Coop Manager settings.
+/// - Settings survive replacing/updating Bannerlord Coop Manager.exe.
 /// - No visible settings.json file is needed beside the executable.
 ///
 /// The rest of the application still talks to this service through
@@ -26,10 +26,10 @@ namespace BCSTool.Services;
 public sealed class SettingsService
 {
     /// <summary>
-    /// Registry subkey used by BCS Tool.
+    /// Registry subkey used by Bannerlord Coop Manager.
     ///
     /// This legacy key name is intentionally retained so upgrading from older
-    /// BCS Tool versions preserves all existing saved settings.
+    /// Bannerlord Coop Manager versions preserves all existing saved settings.
     ///
     /// This is relative to HKEY_CURRENT_USER.
     /// </summary>
@@ -37,7 +37,7 @@ public sealed class SettingsService
         @"Software\BCSServerTool";
 
     /// <summary>
-    /// Human-readable location shown in the BCS Tool console.
+    /// Human-readable location shown in the Bannerlord Coop Manager console.
     /// </summary>
     public string StorageLocation =>
         @"HKEY_CURRENT_USER\Software\BCSServerTool";
@@ -190,7 +190,7 @@ public sealed class SettingsService
         if (key is null)
         {
             throw new InvalidOperationException(
-                "Could not create or open the BCS Tool Registry settings key.");
+                "Could not create or open the Bannerlord Coop Manager Registry settings key.");
         }
 
         WriteString(
@@ -223,7 +223,7 @@ public sealed class SettingsService
         if (key is null)
         {
             throw new InvalidOperationException(
-                "Could not create or open the BCS Tool Registry settings key.");
+                "Could not create or open the Bannerlord Coop Manager Registry settings key.");
         }
 
         WriteBool(
@@ -270,7 +270,7 @@ public sealed class SettingsService
         if (key is null)
         {
             throw new InvalidOperationException(
-                "Could not create or open the BCS Tool Registry settings key.");
+                "Could not create or open the Bannerlord Coop Manager Registry settings key.");
         }
 
         WriteBool(
@@ -299,7 +299,7 @@ public sealed class SettingsService
         if (key is null)
         {
             throw new InvalidOperationException(
-                "Could not create or open the BCS Tool Registry settings key.");
+                "Could not create or open the Bannerlord Coop Manager Registry settings key.");
         }
 
         // Strings are stored as REG_SZ.
@@ -392,7 +392,7 @@ public sealed class SettingsService
 
 
     /// <summary>
-    /// Deletes the entire BCS Tool settings key.
+    /// Deletes the entire Bannerlord Coop Manager settings key.
     ///
     /// The next LoadAsync call will therefore return a fresh ServerSettings
     /// instance containing the built-in defaults.

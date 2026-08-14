@@ -96,7 +96,7 @@ public sealed class CoopCompatibilityReport
     public string ToPlainText()
     {
         var builder = new StringBuilder();
-        builder.AppendLine("BCS Tool - Coop Compatibility Report");
+        builder.AppendLine("Bannerlord Coop Manager - Coop Compatibility Report");
         builder.AppendLine($"Generated (UTC): {GeneratedUtc:O}");
         builder.AppendLine($"Module: {ModuleName} ({ModuleId}) {ModuleVersion}");
         builder.AppendLine($"Path: {ModulePath}");

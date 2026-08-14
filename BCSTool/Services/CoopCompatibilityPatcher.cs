@@ -597,7 +597,7 @@ public sealed class CoopCompatibilityPatcher
             !ReferenceEquals(plan, pending.PublicPlan))
         {
             throw new InvalidOperationException(
-                "This compatibility plan is stale or was created by another BCS Tool session. Analyze again.");
+                "This compatibility plan is stale or was created by another Bannerlord Coop Manager session. Analyze again.");
         }
 
         if (!plan.CanApply)
@@ -770,7 +770,7 @@ public sealed class CoopCompatibilityPatcher
 
         File.WriteAllText(
             Path.Combine(backupDirectory, "REVERTED.txt"),
-            $"Reverted by BCS Tool at {DateTimeOffset.UtcNow:O}{Environment.NewLine}",
+            $"Reverted by Bannerlord Coop Manager at {DateTimeOffset.UtcNow:O}{Environment.NewLine}",
             Utf8NoBom);
 
         return new CoopPreparationResult(
@@ -862,7 +862,7 @@ public sealed class CoopCompatibilityPatcher
             blockers.Add(
                 "ROT.dll directly references NavalDLC.dll from the commercial War Sails expansion, " +
                 "but that licensed runtime is not installed in the client or dedicated-server module set. " +
-                "BCS Tool will not synthesize or bypass paid DLC code.");
+                "Bannerlord Coop Manager will not synthesize or bypass paid DLC code.");
         }
 
         if (blockers.Count > 0)

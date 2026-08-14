@@ -9,7 +9,7 @@ using System.Runtime.Loader;
 /// <summary>
 /// Runs before Bannerlord's managed entry point. The dedicated server keeps
 /// community assemblies in per-module bin folders, which are outside the
-/// default .NET probing path. BCS Tool supplies the allowed folders through a
+/// default .NET probing path. Bannerlord Coop Manager supplies the allowed folders through a
 /// process-private environment variable.
 /// </summary>
 public static class StartupHook
@@ -31,7 +31,7 @@ public static class StartupHook
         InstallCrashLogging();
         InstallFirstChanceLogging();
         Console.WriteLine(
-            $"[BCS Tool] Module assembly resolver active ({SearchDirectories.Length} search folders)." );
+            $"[Bannerlord Coop Manager] Module assembly resolver active ({SearchDirectories.Length} search folders)." );
     }
 
     private static void InstallConsoleLogging()

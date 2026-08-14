@@ -5,7 +5,7 @@ using System.IO;
 namespace BCSTool.Models;
 
 /// <summary>
-/// Serializable configuration for BCS Tool.
+/// Serializable configuration for Bannerlord Coop Manager.
 ///
 /// SettingsService persists this class in the current user's Registry.
 /// Using a normal C# object instead of hard-coded constants means the
@@ -14,7 +14,7 @@ namespace BCSTool.Models;
 public sealed class ServerSettings
 {
     // Folder containing BannerlordCoopServer.exe.
-    // Empty means "use the folder containing BCS Tool".
+    // Empty means "use the folder containing Bannerlord Coop Manager".
     public string ServerDirectory { get; set; } = "";
     public string ServerExecutable { get; set; } = "BannerlordCoopServer.exe";
 
@@ -43,7 +43,7 @@ public sealed class ServerSettings
     // read. Managed Coop launches and runtime guards always use UDP 4200.
     public int ServerPort { get; set; } = 0;
 
-    // The first server launch is always manual. Opening BCS Tool never
+    // The first server launch is always manual. Opening Bannerlord Coop Manager never
     // launches BannerlordCoopServer.exe by itself.
     public bool AutoRestartOnCrash { get; set; } = true;
 

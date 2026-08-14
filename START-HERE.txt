@@ -3,11 +3,11 @@ Bannerlord Coop Manager - Quick Start
 
 1. Extract this ZIP completely to a normal writable folder.
 2. Keep all extracted files together.
-3. Run "BCS Tool.exe".
+3. Run "Bannerlord Coop Manager.exe".
 
 No installer, .NET runtime, SDK, or source build is required.
 
-BCSTool.RuntimeBootstrap.dll must remain beside BCS Tool.exe. It is required
+BCSTool.RuntimeBootstrap.dll must remain beside Bannerlord Coop Manager.exe. It is required
 when the manager starts a modded dedicated-server profile.
 
 This ZIP does not include Mount & Blade II: Bannerlord, Bannerlord Coop,
@@ -27,6 +27,11 @@ generated bridge row and clicking "Bridge Population Settings". They are not
 required for initial setup and apply after the next server start. Automatic NPC
 caravans default to two per town; the editor shows the calculated overhaul-wide
 target and lets the server owner select zero through ten per town.
+
+First join to an imported campaign: Bannerlord may show the campaign intro or a
+loading-looking video for about three minutes before character creation. Wait
+or press Esc once to skip it safely, then complete and confirm character
+creation. Save transfer starts only after that step.
 
 This preview executable is not digitally signed. Windows may display an
 "Unknown publisher" or SmartScreen warning. Before running it, compare the

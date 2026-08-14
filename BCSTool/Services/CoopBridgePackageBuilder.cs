@@ -149,7 +149,7 @@ public sealed class CoopBridgePackageBuilder
         var bridgeId = BridgeIdPrefix + Hash(identityPayload)[..24].ToLowerInvariant();
         var manifest = BuildManifest(bridgeId, modules);
         var readme = Utf8NoBom.GetBytes(
-            "BCS Tool generated Coop bridge package\r\n" +
+            "Bannerlord Coop Manager generated Coop bridge package\r\n" +
             $"Module: {bridgeId} {BridgeVersion}\r\n" +
             "\r\n" +
             "Copy the Modules folder into the Bannerlord client installation.\r\n" +

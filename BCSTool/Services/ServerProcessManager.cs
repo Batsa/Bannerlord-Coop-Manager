@@ -15,7 +15,7 @@ namespace BCSTool.Services;
 ///
 /// - Commands are still sent directly; no SendKeys/focus required.
 /// - Bannerlord believes it is connected to a real terminal.
-/// - BCS Tool receives VT/ANSI cursor and screen-control sequences.
+/// - Bannerlord Coop Manager receives VT/ANSI cursor and screen-control sequences.
 /// - VirtualTerminalScreen reconstructs the full two-dimensional terminal UI.
 /// - The native Players pane can therefore be inspected instead of relying
 ///   only on delayed `players=N` pulse messages.
@@ -500,7 +500,7 @@ public sealed class ServerProcessManager : IDisposable
 
 
     /// <summary>
-    /// Clears BCS Tool's reconstructed terminal display.
+    /// Clears Bannerlord Coop Manager's reconstructed terminal display.
     ///
     /// This does not send a clear command to Bannerlord. The server may redraw
     /// its terminal UI immediately afterward.
@@ -638,7 +638,7 @@ public sealed class ServerProcessManager : IDisposable
     /// <summary>
     /// The packaged BannerlordCoopServer launcher owns file logging when the
     /// unmanaged launch path is used. A managed module profile bypasses that
-    /// launcher and starts the engine directly, so BCS Tool must tee ConPTY's
+    /// launcher and starts the engine directly, so Bannerlord Coop Manager must tee ConPTY's
     /// complete raw character stream itself for logFile to remain effective.
     /// </summary>
     private void ConfigureManagedEngineConsoleLog(

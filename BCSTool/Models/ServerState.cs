@@ -11,13 +11,13 @@ public enum ServerState
 {
     // No managed Bannerlord process exists.
     Stopped,
-    // BCS Tool has requested process startup.
+    // Bannerlord Coop Manager has requested process startup.
     Starting,
     // Process exists, but the server has not printed the readiness message.
     WaitingForReady,
     // Server printed "coop server up, waiting for clients".
     Ready,
-    // BCS Tool is sending or waiting on the save sequence.
+    // Bannerlord Coop Manager is sending or waiting on the save sequence.
     Saving,
     // A graceful "stop" command has been sent.
     Stopping,

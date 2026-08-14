@@ -15,7 +15,7 @@ namespace BCSTool.Services;
 ///     ESC [ K                  erase line
 ///
 /// A real terminal (Windows Terminal, cmd, etc.) interprets those sequences
-/// and updates cells on a screen. BCS Tool now performs the same basic job so
+/// and updates cells on a screen. Bannerlord Coop Manager now performs the same basic job so
 /// it can inspect Bannerlord Coop's screen-positioned Players pane.
 ///
 /// This is intentionally not a complete xterm implementation. It implements
@@ -721,7 +721,7 @@ internal sealed class VirtualTerminalScreen
             case 'h':
             case 'l':
                 // ?1049h switches to alternate screen buffer.
-                // BCS Tool uses one virtual buffer, so clear it when the
+                // Bannerlord Coop Manager uses one virtual buffer, so clear it when the
                 // application enters the alternate screen.
                 if (
                     isPrivate &&

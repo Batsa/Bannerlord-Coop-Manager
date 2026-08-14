@@ -19,9 +19,9 @@ namespace BCSTool.Services;
 ///
 ///     Server -> plain line stream
 ///
-/// ConPTY gives BCS Tool the terminal stream:
+/// ConPTY gives Bannerlord Coop Manager the terminal stream:
 ///
-///     Server <-> ConPTY <-> BCS Tool
+///     Server <-> ConPTY <-> Bannerlord Coop Manager
 ///
 /// The terminal stream contains normal text plus VT/ANSI control sequences
 /// for cursor movement, screen clearing, box drawing, and other terminal UI
@@ -248,7 +248,7 @@ internal sealed class ConPtySession : IDisposable
             }
 
             // Process.GetProcessById creates the managed Process wrapper used
-            // by the rest of BCS Tool.
+            // by the rest of Bannerlord Coop Manager.
             var process =
                 Process.GetProcessById(
                     unchecked((int)processInformation.dwProcessId));

@@ -9,7 +9,7 @@
 #     install .NET separately.
 #
 # PublishSingleFile=true
-#     Packs the managed application into a single primary BCS Tool.exe.
+#     Packs the managed application into a single primary Bannerlord Coop Manager.exe.
 #
 # IncludeNativeLibrariesForSelfExtract=true
 #     Allows native WPF/runtime components to be included in single-file
@@ -41,7 +41,7 @@ dotnet publish $Project `
     /p:DebugType=None `
     /p:DebugSymbols=false
 
-$Executable = Join-Path $PublishDirectory "BCS Tool.exe"
+$Executable = Join-Path $PublishDirectory "Bannerlord Coop Manager.exe"
 $RuntimeBootstrap = Join-Path $PublishDirectory "BCSTool.RuntimeBootstrap.dll"
 
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
@@ -75,7 +75,7 @@ foreach ($Name in $CompanionFiles) {
     Write-Host "  $(Join-Path $PublishDirectory $Name)"
 }
 Write-Host ""
-Write-Host "BCS Tool settings are stored in:"
+Write-Host "Bannerlord Coop Manager settings are stored in:"
 Write-Host "  HKEY_CURRENT_USER\Software\BCSServerTool"
 Write-Host ""
 Write-Host "No settings.json file is required."

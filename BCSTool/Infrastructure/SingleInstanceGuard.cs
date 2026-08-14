@@ -4,10 +4,10 @@ using System.Threading;
 namespace BCSTool.Infrastructure;
 
 /// <summary>
-/// Prevents more than one copy of BCS Tool from running.
+/// Prevents more than one copy of Bannerlord Coop Manager from running.
 ///
 /// A named Mutex is a Windows synchronization primitive. The first process
-/// that creates the named mutex "owns" it. A second BCS Tool process sees
+/// that creates the named mutex "owns" it. A second Bannerlord Coop Manager process sees
 /// that the mutex already exists and exits.
 ///
 /// This is important for a server manager because two watchdogs could both
@@ -25,7 +25,7 @@ public sealed class SingleInstanceGuard : IDisposable
     }
 
     /// <summary>
-    /// Attempts to become the single active BCS Tool instance.
+    /// Attempts to become the single active Bannerlord Coop Manager instance.
     /// Returns true only for the first process.
     /// </summary>
     public bool TryAcquire()

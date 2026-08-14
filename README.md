@@ -1,10 +1,11 @@
 # Bannerlord Coop Manager
 
 Bannerlord Coop Manager is a Windows desktop manager for a Bannerlord Coop
-dedicated server. The current executable and user interface retain the upstream
-name **BCS Tool**.
+dedicated server. The executable and user interface use the
+**Bannerlord Coop Manager** name.
 
-This repository publishes a **preview Windows build**. It extends BCS Tool
+This repository publishes a **preview Windows build**. It extends the upstream
+BCS Tool codebase
 with dedicated-server module management, reversible Coop bridge installation,
 client bridge packaging, client-save import, persistent server
 logging, and a version-scoped compatibility path for **Empires of Europe 1700
@@ -89,10 +90,10 @@ No installer, .NET SDK, or source build is required.
    automatically generated **Source code** archives.
 3. Right-click the downloaded ZIP and select **Extract All**. Extract it to a
    normal writable folder, such as `Documents\Bannerlord Coop Manager`.
-4. Open the extracted folder and run `BCS Tool.exe`.
+4. Open the extracted folder and run `Bannerlord Coop Manager.exe`.
 
 Keep every extracted file together. In particular,
-`BCSTool.RuntimeBootstrap.dll` must remain beside `BCS Tool.exe`; it is used
+`BCSTool.RuntimeBootstrap.dll` must remain beside `Bannerlord Coop Manager.exe`; it is used
 when the manager starts a modded dedicated-server profile.
 
 The preview executable is self-contained for Windows x64 but is not digitally
@@ -108,8 +109,8 @@ EOE, and the dedicated-server package must already be installed separately.
 1. Install or update Bannerlord, Bannerlord Coop, and EOE to the exact versions
    above.
 2. Exit Bannerlord and stop the dedicated server completely.
-3. Launch `BCS Tool.exe`.
-4. Confirm that BCS Tool detected `BannerlordCoopServer.exe`. Use **Browse** if
+3. Launch `Bannerlord Coop Manager.exe`.
+4. Confirm that Bannerlord Coop Manager detected `BannerlordCoopServer.exe`. Use **Browse** if
    it did not.
 5. If Coop has not created its configuration files yet, perform one initial
    server boot, let Coop create them, then stop the server.
@@ -125,7 +126,7 @@ Coop configuration paths:
 %USERPROFILE%\Documents\Mount and Blade II Bannerlord\CoopData\DedicatedServer\server-config.json
 ```
 
-BCS Tool preserves the existing JSON-with-comments layout where supported and
+Bannerlord Coop Manager preserves the existing JSON-with-comments layout where supported and
 creates a sibling `.bak` before replacing a configuration file.
 
 ## Prepare a supported overhaul mod
@@ -142,7 +143,7 @@ The drop itself is consent to import the server copy. The button is
 consent to perform the backed-up bridge operation. There are no routine
 confirmation dialogs and no required Analyze, checkbox, reorder, or Save Load
 Order step. On success the Server Mods window closes, the main status reports
-readiness, the BCS Tool Console records the matching client ZIP path, and the
+readiness, the Bannerlord Coop Manager Console records the matching client ZIP path, and the
 next server action can be **Start** after the campaign save is selected/imported.
 
 The same bridge operation owns EOE DLL
@@ -274,10 +275,10 @@ Europe1700
 BCS.CoopBridge.<identity>
 ```
 
-If an installed EOE copy is replaced or updated outside BCS Tool, click
+If an installed EOE copy is replaced or updated outside Bannerlord Coop Manager, click
 **Prepare / Install Bridge** again. If Coop or the game updates, click the same
 button and distribute the newly
-generated ZIP. BCS Tool does not download or silently update Workshop mods.
+generated ZIP. Bannerlord Coop Manager does not download or silently update Workshop mods.
 The ZIP contains the bridge runtimes, manifest, configuration, GPL notice, and
 attribution. Server-only transformed EOE XML/XSLT overlays stay on the server
 and are not redistributed in the client ZIP.
@@ -291,7 +292,7 @@ Bannerlord client task:
 2. Create the character and campaign.
 3. Save manually.
 4. Exit Bannerlord completely so the save is stable.
-5. In BCS Tool, open **Server Configuration** and click **Refresh Saves**.
+5. In Bannerlord Coop Manager, open **Server Configuration** and click **Refresh Saves**.
 6. Select the campaign under **Client campaign**.
 7. Click **Import Client Save**.
 8. Click **Save** or **Save & Close** so the imported name becomes the active
@@ -308,6 +309,14 @@ Import copies the `.sav` through a staging file, verifies SHA-256, and never
 overwrites an existing server save or unrelated sidecar. Coop creates the
 server-side `.json` sidecar after hosting the imported campaign.
 
+On the first Coop join, that sidecar has no player identity yet. Bannerlord
+plays the campaign intro before opening character creation; with EOE this can
+take about three minutes and may resemble a static loading screen. Wait for it
+or press Esc once to skip it safely, keep the client open, complete and confirm
+character creation, and then wait for the server save transfer. Bannerlord Coop Manager warns
+about this before starting a campaign
+whose sidecar is missing or has an empty `Players` array.
+
 For current operation, use only ASCII letters, digits, and underscores in a
 campaign name, without `.sav`; for example, `EOE_Test4`. Avoid spaces and
 special characters even though Windows itself permits some of them.
@@ -322,6 +331,9 @@ campaign. A client's later local saves are not synchronized back into it.
 3. Wait for the server to report that it is serving and waiting for clients.
 4. Connect through the supported Coop flow or directly to the host on UDP
    `4200`.
+5. For a newly imported campaign, wait through the first-join intro and finish
+   character creation. Save transfer begins only after character creation is
+   confirmed.
 
 BCS-managed module-profile launches invoke the engine with:
 
@@ -330,7 +342,7 @@ BCS-managed module-profile launches invoke the engine with:
 ```
 
 Port `4200` is enforced by the managed launch plan; it is not read from
-`server-config.json`. If no `bcs-server-modules.json` exists, BCS Tool uses the
+`server-config.json`. If no `bcs-server-modules.json` exists, Bannerlord Coop Manager uses the
 upstream unmanaged launcher path instead.
 
 ## Logs and diagnostics
@@ -352,7 +364,7 @@ coop-server-yyyyMMdd-HHmmss[-N].log
 Segments roll near 64 MiB and the ten newest files are retained. Output is not
 deduplicated, filtered, or truncated.
 
-BCS Tool's own lifecycle log is stored under:
+Bannerlord Coop Manager's own lifecycle log is stored under:
 
 ```text
 %LOCALAPPDATA%\BCSServerTool\Logs\BCSTool-yyyy-MM-dd.log
@@ -373,10 +385,10 @@ player-identifying information.
   server's engine root.
 - Bannerlord Coop owns campaign-save rotation and retains two paired native
   generations: `<name>.backup1.sav/.json` and `<name>.backup2.sav/.json`.
-- BCS Tool does not create a second campaign-save rotation or restore those
+- Bannerlord Coop Manager does not create a second campaign-save rotation or restore those
   native generations. Existing `Game Saves\BCS Backups` folders from older BCS
   Tool builds are preserved as legacy data and are not deleted automatically.
-- BCS Tool still creates narrow safety copies for its own configuration/profile
+- Bannerlord Coop Manager still creates narrow safety copies for its own configuration/profile
   writes and reversible bridge-install manifests under
   `bcs-compatibility-backups`; these are not campaign-save backups.
 
@@ -429,7 +441,7 @@ dotnet run --project .\BCSTool.RegressionTests\BCSTool.RegressionTests.csproj -c
 The regression runner currently contains 57 named checks and finishes with:
 
 ```text
-All BCS Tool regression checks passed.
+All Bannerlord Coop Manager regression checks passed.
 ```
 
 ### Publish the application
@@ -441,7 +453,7 @@ powershell.exe -ExecutionPolicy Bypass -File .\BCSTool\Publish-SingleExe.ps1
 Publish output:
 
 ```text
-BCSTool\publish\BCS Tool.exe
+BCSTool\publish\Bannerlord Coop Manager.exe
 BCSTool\publish\BCSTool.RuntimeBootstrap.dll
 BCSTool\publish\START-HERE.txt
 BCSTool\publish\README.md

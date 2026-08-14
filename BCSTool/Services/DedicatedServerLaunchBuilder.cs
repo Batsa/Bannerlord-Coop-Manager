@@ -5,7 +5,7 @@ using System.Text.Json;
 namespace BCSTool.Services;
 
 /// <summary>
-/// Converts BCS Tool's saved module profile into Bannerlord's real engine
+/// Converts Bannerlord Coop Manager's saved module profile into Bannerlord's real engine
 /// module token. BannerlordCoopServer.exe currently starts a fixed vanilla
 /// module set, so enabled community modules must be passed to the engine
 /// directly.
@@ -86,7 +86,7 @@ public sealed class DedicatedServerLaunchBuilder
 
         RequireFile(dotnetPath, "bundled .NET host");
         RequireFile(starterPath, "Bannerlord server entry point");
-        RequireFile(_runtimeBootstrapPath, "BCS Tool runtime bootstrap");
+        RequireFile(_runtimeBootstrapPath, "Bannerlord Coop Manager runtime bootstrap");
 
         var ids = active.Select(module => module.Id).ToArray();
         var token = "_MODULES_" + string.Concat(ids.Select(id => "*" + id)) + "*_MODULES_";
