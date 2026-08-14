@@ -1,8 +1,10 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Media3D;
 using BCSTool.Models;
 using BCSTool.Services;
 using BCSTool.ViewModels;
@@ -293,12 +295,25 @@ public partial class ModManagerWindow : Window
     private static T? FindAncestor<T>(DependencyObject source)
         where T : DependencyObject
     {
-        for (var current = source; current is not null; current = VisualTreeHelper.GetParent(current))
+        for (var current = source; current is not null; current = GetParent(current))
         {
             if (current is T match)
                 return match;
         }
 
         return null;
+    }
+
+    private static DependencyObject? GetParent(DependencyObject source)
+    {
+        if (source is ContentElement content)
+        {
+            return ContentOperations.GetParent(content) ??
+                   (content as FrameworkContentElement)?.Parent;
+        }
+
+        return source is Visual or Visual3D
+            ? VisualTreeHelper.GetParent(source)
+            : LogicalTreeHelper.GetParent(source);
     }
 }

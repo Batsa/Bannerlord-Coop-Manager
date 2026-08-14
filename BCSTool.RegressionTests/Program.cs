@@ -8,7 +8,10 @@ using System.Reflection.PortableExecutable;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Reflection.Metadata.Ecma335;
+using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Xml;
+using BCSTool;
 using BCSTool.Models;
 using BCSTool.Services;
 
@@ -512,6 +515,7 @@ Run("launcher delegates campaign save backups to Coop", TestLauncherDelegatesCam
 Run("client campaign imports never overwrite server saves", TestClientSaveImport);
 Run("Coop save names stay safe across config and startup", TestCoopSafeServerSaveNames);
 Run("Coop port guard distinguishes UDP from TCP", TestCoopUdpPortGuard);
+Run("module-row text supports visual ancestor lookup", TestModuleRowTextAncestorLookup);
 
 if (failures.Count > 0)
 {
@@ -533,6 +537,17 @@ void Run(string name, Action test)
     {
         failures.Add($"FAIL: {name}{Environment.NewLine}{exception}");
     }
+}
+
+void TestModuleRowTextAncestorLookup()
+{
+    var findAncestor = typeof(ModManagerWindow)
+        .GetMethod("FindAncestor", BindingFlags.NonPublic | BindingFlags.Static)
+        ?.MakeGenericMethod(typeof(ListBoxItem))
+        ?? throw new InvalidOperationException("Mod manager ancestor helper was not found.");
+
+    var result = findAncestor.Invoke(null, [new Run("Europe1700")]);
+    Assert(result is null, "A detached text Run should have no ListBoxItem ancestor.");
 }
 
 string ReadIlOperand(
