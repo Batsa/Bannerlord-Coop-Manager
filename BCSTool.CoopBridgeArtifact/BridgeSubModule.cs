@@ -32,9 +32,9 @@ using TaleWorlds.Library;
 using TaleWorlds.MountAndBlade;
 using TaleWorlds.ObjectSystem;
 
-[assembly: AssemblyVersion("0.6.65.0")]
-[assembly: AssemblyFileVersion("0.6.65.0")]
-[assembly: AssemblyInformationalVersion("0.6.65")]
+[assembly: AssemblyVersion("0.6.67.0")]
+[assembly: AssemblyFileVersion("0.6.67.0")]
+[assembly: AssemblyInformationalVersion("0.6.67")]
 
 namespace BCS.CoopBridge
 {
@@ -5591,6 +5591,8 @@ namespace BCS.CoopBridge
             "ClientSetDisorganizedDiagnostic";
         internal const string ClientTroopRosterSequenceDiagnosticFeature =
             "ClientTroopRosterSequenceDiagnostic";
+        internal const string ClientCharacterCreationLifecycleCompatibilityFeature =
+            "ClientCharacterCreationLifecycleCompatibility";
         internal const string ServerRegistryLifecycleCompatibilityFeature =
             "ServerRegistryLifecycleCompatibility";
         internal const string ServerPopulationControlFeature = "ServerPopulationControl";
@@ -5604,6 +5606,7 @@ namespace BCS.CoopBridge
                 ClientTroopUpgradeLoadRepairFeature,
                 ClientSetDisorganizedDiagnosticFeature,
                 ClientTroopRosterSequenceDiagnosticFeature,
+                ClientCharacterCreationLifecycleCompatibilityFeature,
                 ServerRegistryLifecycleCompatibilityFeature,
                 ServerPopulationControlFeature,
                 ServerFailedIdCompatibilityFeature
@@ -7293,6 +7296,608 @@ namespace BCS.CoopBridge
     }
 
 #if !BCS_SERVER
+    internal sealed class ClientCharacterCreationLifecycleGate
+    {
+        private readonly object sync = new object();
+        private object armedState;
+        private bool fallbackClaimed;
+        private bool introLoadingOverlayReleaseClaimed;
+
+        internal void Arm(object state)
+        {
+            if (state == null)
+                throw new ArgumentNullException("state");
+            lock (sync)
+            {
+                armedState = state;
+                fallbackClaimed = false;
+                introLoadingOverlayReleaseClaimed = false;
+            }
+        }
+
+        internal void Cancel(object state)
+        {
+            if (state == null)
+                return;
+            lock (sync)
+            {
+                if (!ReferenceEquals(armedState, state))
+                    return;
+                armedState = null;
+                fallbackClaimed = false;
+                introLoadingOverlayReleaseClaimed = false;
+            }
+        }
+
+        internal object Peek()
+        {
+            lock (sync)
+                return armedState;
+        }
+
+        internal bool TryClaim(object state)
+        {
+            if (state == null)
+                return false;
+            lock (sync)
+            {
+                if (!ReferenceEquals(armedState, state) || fallbackClaimed)
+                    return false;
+                fallbackClaimed = true;
+                return true;
+            }
+        }
+
+        internal bool TryClaimIntroLoadingOverlayRelease(object state)
+        {
+            if (state == null)
+                return false;
+            lock (sync)
+            {
+                if (!ReferenceEquals(armedState, state) ||
+                    introLoadingOverlayReleaseClaimed)
+                {
+                    return false;
+                }
+                introLoadingOverlayReleaseClaimed = true;
+                return true;
+            }
+        }
+    }
+
+    internal static class ClientCharacterCreationLifecycleCompatibility
+    {
+        private const string HarmonyOwner =
+            "BCS.CoopBridge.client-character-creation-lifecycle";
+        private const string ValidateModuleStateTypeName =
+            "Coop.Core.Client.States.ValidateModuleState";
+        private const string CharacterCreationStartedTypeName =
+            "GameInterface.Services.GameDebug.Messages.CharacterCreationStarted";
+        private const string CharacterCreationStateTypeName =
+            "TaleWorlds.CampaignSystem.CharacterCreationContent.CharacterCreationState";
+        private const string VideoPlaybackStateTypeName =
+            "TaleWorlds.MountAndBlade.VideoPlaybackState";
+        private const string LoadingInterfaceTypeName =
+            "GameInterface.Services.UI.Interfaces.LoadingInterface";
+        private const string LoadingWindowPatchesTypeName =
+            "GameInterface.Services.UI.Patches.LoadingWindowPatches";
+        private static readonly object Sync = new object();
+        private static readonly ClientCharacterCreationLifecycleGate Gate =
+            new ClientCharacterCreationLifecycleGate();
+        private static object broker;
+        private static FieldInfo logicField;
+        private static MethodInfo stateGetter;
+        private static ConstructorInfo characterCreationStartedConstructor;
+        private static MethodInfo publishCharacterCreationStarted;
+        private static Type videoPlaybackStateType;
+        private static object loadingInterface;
+        private static MethodInfo hideLoadingScreen;
+        private static MethodInfo forceLoadingWindowGetter;
+        private static bool installed;
+
+        internal static void Install(
+            string coopModuleRoot,
+            string bridgeId,
+            object messageBroker)
+        {
+            if (string.IsNullOrWhiteSpace(coopModuleRoot))
+                throw new ArgumentException("Coop module root is required.", "coopModuleRoot");
+            if (string.IsNullOrWhiteSpace(bridgeId))
+                throw new ArgumentException("Bridge ID is required.", "bridgeId");
+            if (messageBroker == null)
+                throw new ArgumentNullException("messageBroker");
+
+            lock (Sync)
+            {
+                if (installed)
+                {
+                    if (!ReferenceEquals(broker, messageBroker))
+                    {
+                        throw new InvalidOperationException(
+                            "Character-creation lifecycle compatibility was reactivated with a different message broker.");
+                    }
+                    return;
+                }
+
+                var commonAssembly = LoadRequiredCoopAssembly(
+                    coopModuleRoot,
+                    "Common.dll",
+                    "Common");
+                var coopCoreAssembly = LoadRequiredCoopAssembly(
+                    coopModuleRoot,
+                    "Coop.Core.dll",
+                    "Coop.Core");
+                var gameInterfaceAssembly = LoadRequiredCoopAssembly(
+                    coopModuleRoot,
+                    "GameInterface.dll",
+                    "GameInterface");
+                var validateModuleState = coopCoreAssembly.GetType(
+                    ValidateModuleStateTypeName,
+                    true,
+                    false);
+                var characterCreationStarted = gameInterfaceAssembly.GetType(
+                    CharacterCreationStartedTypeName,
+                    true,
+                    false);
+                var characterCreationState = typeof(MapEvent).Assembly.GetType(
+                    CharacterCreationStateTypeName,
+                    true,
+                    false);
+                var resolvedVideoPlaybackStateType = typeof(MBGameManager).Assembly.GetType(
+                    VideoPlaybackStateTypeName,
+                    true,
+                    false);
+                var resolvedLoadingInterfaceType = gameInterfaceAssembly.GetType(
+                    LoadingInterfaceTypeName,
+                    true,
+                    false);
+                var loadingWindowPatchesType = gameInterfaceAssembly.GetType(
+                    LoadingWindowPatchesTypeName,
+                    true,
+                    false);
+
+                var startCharacterCreation = RequireInstanceVoidMethod(
+                    validateModuleState,
+                    "StartCharacterCreation",
+                    Type.EmptyTypes);
+                var payloadType = commonAssembly.GetType(
+                    "Common.Messaging.MessagePayload`1",
+                    true,
+                    false).MakeGenericType(characterCreationStarted);
+                var handleCharacterCreationStarted = RequireInstanceVoidMethod(
+                    validateModuleState,
+                    "Handle_CharacterCreationStarted",
+                    new[] { payloadType });
+                var dispose = RequireInstanceVoidMethod(
+                    validateModuleState,
+                    "Dispose",
+                    Type.EmptyTypes);
+                var onActivate = RequireInstanceVoidMethod(
+                    characterCreationState,
+                    "OnActivate",
+                    Type.EmptyTypes);
+                var onVideoStarted = RequireInstanceVoidMethod(
+                    resolvedVideoPlaybackStateType,
+                    "OnVideoStarted",
+                    Type.EmptyTypes);
+                var resolvedHideLoadingScreen = RequireInstanceVoidMethod(
+                    resolvedLoadingInterfaceType,
+                    "HideLoadingScreen",
+                    Type.EmptyTypes);
+                if (!startCharacterCreation.IsPublic || !startCharacterCreation.IsVirtual ||
+                    handleCharacterCreationStarted.IsPublic ||
+                    dispose.IsStatic || !dispose.IsPublic || !dispose.IsVirtual ||
+                    !onActivate.IsFamily || !onActivate.IsVirtual ||
+                    !onVideoStarted.IsPublic || onVideoStarted.IsStatic ||
+                    onVideoStarted.IsVirtual ||
+                    !resolvedHideLoadingScreen.IsPublic ||
+                    resolvedHideLoadingScreen.IsStatic ||
+                    !resolvedHideLoadingScreen.IsVirtual ||
+                    !resolvedHideLoadingScreen.IsFinal)
+                {
+                    throw new MissingMemberException(
+                        "Released Coop, GameInterface, or Bannerlord character-creation ABI changed.");
+                }
+
+                var loadingInterfaceConstructor = resolvedLoadingInterfaceType.GetConstructor(
+                    BindingFlags.Instance | BindingFlags.Public,
+                    null,
+                    Type.EmptyTypes,
+                    null);
+                if (loadingInterfaceConstructor == null)
+                {
+                    throw new MissingMethodException(
+                        resolvedLoadingInterfaceType.FullName,
+                        ".ctor()");
+                }
+                var forceLoadingWindowProperty = loadingWindowPatchesType.GetProperty(
+                    "ForceLoadingWindow",
+                    BindingFlags.Static | BindingFlags.Public | BindingFlags.DeclaredOnly);
+                var resolvedForceLoadingWindowGetter = forceLoadingWindowProperty == null
+                    ? null
+                    : forceLoadingWindowProperty.GetGetMethod(false);
+                if (resolvedForceLoadingWindowGetter == null ||
+                    !resolvedForceLoadingWindowGetter.IsStatic ||
+                    resolvedForceLoadingWindowGetter.ReturnType != typeof(bool))
+                {
+                    throw new MissingMemberException(
+                        loadingWindowPatchesType.FullName,
+                        "ForceLoadingWindow");
+                }
+
+                var clientStateBase = validateModuleState.BaseType;
+                if (clientStateBase == null ||
+                    !string.Equals(
+                        clientStateBase.FullName,
+                        "Coop.Core.Client.States.ClientStateBase",
+                        StringComparison.Ordinal))
+                {
+                    throw new TypeLoadException(
+                        "Released Coop ValidateModuleState has an unexpected base type.");
+                }
+                var resolvedLogicField = clientStateBase.GetField(
+                    "Logic",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic |
+                    BindingFlags.DeclaredOnly);
+                if (resolvedLogicField == null ||
+                    !string.Equals(
+                        resolvedLogicField.FieldType.FullName,
+                        "Coop.Core.Client.IClientLogic",
+                        StringComparison.Ordinal))
+                {
+                    throw new MissingFieldException(clientStateBase.FullName, "Logic");
+                }
+                var resolvedStateProperty = resolvedLogicField.FieldType.GetProperty(
+                    "State",
+                    BindingFlags.Instance | BindingFlags.Public);
+                var resolvedStateGetter = resolvedStateProperty == null
+                    ? null
+                    : resolvedStateProperty.GetGetMethod(false);
+                if (resolvedStateGetter == null || resolvedStateGetter.IsStatic ||
+                    !string.Equals(
+                        resolvedStateGetter.ReturnType.FullName,
+                        "Coop.Core.Client.States.IClientState",
+                        StringComparison.Ordinal))
+                {
+                    throw new MissingMemberException(
+                        resolvedLogicField.FieldType.FullName,
+                        "State");
+                }
+
+                var messageConstructor = characterCreationStarted.GetConstructor(
+                    BindingFlags.Instance | BindingFlags.Public,
+                    null,
+                    Type.EmptyTypes,
+                    null);
+                if (messageConstructor == null)
+                {
+                    throw new MissingMethodException(
+                        characterCreationStarted.FullName,
+                        ".ctor()");
+                }
+                var messageBrokerInterface = commonAssembly.GetType(
+                    "Common.Messaging.IMessageBroker",
+                    true,
+                    false);
+                if (!messageBrokerInterface.IsInterface ||
+                    !messageBrokerInterface.IsInstanceOfType(messageBroker))
+                {
+                    throw new TypeLoadException(
+                        "Delayed Coop handler supplied an unexpected message-broker implementation.");
+                }
+                var publishDefinition = messageBrokerInterface.GetMethods(
+                        BindingFlags.Instance | BindingFlags.Public)
+                    .SingleOrDefault(method =>
+                        string.Equals(method.Name, "Publish", StringComparison.Ordinal) &&
+                        method.IsGenericMethodDefinition &&
+                        method.GetGenericArguments().Length == 1 &&
+                        method.GetParameters().Length == 2 &&
+                        method.GetParameters()[0].ParameterType == typeof(object) &&
+                        method.GetParameters()[1].ParameterType.IsGenericParameter &&
+                        method.ReturnType == typeof(void));
+                if (publishDefinition == null)
+                {
+                    throw new MissingMethodException(
+                        messageBrokerInterface.FullName,
+                        "Publish<T>(object,T)");
+                }
+
+                var startPrefix = RequirePatchMethod(nameof(BeforeStartCharacterCreation));
+                var startedPrefix = RequirePatchMethod(nameof(BeforeCharacterCreationStarted));
+                var disposePrefix = RequirePatchMethod(nameof(BeforeValidateModuleStateDisposed));
+                var activatePostfix = RequirePatchMethod(nameof(AfterCharacterCreationActivated));
+                var videoStartedPostfix = RequirePatchMethod(nameof(AfterVideoPlaybackStarted));
+                EnsureOwnerAbsent(startCharacterCreation);
+                EnsureOwnerAbsent(handleCharacterCreationStarted);
+                EnsureOwnerAbsent(dispose);
+                EnsureOwnerAbsent(onActivate);
+                EnsureOwnerAbsent(onVideoStarted);
+
+                broker = messageBroker;
+                logicField = resolvedLogicField;
+                stateGetter = resolvedStateGetter;
+                characterCreationStartedConstructor = messageConstructor;
+                publishCharacterCreationStarted = publishDefinition.MakeGenericMethod(
+                    characterCreationStarted);
+                videoPlaybackStateType = resolvedVideoPlaybackStateType;
+                loadingInterface = loadingInterfaceConstructor.Invoke(null);
+                hideLoadingScreen = resolvedHideLoadingScreen;
+                forceLoadingWindowGetter = resolvedForceLoadingWindowGetter;
+                var harmony = new Harmony(HarmonyOwner);
+                var patched = new List<MethodInfo>();
+                try
+                {
+                    harmony.Patch(
+                        startCharacterCreation,
+                        prefix: new HarmonyMethod(startPrefix) { priority = Priority.First });
+                    patched.Add(startCharacterCreation);
+                    harmony.Patch(
+                        handleCharacterCreationStarted,
+                        prefix: new HarmonyMethod(startedPrefix) { priority = Priority.First });
+                    patched.Add(handleCharacterCreationStarted);
+                    harmony.Patch(
+                        dispose,
+                        prefix: new HarmonyMethod(disposePrefix) { priority = Priority.First });
+                    patched.Add(dispose);
+                    harmony.Patch(
+                        onActivate,
+                        postfix: new HarmonyMethod(activatePostfix) { priority = Priority.Last });
+                    patched.Add(onActivate);
+                    harmony.Patch(
+                        onVideoStarted,
+                        postfix: new HarmonyMethod(videoStartedPostfix) { priority = Priority.Last });
+                    patched.Add(onVideoStarted);
+                    foreach (var target in patched)
+                        EnsureOwnerInstalledOnce(target);
+                    installed = true;
+                }
+                catch
+                {
+                    foreach (var target in patched)
+                        harmony.Unpatch(target, HarmonyPatchType.All, HarmonyOwner);
+                    broker = null;
+                    logicField = null;
+                    stateGetter = null;
+                    characterCreationStartedConstructor = null;
+                    publishCharacterCreationStarted = null;
+                    videoPlaybackStateType = null;
+                    loadingInterface = null;
+                    hideLoadingScreen = null;
+                    forceLoadingWindowGetter = null;
+                    throw;
+                }
+
+                Console.WriteLine(
+                    "[BCS Coop Bridge] Installed fail-closed client character-creation lifecycle compatibility.");
+            }
+        }
+
+        private static Assembly LoadRequiredCoopAssembly(
+            string coopModuleRoot,
+            string fileName,
+            string expectedName)
+        {
+            var path = BridgeRuntime.FindAssemblyForRegistration(coopModuleRoot, fileName);
+            if (path == null)
+            {
+                throw new FileNotFoundException(
+                    "Released Coop " + fileName + " is missing for character-creation compatibility.",
+                    Path.Combine(coopModuleRoot, "bin", "Win64_Shipping_Client", fileName));
+            }
+            return ClientCoopHandlerRegistration.LoadExactCoopAssembly(path, expectedName);
+        }
+
+        private static MethodInfo RequireInstanceVoidMethod(
+            Type declaringType,
+            string name,
+            Type[] parameterTypes)
+        {
+            var matches = declaringType.GetMethods(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic |
+                    BindingFlags.DeclaredOnly)
+                .Where(method =>
+                    string.Equals(method.Name, name, StringComparison.Ordinal) &&
+                    method.ReturnType == typeof(void) &&
+                    ParametersMatch(method.GetParameters(), parameterTypes))
+                .ToArray();
+            if (matches.Length != 1)
+            {
+                throw new MissingMethodException(
+                    declaringType.FullName,
+                    name + "(" + string.Join(",", parameterTypes.Select(type => type.FullName)) + ")");
+            }
+            return matches[0];
+        }
+
+        private static bool ParametersMatch(ParameterInfo[] actual, Type[] expected)
+        {
+            if (actual.Length != expected.Length)
+                return false;
+            for (var index = 0; index < actual.Length; index++)
+            {
+                if (actual[index].ParameterType != expected[index])
+                    return false;
+            }
+            return true;
+        }
+
+        private static MethodInfo RequirePatchMethod(string name)
+        {
+            var method = typeof(ClientCharacterCreationLifecycleCompatibility).GetMethod(
+                name,
+                BindingFlags.Static | BindingFlags.NonPublic);
+            if (method == null)
+            {
+                throw new MissingMethodException(
+                    typeof(ClientCharacterCreationLifecycleCompatibility).FullName,
+                    name);
+            }
+            return method;
+        }
+
+        private static void EnsureOwnerAbsent(MethodInfo target)
+        {
+            var patches = Harmony.GetPatchInfo(target);
+            if (patches != null && patches.Owners.Contains(HarmonyOwner))
+            {
+                throw new InvalidOperationException(
+                    "Character-creation lifecycle Harmony owner is already present on " +
+                    target.DeclaringType.FullName + "." + target.Name + ".");
+            }
+        }
+
+        private static void EnsureOwnerInstalledOnce(MethodInfo target)
+        {
+            var patches = Harmony.GetPatchInfo(target);
+            var count = patches == null
+                ? 0
+                : patches.Prefixes.Concat(patches.Postfixes)
+                    .Count(patch => string.Equals(
+                        patch.owner,
+                        HarmonyOwner,
+                        StringComparison.Ordinal));
+            if (count != 1)
+            {
+                throw new InvalidOperationException(
+                    "Character-creation lifecycle Harmony hook was not installed exactly once on " +
+                    target.DeclaringType.FullName + "." + target.Name + ".");
+            }
+        }
+
+        private static void BeforeStartCharacterCreation(object __instance)
+        {
+            if (!ReferenceEquals(GetCurrentClientState(__instance), __instance))
+            {
+                throw new InvalidOperationException(
+                    "Coop invoked ValidateModuleState.StartCharacterCreation after leaving that state.");
+            }
+            Gate.Arm(__instance);
+        }
+
+        private static void BeforeCharacterCreationStarted(object __instance)
+        {
+            Gate.Cancel(__instance);
+        }
+
+        private static void BeforeValidateModuleStateDisposed(object __instance)
+        {
+            Gate.Cancel(__instance);
+        }
+
+        private static void AfterCharacterCreationActivated(object __instance)
+        {
+            var armedState = Gate.Peek();
+            if (armedState == null)
+                return;
+            if (!ReferenceEquals(GetCurrentClientState(armedState), armedState))
+            {
+                Gate.Cancel(armedState);
+                return;
+            }
+            var nativeState = __instance as GameState;
+            if (nativeState == null || !nativeState.IsActive ||
+                nativeState.GameStateManager == null ||
+                !ReferenceEquals(nativeState.GameStateManager.ActiveState, nativeState))
+            {
+                Gate.Cancel(armedState);
+                throw new InvalidOperationException(
+                    "CharacterCreationState.OnActivate completed without becoming the active native game state.");
+            }
+            if (!Gate.TryClaim(armedState))
+                return;
+
+            try
+            {
+                var message = characterCreationStartedConstructor.Invoke(null);
+                publishCharacterCreationStarted.Invoke(
+                    broker,
+                    new[] { __instance, message });
+                if (ReferenceEquals(GetCurrentClientState(armedState), armedState))
+                {
+                    throw new InvalidOperationException(
+                        "CharacterCreationStarted was published but Coop remained in ValidateModuleState.");
+                }
+                Console.WriteLine(
+                    "[BCS Coop Bridge] Repaired missed CharacterCreationStarted lifecycle notification.");
+            }
+            catch (TargetInvocationException exception)
+            {
+                Gate.Cancel(armedState);
+                throw new InvalidOperationException(
+                    "CharacterCreationStarted lifecycle repair failed.",
+                    exception.InnerException ?? exception);
+            }
+            catch
+            {
+                Gate.Cancel(armedState);
+                throw;
+            }
+        }
+
+        private static void AfterVideoPlaybackStarted(object __instance)
+        {
+            var armedState = Gate.Peek();
+            if (armedState == null)
+                return;
+            if (!ReferenceEquals(GetCurrentClientState(armedState), armedState))
+            {
+                Gate.Cancel(armedState);
+                return;
+            }
+            if (__instance == null || __instance.GetType() != videoPlaybackStateType)
+            {
+                throw new InvalidOperationException(
+                    "The Coop character-creation intro used an unexpected video playback state.");
+            }
+            var nativeState = __instance as GameState;
+            if (nativeState == null || !nativeState.IsActive ||
+                nativeState.GameStateManager == null ||
+                !ReferenceEquals(nativeState.GameStateManager.ActiveState, nativeState))
+            {
+                throw new InvalidOperationException(
+                    "The Coop character-creation video started without becoming the active native game state.");
+            }
+            try
+            {
+                if (!(bool)forceLoadingWindowGetter.Invoke(null, null))
+                    return;
+                if (!Gate.TryClaimIntroLoadingOverlayRelease(armedState))
+                    return;
+                hideLoadingScreen.Invoke(loadingInterface, null);
+                if ((bool)forceLoadingWindowGetter.Invoke(null, null))
+                {
+                    throw new InvalidOperationException(
+                        "GameInterface kept the forced loading window active over the character-creation intro.");
+                }
+                Console.WriteLine(
+                    "[BCS Coop Bridge] Released the validated Coop loading overlay for the character-creation intro.");
+            }
+            catch (TargetInvocationException exception)
+            {
+                throw new InvalidOperationException(
+                    "The Coop character-creation intro loading overlay could not be released.",
+                    exception.InnerException ?? exception);
+            }
+        }
+
+        private static object GetCurrentClientState(object validateModuleState)
+        {
+            var logic = logicField.GetValue(validateModuleState);
+            if (logic == null)
+                throw new InvalidOperationException("ValidateModuleState has no client logic instance.");
+            try
+            {
+                return stateGetter.Invoke(logic, null);
+            }
+            catch (TargetInvocationException exception)
+            {
+                throw new InvalidOperationException(
+                    "Coop client state could not be read.",
+                    exception.InnerException ?? exception);
+            }
+        }
+    }
+
     public static class ClientCoopHandlerRegistration
     {
         private const string HandlerTypeName =
@@ -7415,6 +8020,14 @@ namespace BCS.CoopBridge
             if (BridgeRuntime.IsRuntimeFeatureEnabled(
                     BridgeRuntime.ClientTroopRosterSequenceDiagnosticFeature))
                 ClientTroopRosterSequenceDiagnostic.Install(coopModuleRoot, bridgeId);
+            if (BridgeRuntime.IsRuntimeFeatureEnabled(
+                    BridgeRuntime.ClientCharacterCreationLifecycleCompatibilityFeature))
+            {
+                ClientCharacterCreationLifecycleCompatibility.Install(
+                    coopModuleRoot,
+                    bridgeId,
+                    messageBroker);
+            }
             BridgeRuntime.MarkCoopContainerReady();
         }
 

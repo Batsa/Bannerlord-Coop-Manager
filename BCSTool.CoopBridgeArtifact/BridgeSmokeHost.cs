@@ -56,6 +56,7 @@ internal static class BridgeSmokeHost
             validate.Invoke(null, null);
             VerifyRuntimeFeaturesIfRequested(runtime);
             VerifyDisabledRuntimeFeaturesIfRequested(runtime);
+            VerifyCharacterCreationLifecycleGateIfRequested(bridge);
             VerifyGameVersionCompatibilityIfRequested(args[0]);
             VerifyAuthorityRuleIfPresent(args[0]);
             Console.WriteLine("PASS: bridge runtime accepted the exact generated package.");
@@ -119,6 +120,82 @@ internal static class BridgeSmokeHost
         }
         Console.WriteLine(
             "PASS: bridge runtime kept " + disabled.Length + " compatibility features disabled.");
+    }
+
+    private static void VerifyCharacterCreationLifecycleGateIfRequested(Assembly bridge)
+    {
+        if (!string.Equals(
+                Environment.GetEnvironmentVariable(
+                    "BCS_BRIDGE_SMOKE_VALIDATE_CHARACTER_CREATION_GATE"),
+                "1",
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var gateType = bridge.GetType(
+            "BCS.CoopBridge.ClientCharacterCreationLifecycleGate",
+            true);
+        var gate = Activator.CreateInstance(gateType, true);
+        var arm = gateType.GetMethod(
+            "Arm",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var cancel = gateType.GetMethod(
+            "Cancel",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var peek = gateType.GetMethod(
+            "Peek",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var tryClaim = gateType.GetMethod(
+            "TryClaim",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var tryClaimIntroLoadingOverlayRelease = gateType.GetMethod(
+            "TryClaimIntroLoadingOverlayRelease",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        if (arm == null || cancel == null || peek == null || tryClaim == null ||
+            tryClaimIntroLoadingOverlayRelease == null)
+            throw new MissingMemberException(gateType.FullName, "lifecycle gate methods");
+
+        var firstState = new object();
+        var otherState = new object();
+        if ((bool)tryClaim.Invoke(gate, new[] { firstState }))
+            throw new InvalidOperationException("Unarmed lifecycle fallback was claimable.");
+        if ((bool)tryClaimIntroLoadingOverlayRelease.Invoke(gate, new[] { firstState }))
+            throw new InvalidOperationException("Unarmed intro loading-overlay release was claimable.");
+
+        arm.Invoke(gate, new[] { firstState });
+        cancel.Invoke(gate, new[] { firstState });
+        if (peek.Invoke(gate, null) != null ||
+            (bool)tryClaim.Invoke(gate, new[] { firstState }) ||
+            (bool)tryClaimIntroLoadingOverlayRelease.Invoke(gate, new[] { firstState }))
+        {
+            throw new InvalidOperationException(
+                "Normal upstream lifecycle notification did not suppress the fallback.");
+        }
+
+        arm.Invoke(gate, new[] { firstState });
+        cancel.Invoke(gate, new[] { otherState });
+        if ((bool)tryClaim.Invoke(gate, new[] { otherState }) ||
+            (bool)tryClaimIntroLoadingOverlayRelease.Invoke(gate, new[] { otherState }) ||
+            !(bool)tryClaimIntroLoadingOverlayRelease.Invoke(gate, new[] { firstState }) ||
+            (bool)tryClaimIntroLoadingOverlayRelease.Invoke(gate, new[] { firstState }) ||
+            !(bool)tryClaim.Invoke(gate, new[] { firstState }) ||
+            (bool)tryClaim.Invoke(gate, new[] { firstState }))
+        {
+            throw new InvalidOperationException(
+                "Character-creation lifecycle fallback was not state-scoped and one-shot.");
+        }
+
+        cancel.Invoke(gate, new[] { firstState });
+        arm.Invoke(gate, new[] { firstState });
+        if (!(bool)tryClaim.Invoke(gate, new[] { firstState }) ||
+            !(bool)tryClaimIntroLoadingOverlayRelease.Invoke(gate, new[] { firstState }))
+        {
+            throw new InvalidOperationException(
+                "A new ValidateModuleState activation did not re-arm the lifecycle fallback.");
+        }
+        Console.WriteLine(
+            "PASS: character-creation lifecycle fallback and intro overlay release are independent, state-scoped, one-shot, and preserve the normal path.");
     }
 
     private static void VerifyGameVersionCompatibilityIfRequested(string bridgePath)

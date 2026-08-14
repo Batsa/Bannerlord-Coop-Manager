@@ -2837,6 +2837,26 @@ void TestGenericBridgePackage()
                     .Select(handle => clientMetadata.GetString(
                         clientMetadata.GetMethodDefinition(handle).Name))
                     .ToHashSet(StringComparer.Ordinal);
+                var clientCharacterCreationLifecycleMethods = clientMetadata.TypeDefinitions
+                    .Select(handle => clientMetadata.GetTypeDefinition(handle))
+                    .Where(type => clientMetadata.GetString(type.Name)
+                        .Equals(
+                            "ClientCharacterCreationLifecycleCompatibility",
+                            StringComparison.Ordinal))
+                    .SelectMany(type => type.GetMethods())
+                    .Select(handle => clientMetadata.GetString(
+                        clientMetadata.GetMethodDefinition(handle).Name))
+                    .ToHashSet(StringComparer.Ordinal);
+                var clientCharacterCreationGateMethods = clientMetadata.TypeDefinitions
+                    .Select(handle => clientMetadata.GetTypeDefinition(handle))
+                    .Where(type => clientMetadata.GetString(type.Name)
+                        .Equals(
+                            "ClientCharacterCreationLifecycleGate",
+                            StringComparison.Ordinal))
+                    .SelectMany(type => type.GetMethods())
+                    .Select(handle => clientMetadata.GetString(
+                        clientMetadata.GetMethodDefinition(handle).Name))
+                    .ToHashSet(StringComparer.Ordinal);
                 var serverBridgeRuntimeMethods = serverMetadata.TypeDefinitions
                     .Select(handle => serverMetadata.GetTypeDefinition(handle))
                     .Where(type => serverMetadata.GetString(type.Name)
@@ -2869,6 +2889,30 @@ void TestGenericBridgePackage()
                 Assert(clientCompatibilityMethods.Contains("BeforeGetLeaderParty") &&
                        clientCompatibilityMethods.Contains("BeforeGetNumberOfInvolvedMen"),
                     "Client bridge runtime lost an EOE invalid-map-event-side guard.");
+                Assert(clientTypes.Contains(
+                           "BCS.CoopBridge.ClientCharacterCreationLifecycleCompatibility") &&
+                       clientTypes.Contains(
+                           "BCS.CoopBridge.ClientCharacterCreationLifecycleGate") &&
+                       !serverTypes.Contains(
+                           "BCS.CoopBridge.ClientCharacterCreationLifecycleCompatibility") &&
+                       !serverTypes.Contains(
+                           "BCS.CoopBridge.ClientCharacterCreationLifecycleGate") &&
+                       clientCharacterCreationLifecycleMethods.Contains(
+                           "BeforeStartCharacterCreation") &&
+                       clientCharacterCreationLifecycleMethods.Contains(
+                           "BeforeCharacterCreationStarted") &&
+                       clientCharacterCreationLifecycleMethods.Contains(
+                           "BeforeValidateModuleStateDisposed") &&
+                       clientCharacterCreationLifecycleMethods.Contains(
+                           "AfterCharacterCreationActivated") &&
+                       clientCharacterCreationLifecycleMethods.Contains(
+                           "AfterVideoPlaybackStarted") &&
+                       clientCharacterCreationGateMethods.Contains("Arm") &&
+                       clientCharacterCreationGateMethods.Contains("Cancel") &&
+                       clientCharacterCreationGateMethods.Contains("TryClaim") &&
+                       clientCharacterCreationGateMethods.Contains(
+                           "TryClaimIntroLoadingOverlayRelease"),
+                    "Client bridge runtime lost the scoped character-creation lifecycle repair.");
                 Assert(serverTypes.Contains("BCS.CoopBridge.ServerFailedIdCompatibility") &&
                        serverFailedIdMethods.Contains("BeforePartyVisualDestroyed") &&
                        serverFailedIdMethods.Contains("BeforeWorkshopWarehouseRosterConstruction") &&

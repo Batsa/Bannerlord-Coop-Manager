@@ -93,6 +93,7 @@ internal static class BridgeRuntimeFeatureSets
         BridgeRuntimeFeature.ClientTroopUpgradeLoadRepair,
         BridgeRuntimeFeature.ClientSetDisorganizedDiagnostic,
         BridgeRuntimeFeature.ClientTroopRosterSequenceDiagnostic,
+        BridgeRuntimeFeature.ClientCharacterCreationLifecycleCompatibility,
         BridgeRuntimeFeature.ServerRegistryLifecycleCompatibility,
         BridgeRuntimeFeature.ServerPopulationControl,
         BridgeRuntimeFeature.ServerFailedIdCompatibility

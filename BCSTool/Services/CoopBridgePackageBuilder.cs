@@ -17,20 +17,20 @@ namespace BCSTool.Services;
 public sealed class CoopBridgePackageBuilder
 {
     public const string BridgeIdPrefix = "BCS.CoopBridge.";
-    public const string BridgeVersion = "v0.6.65";
+    public const string BridgeVersion = "v0.6.67";
     private const string ProjectUrl =
         "https://github.com/Batsa/Bannerlord-Coop-Manager";
 
     private const string ServerBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Server.dll";
     private const string ServerBridgeAssemblyHash =
-        "459261DC1A37355B77DAAC9D4D653A28438DBEDC91D4D7459BF92143564AC5C9";
+        "100245BCF303B63D34F7DDD64983FD68EECAD053941BA86B1613F04E6DB769F2";
     private const string ClientBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Client.dll";
     private const string LicenseResource = "BCSTool.LICENSE";
     private const string NoticeResource = "BCSTool.NOTICE.md";
     private const string ClientBridgeAssemblyHash =
-        "A9360BACA132935276230EC85132CB986765EFD434F6D9FB6ECC565DBAA42032";
+        "F1231390B8FD4E384CD963749BB5A87258BFE7251A2ACB3FCA65F2D26298203C";
     private static readonly UTF8Encoding Utf8NoBom = new(false, true);
 
     public CoopBridgePackage Build(
@@ -1123,6 +1123,7 @@ public enum BridgeRuntimeFeature
     ClientTroopUpgradeLoadRepair,
     ClientSetDisorganizedDiagnostic,
     ClientTroopRosterSequenceDiagnostic,
+    ClientCharacterCreationLifecycleCompatibility,
     ServerRegistryLifecycleCompatibility,
     ServerPopulationControl,
     ServerFailedIdCompatibility

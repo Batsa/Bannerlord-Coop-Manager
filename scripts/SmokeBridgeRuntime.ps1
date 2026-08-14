@@ -141,6 +141,7 @@ try {
         'ClientTroopUpgradeLoadRepair',
         'ClientSetDisorganizedDiagnostic',
         'ClientTroopRosterSequenceDiagnostic',
+        'ClientCharacterCreationLifecycleCompatibility',
         'ServerRegistryLifecycleCompatibility',
         'ServerPopulationControl',
         'ServerFailedIdCompatibility'
@@ -186,7 +187,7 @@ try {
     $clientBridgeBin = Join-Path $bridgeRoot 'bin\Win64_Shipping_Client'
     [System.IO.Directory]::CreateDirectory($serverBridgeBin) | Out-Null
     [System.IO.Directory]::CreateDirectory($clientBridgeBin) | Out-Null
-    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.65"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
+    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.67"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
     [System.IO.File]::WriteAllText((Join-Path $bridgeRoot 'SubModule.xml'), $bridgeManifest, $utf8)
     [System.IO.File]::WriteAllBytes((Join-Path $bridgeRoot 'bcs-coop-bridge.config'), $configBytes)
     Copy-Item -LiteralPath $serverBridgeAssemblySource -Destination (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll')
@@ -256,6 +257,7 @@ try {
     $env:BCS_BRIDGE_SMOKE_OVERRIDE_ACTIVE_ROOT = '$BASE/Modules/ContentPack'
     $env:BCS_BRIDGE_SMOKE_WORKING_DIRECTORY = $gameBin
     $env:BCS_BRIDGE_SMOKE_VALIDATE_GAME_VERSION = '1'
+    $env:BCS_BRIDGE_SMOKE_VALIDATE_CHARACTER_CREATION_GATE = '1'
     [System.IO.File]::WriteAllText($nativeManifestPath, $clientNativeManifest, $utf8)
     $externalVisualPath = Join-Path $externalContent 'ModuleData\visual.xml'
     Remove-Item -LiteralPath $externalVisualPath
@@ -278,6 +280,7 @@ try {
         Remove-Item Env:BCS_BRIDGE_SMOKE_OVERRIDE_ACTIVE_ROOT -ErrorAction SilentlyContinue
         Remove-Item Env:BCS_BRIDGE_SMOKE_WORKING_DIRECTORY -ErrorAction SilentlyContinue
         Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_GAME_VERSION -ErrorAction SilentlyContinue
+        Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_CHARACTER_CREATION_GATE -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $clientGuiXmlPath -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $clientNestedJsonPath -ErrorAction SilentlyContinue
         [System.IO.File]::WriteAllText($externalVisualPath, $visualXml, $utf8)
