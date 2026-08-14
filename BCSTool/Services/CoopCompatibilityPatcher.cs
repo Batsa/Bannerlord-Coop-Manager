@@ -21,7 +21,6 @@ namespace BCSTool.Services;
 public sealed class CoopCompatibilityPatcher
 {
     private const string RealmOfThronesRule = "realm-of-thrones-8.1.7-server-v2";
-    private const string Europe1700Rule = "europe-1700-1.4.7.1-server-v57";
     private const string ContentOnlyRule = "content-only-server-v1";
     private const string GenericExecutableRule = "generic-executable-bridge-v1";
     private const long MaximumManifestCharacters = 4 * 1024 * 1024;
@@ -123,7 +122,7 @@ public sealed class CoopCompatibilityPatcher
         "RF_BattleAI.dll"
     ];
 
-    private static readonly BridgeAuthorityRule[] Europe1700AuthorityRules =
+    internal static readonly BridgeAuthorityRule[] Europe1700AuthorityRules =
     [
         new(
             "Europe1700",
@@ -141,7 +140,7 @@ public sealed class CoopCompatibilityPatcher
             BridgeInvocationScope.ClientOnly)
     ];
 
-    private static readonly BridgeContentExclusion[] Europe1700ContentExclusions =
+    internal static readonly BridgeContentExclusion[] Europe1700ContentExclusions =
     [
         new("Europe1700", "ModuleData/collision_infos.xml"),
         new("Europe1700", "ModuleData/action_sets.xml"),
@@ -261,7 +260,7 @@ public sealed class CoopCompatibilityPatcher
             5)
     ];
 
-    private static readonly BridgeServerFileRedirect[] Europe1700ServerFileRedirects =
+    internal static readonly BridgeServerFileRedirect[] Europe1700ServerFileRedirects =
     [
         new(
             "Europe1700",
@@ -269,7 +268,7 @@ public sealed class CoopCompatibilityPatcher
             string.Empty)
     ];
 
-    private static readonly BridgeServerMapTerrainSize[] Europe1700ServerMapTerrainSizes =
+    internal static readonly BridgeServerMapTerrainSize[] Europe1700ServerMapTerrainSizes =
     [
         new(
             "Europe1700",
@@ -367,19 +366,20 @@ public sealed class CoopCompatibilityPatcher
                     warnings);
             }
         }
-        else if (selected.Id.Equals("Europe1700", StringComparison.OrdinalIgnoreCase))
+        else if (CompatibilityRecipeRegistry.FindByRootModule(selected.Id) is { } recipe)
         {
-            ruleId = Europe1700Rule;
-            BuildEurope1700Plan(
+            ruleId = recipe.CurrentRuleId;
+            recipe.BuildPlan(new CompatibilityRecipePlanContext(
                 selected,
                 byId,
                 modulesRoot,
                 blockers,
                 warnings,
                 proposed,
-                selectedIds);
+                selectedIds));
             if (blockers.Count == 0)
             {
+                var options = recipe.CreateBridgeOptions(selected);
                 AddBridgePackage(
                     installedModules,
                     selectedIds,
@@ -387,12 +387,14 @@ public sealed class CoopCompatibilityPatcher
                     proposed,
                     selectedIds,
                     warnings,
-                    Europe1700AuthorityRules,
-                    Europe1700ContentExclusions,
-                    Europe1700ServerFileRedirects,
-                    CreateEurope1700SchemaOverlays(selected),
-                    CreateEurope1700ClientAssemblyResolves(),
-                    Europe1700ServerMapTerrainSizes);
+                    options.AuthorityRules,
+                    options.ContentExclusions,
+                    options.ServerFileRedirects,
+                    options.ServerXmlOverlays,
+                    options.ClientAssemblyResolves,
+                    options.ServerMapTerrainSizes,
+                    recipe.RuntimeFeatures,
+                    recipe.CampaignSaveDescription);
             }
         }
         else
@@ -888,7 +890,7 @@ public sealed class CoopCompatibilityPatcher
             "server-load milestone; it is not proof that every campaign mutation is synchronized.");
     }
 
-    private static void BuildEurope1700Plan(
+    internal static void BuildEurope1700Plan(
         BannerlordModule module,
         IReadOnlyDictionary<string, BannerlordModule> byId,
         string modulesRoot,
@@ -1097,7 +1099,7 @@ public sealed class CoopCompatibilityPatcher
             "preventing valid EOE positions from indexing outside Bannerlord's weather grid.");
     }
 
-    private static IReadOnlyList<BridgeClientAssemblyResolve>
+    internal static IReadOnlyList<BridgeClientAssemblyResolve>
         CreateEurope1700ClientAssemblyResolves()
     {
         var bannerlordRoot = ServerExecutableLocator.FindBannerlordInstallRoot()
@@ -1125,7 +1127,7 @@ public sealed class CoopCompatibilityPatcher
         ];
     }
 
-    private static IReadOnlyList<BridgeServerXmlOverlay> CreateEurope1700SchemaOverlays(
+    internal static IReadOnlyList<BridgeServerXmlOverlay> CreateEurope1700SchemaOverlays(
         BannerlordModule module)
     {
         var overlays = new List<BridgeServerXmlOverlay>();
@@ -2207,7 +2209,9 @@ public sealed class CoopCompatibilityPatcher
         IReadOnlyList<BridgeServerFileRedirect>? serverFileRedirects = null,
         IReadOnlyList<BridgeServerXmlOverlay>? serverXmlOverlays = null,
         IReadOnlyList<BridgeClientAssemblyResolve>? clientAssemblyResolves = null,
-        IReadOnlyList<BridgeServerMapTerrainSize>? serverMapTerrainSizes = null)
+        IReadOnlyList<BridgeServerMapTerrainSize>? serverMapTerrainSizes = null,
+        IReadOnlyList<BridgeRuntimeFeature>? runtimeFeatures = null,
+        string campaignSaveDescription = "campaign")
     {
         var compatibleModules = installedModules
             .Where(module => module.IsInstalled &&
@@ -2232,7 +2236,8 @@ public sealed class CoopCompatibilityPatcher
             serverXmlOverlays: serverXmlOverlays,
             gameVersionCompatibility: CreateGameVersionCompatibility(serverRoot),
             clientAssemblyResolves: clientAssemblyResolves,
-            serverMapTerrainSizes: serverMapTerrainSizes);
+            serverMapTerrainSizes: serverMapTerrainSizes,
+            runtimeFeatures: runtimeFeatures);
         var bridgeRoot = Path.Combine(
             serverRoot,
             "engine",
@@ -2282,7 +2287,7 @@ public sealed class CoopCompatibilityPatcher
             "Coop will reject a different bridge module ID/version, and the bridge requires the declared module paths " +
             "and managed assembly identities at startup.");
         warnings.Add(
-            "The bridge never creates or repairs campaign state. Select an existing EOE save before starting " +
+            $"The bridge never creates or repairs campaign state. Select an existing {campaignSaveDescription} save before starting " +
             "the server; missing-save handling remains owned by Bannerlord Coop.");
         if (package.GameVersionCompatibility is not null)
             warnings.Add(CreateGameVersionCompatibilityWarning(package.GameVersionCompatibility));
@@ -3286,7 +3291,7 @@ public sealed class CoopCompatibilityPatcher
         CoopPreparationPlan PublicPlan,
         IReadOnlyList<PendingChange> Changes);
 
-    private sealed record PendingChange(
+    internal sealed record PendingChange(
         string TargetPath,
         byte[] ProposedBytes,
         bool OriginalExists,

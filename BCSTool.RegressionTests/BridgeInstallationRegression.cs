@@ -20,12 +20,37 @@ internal static class BridgeInstallationRegression
             "An unrelated module activated a known bridge recipe.");
         Assert(service.GetRecipeDisplayName(eoe) == "Empires of Europe 1700",
             "Known recipe did not expose its user-facing name.");
+        VerifyRecipeRegistryIsExplicitAndUnique();
 
         VerifyNoInstalledRecipeIsNoOp(service);
         VerifyDroppedRecipeNeedsNoManualEnableOrSave(scanner, service);
         VerifyEnabledRecipeDispatchesRepair(scanner);
         VerifyDisabledRecipeIsNoOp(scanner);
         VerifyBackupsAreScopedToEurope1700(service);
+    }
+
+    private static void VerifyRecipeRegistryIsExplicitAndUnique()
+    {
+        var recipes = CompatibilityRecipeRegistry.All;
+        Assert(recipes.Count > 0,
+            "Compatibility recipe registry is empty.");
+        Assert(recipes.Select(recipe => recipe.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() ==
+               recipes.Count,
+            "Compatibility recipe registry repeats a recipe ID.");
+        Assert(recipes.Select(recipe => recipe.RootModuleId)
+                   .Distinct(StringComparer.OrdinalIgnoreCase).Count() == recipes.Count,
+            "Compatibility recipe registry repeats a root module ID.");
+        Assert(recipes.All(recipe =>
+                recipe.RecognizedRuleIds.Contains(recipe.CurrentRuleId, StringComparer.Ordinal)),
+            "A compatibility recipe does not recognize its current rule ID.");
+
+        var eoe = CompatibilityRecipeRegistry.FindByRootModule("Europe1700");
+        Assert(eoe is not null &&
+               eoe.SupportsPopulationGuide &&
+               eoe.CampaignSaveDescription == "EOE" &&
+               eoe.RuntimeFeatures.Count == Enum.GetValues<BridgeRuntimeFeature>().Length &&
+               Enum.GetValues<BridgeRuntimeFeature>().All(eoe.RuntimeFeatures.Contains),
+            "Europe1700 recipe did not preserve its complete runtime compatibility feature set.");
     }
 
     private static void VerifyDroppedRecipeNeedsNoManualEnableOrSave(

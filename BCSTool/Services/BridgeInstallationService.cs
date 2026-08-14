@@ -14,19 +14,6 @@ public sealed class BridgeInstallationService
     private const string BackupManifestFileName = "bcs-compatibility-backup.json";
     private const long MaximumBackupManifestBytes = 4 * 1024 * 1024;
 
-    private static readonly BridgeRecipeDefinition[] KnownRecipes =
-    [
-        new(
-            "europe-1700",
-            "Empires of Europe 1700",
-            "Europe1700",
-            ["Europe1700"],
-            [
-                "europe-1700-1.4.7.1-server-v55",
-                "europe-1700-1.4.7.1-server-v57"
-            ])
-    ];
-
     private readonly ModuleScanner _moduleScanner;
     private readonly CoopCompatibilityPatcher _compatibilityPatcher;
     private readonly Func<
@@ -58,10 +45,12 @@ public sealed class BridgeInstallationService
 
     public bool IsKnownRecipe(BannerlordModule? module) =>
         module is { IsInstalled: true } &&
-        FindRecipeByRootModule(module.Id) is not null;
+        CompatibilityRecipeRegistry.FindByRootModule(module.Id) is not null;
 
     public string? GetRecipeDisplayName(BannerlordModule? module) =>
-        module is null ? null : FindRecipeByRootModule(module.Id)?.DisplayName;
+        module is null
+            ? null
+            : CompatibilityRecipeRegistry.FindByRootModule(module.Id)?.DisplayName;
 
     public BridgeInstallationResult InstallOrUpdate(
         BannerlordModule module,
@@ -287,8 +276,7 @@ public sealed class BridgeInstallationService
         var distinctModuleIds = moduleIds
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var matchingRecipe = schema == 1
-            ? KnownRecipes.SingleOrDefault(recipe =>
-                recipe.RuleIds.Contains(ruleId, StringComparer.Ordinal))
+            ? CompatibilityRecipeRegistry.FindByRuleId(ruleId)
             : null;
         var isKnownBridge =
             matchingRecipe is not null &&
@@ -363,17 +351,6 @@ public sealed class BridgeInstallationService
         var existing = Path.Combine(serverRoot, "bcs-client-packages", bridgeId + ".zip");
         return File.Exists(existing) ? existing : null;
     }
-
-    private static BridgeRecipeDefinition? FindRecipeByRootModule(string moduleId) =>
-        KnownRecipes.SingleOrDefault(recipe =>
-            recipe.RootModuleId.Equals(moduleId, StringComparison.OrdinalIgnoreCase));
-
-    private sealed record BridgeRecipeDefinition(
-        string Id,
-        string DisplayName,
-        string RootModuleId,
-        IReadOnlyList<string> PreparedModuleIds,
-        IReadOnlyList<string> RuleIds);
 
     private sealed record BackupScope(bool IsKnownBridge);
 }

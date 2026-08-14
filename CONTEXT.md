@@ -43,6 +43,20 @@ _Avoid_: Client save synchronization, shared save
 Creation, suppression, replacement, or rule-changing mutation of the Authoritative Campaign by a compatibility layer. A Compatibility Bridge does not perform Campaign Intervention.
 _Avoid_: Compatibility adaptation, registration
 
+## Generic compatibility boundary
+
+The bridge package format is target-neutral. A compatibility recipe owns the
+target identity, exact supported versions, reversible content adaptations,
+bridge rules, runtime features, lifecycle metadata, and optional UI guidance.
+Schema 2 enables only the runtime features declared by that recipe; a generic
+bridge declares none. Schema 1 remains readable with its historical all-feature
+behavior solely for compatibility with already-generated bridge packages.
+
+Adding a target therefore means registering a reviewed recipe and its proven
+feature set. It does not mean adding unconditional target behavior to the
+shared runtime. Generic analysis still fails closed when executable campaign
+code needs compatibility that has not been proven.
+
 ## EOE v1.4.7.1 bridge boundary
 
 Static audit found no EOE-owned persistent field in normal campaign play that needs a custom network message:

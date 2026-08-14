@@ -311,7 +311,8 @@ public sealed class BridgePopulationSettingsService
         BannerlordModule overhaul,
         string modulesRoot)
     {
-        if (!overhaul.Id.Equals("Europe1700", StringComparison.OrdinalIgnoreCase))
+        var recipe = CompatibilityRecipeRegistry.FindByRootModule(overhaul.Id);
+        if (recipe?.SupportsPopulationGuide != true)
         {
             return (
                 null,
