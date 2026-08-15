@@ -17,20 +17,21 @@ namespace BCSTool.Services;
 public sealed class CoopBridgePackageBuilder
 {
     public const string BridgeIdPrefix = "BCS.CoopBridge.";
-    public const string BridgeVersion = "v0.6.67";
+    public const string BridgeVersion = "v0.6.68";
+    internal const string ClientOnlyModuleMarker = "CLIENT_ONLY";
     private const string ProjectUrl =
         "https://github.com/Batsa/Bannerlord-Coop-Manager";
 
     private const string ServerBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Server.dll";
     private const string ServerBridgeAssemblyHash =
-        "100245BCF303B63D34F7DDD64983FD68EECAD053941BA86B1613F04E6DB769F2";
+        "11ACB9A6000B00A4C985816B3B29196BB97BD6CDA9431D640618B9192D263C8D";
     private const string ClientBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Client.dll";
     private const string LicenseResource = "BCSTool.LICENSE";
     private const string NoticeResource = "BCSTool.NOTICE.md";
     private const string ClientBridgeAssemblyHash =
-        "F1231390B8FD4E384CD963749BB5A87258BFE7251A2ACB3FCA65F2D26298203C";
+        "2C332807DDB355A25F8295B49D0B4095CF0286DFB06D38E41044E8623BD923E6";
     private static readonly UTF8Encoding Utf8NoBom = new(false, true);
 
     public CoopBridgePackage Build(
@@ -44,7 +45,9 @@ public sealed class CoopBridgePackageBuilder
         BridgeGameVersionCompatibility? gameVersionCompatibility = null,
         IReadOnlyList<BridgeClientAssemblyResolve>? clientAssemblyResolves = null,
         IReadOnlyList<BridgeServerMapTerrainSize>? serverMapTerrainSizes = null,
-        IReadOnlyList<BridgeRuntimeFeature>? runtimeFeatures = null)
+        IReadOnlyList<BridgeRuntimeFeature>? runtimeFeatures = null,
+        IReadOnlyList<BridgeDisabledSubModule>? disabledSubModules = null,
+        IReadOnlyList<BridgeClientOnlySubModule>? clientOnlySubModules = null)
     {
         ArgumentNullException.ThrowIfNull(modules);
         if (modules.Count == 0)
@@ -65,8 +68,8 @@ public sealed class CoopBridgePackageBuilder
                 group => group.Select(exclusion => exclusion.RelativePath)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase),
                 StringComparer.OrdinalIgnoreCase);
-        var records = new List<BridgeModuleRecord>();
-        var contentRecords = new List<BridgeContentRecord>();
+        var declaredDllsByModule = new Dictionary<string, IReadOnlyList<string>>(
+            StringComparer.OrdinalIgnoreCase);
         foreach (var module in modules.OrderBy(module => module.Id, StringComparer.Ordinal))
         {
             if (!module.IsInstalled || string.IsNullOrWhiteSpace(module.Path))
@@ -76,14 +79,71 @@ public sealed class CoopBridgePackageBuilder
 
             ValidateModuleDirectoryChain(module.Path, module.Path, "module root");
 
-            var declaredDlls = ReadDeclaredDlls(Path.Combine(module.Path, "SubModule.xml"));
+            declaredDllsByModule.Add(
+                module.Id,
+                ReadDeclaredDlls(Path.Combine(module.Path, "SubModule.xml")));
+        }
+
+        disabledSubModules = NormalizeDisabledSubModules(
+            disabledSubModules ?? Array.Empty<BridgeDisabledSubModule>(),
+            modules,
+            declaredDllsByModule);
+        clientOnlySubModules = NormalizeClientOnlySubModules(
+            clientOnlySubModules ?? Array.Empty<BridgeClientOnlySubModule>(),
+            modules,
+            declaredDllsByModule);
+        var clientOnlyKeys = clientOnlySubModules
+            .Select(value => value.ModuleId + "\0" + value.DllName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var overlappingPolicy = disabledSubModules.FirstOrDefault(value =>
+            clientOnlyKeys.Contains(value.ModuleId + "\0" + value.DllName));
+        if (overlappingPolicy is not null)
+        {
+            throw new InvalidDataException(
+                $"A submodule cannot be both disabled and client-only: " +
+                $"{overlappingPolicy.ModuleId}/{overlappingPolicy.DllName}");
+        }
+        var disabledDllsByModule = disabledSubModules
+            .GroupBy(disabled => disabled.ModuleId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Select(disabled => disabled.DllName)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
+
+        var records = new List<BridgeModuleRecord>();
+        var contentRecords = new List<BridgeContentRecord>();
+        foreach (var module in modules.OrderBy(module => module.Id, StringComparer.Ordinal))
+        {
+            var declaredDlls = declaredDllsByModule[module.Id];
+            disabledDllsByModule.TryGetValue(module.Id, out var disabledDlls);
+            var moduleClientOnlyDlls = clientOnlySubModules
+                .Where(value => value.ModuleId.Equals(
+                    module.Id,
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(value => value.DllName)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var enabledDeclaredDlls = declaredDlls
+                .Where(dll => disabledDlls?.Contains(dll) != true)
+                .ToArray();
             var preferClient = projectedModuleIds?.Contains(
                 module.Id,
                 StringComparer.OrdinalIgnoreCase) == true;
-            var assemblies = module.Id.Equals("Coop", StringComparison.OrdinalIgnoreCase)
+            IReadOnlyDictionary<string, string> assemblies = module.Id.Equals(
+                    "Coop",
+                    StringComparison.OrdinalIgnoreCase)
                 ? EnumerateReleasedCoopAssemblies(module.Path, preferClient)
-                : ResolveDeclaredAssemblies(module.Path, preferClient, declaredDlls);
-            foreach (var declaredDll in declaredDlls)
+                : ResolveDeclaredAssemblies(module.Path, preferClient, enabledDeclaredDlls);
+            if (disabledDlls is { Count: > 0 })
+            {
+                assemblies = assemblies
+                    .Where(pair => !disabledDlls.Contains(pair.Key))
+                    .ToDictionary(
+                        pair => pair.Key,
+                        pair => pair.Value,
+                        StringComparer.OrdinalIgnoreCase);
+            }
+            foreach (var declaredDll in enabledDeclaredDlls)
             {
                 if (!assemblies.ContainsKey(declaredDll))
                     throw new FileNotFoundException(
@@ -98,7 +158,9 @@ public sealed class CoopBridgePackageBuilder
                     module.Id,
                     module.Version,
                     assemblyEntry.Key,
-                    string.Empty));
+                    moduleClientOnlyDlls.Contains(assemblyEntry.Key)
+                        ? ClientOnlyModuleMarker
+                        : string.Empty));
             }
             contentRecords.Add(new BridgeContentRecord(
                 module.Id,
@@ -106,14 +168,16 @@ public sealed class CoopBridgePackageBuilder
         }
 
         authorityRules ??= Array.Empty<BridgeAuthorityRule>();
-        ValidateAuthorityRules(authorityRules, modules, records);
+        ValidateAuthorityRules(authorityRules, modules, records, clientOnlySubModules);
         serverFileRedirects ??= Array.Empty<BridgeServerFileRedirect>();
         ValidateServerFileRedirects(serverFileRedirects, modules);
         serverXmlOverlays ??= Array.Empty<BridgeServerXmlOverlay>();
         ValidateServerXmlOverlays(serverXmlOverlays, modules);
         ValidateGameVersionCompatibility(gameVersionCompatibility);
         clientAssemblyResolves ??= Array.Empty<BridgeClientAssemblyResolve>();
-        ValidateClientAssemblyResolves(clientAssemblyResolves);
+        ValidateClientAssemblyResolves(
+            clientAssemblyResolves,
+            disabledSubModules);
         serverMapTerrainSizes ??= Array.Empty<BridgeServerMapTerrainSize>();
         ValidateServerMapTerrainSizes(serverMapTerrainSizes, modules);
         runtimeFeatures ??= Array.Empty<BridgeRuntimeFeature>();
@@ -128,29 +192,15 @@ public sealed class CoopBridgePackageBuilder
             gameVersionCompatibility,
             clientAssemblyResolves,
             serverMapTerrainSizes,
-            runtimeFeatures);
+            runtimeFeatures,
+            disabledSubModules);
         var serverAssembly = ReadBridgeAssembly(
             ServerBridgeAssemblyResource,
             ServerBridgeAssemblyHash);
         var clientAssembly = ReadBridgeAssembly(
             ClientBridgeAssemblyResource,
             ClientBridgeAssemblyHash);
-        var identityPayload = new byte[
-            configuration.Length + serverAssembly.Length + clientAssembly.Length];
-        Buffer.BlockCopy(configuration, 0, identityPayload, 0, configuration.Length);
-        Buffer.BlockCopy(
-            serverAssembly,
-            0,
-            identityPayload,
-            configuration.Length,
-            serverAssembly.Length);
-        Buffer.BlockCopy(
-            clientAssembly,
-            0,
-            identityPayload,
-            configuration.Length + serverAssembly.Length,
-            clientAssembly.Length);
-        var bridgeId = BridgeIdPrefix + Hash(identityPayload)[..24].ToLowerInvariant();
+        var bridgeId = ComputeBridgeId(configuration, serverAssembly, clientAssembly);
         var manifest = BuildManifest(bridgeId, modules);
         var readme = Utf8NoBom.GetBytes(
             "Bannerlord Coop Manager generated Coop bridge package\r\n" +
@@ -169,6 +219,9 @@ public sealed class CoopBridgePackageBuilder
             $"Client assembly resolvers: {clientAssemblyResolves.Count}.\r\n" +
             $"Server map terrain sizes: {serverMapTerrainSizes.Count}.\r\n" +
             $"Explicit runtime features: {runtimeFeatures.Count}.\r\n" +
+            $"Disabled target submodule DLLs: {disabledSubModules.Count}.\r\n" +
+            $"Selected client-only submodule DLLs: {clientOnlySubModules.Count}.\r\n" +
+            "Every disabled DLL declaration must also be removed or commented in the client mod manifest before launch; the bridge rejects mismatches.\r\n" +
             "It is a compatibility/authority extension point, not proof that arbitrary custom gameplay state is synchronized.\r\n" +
             "\r\n" +
             "License: GNU GPL version 3 only (GPL-3.0-only).\r\n" +
@@ -195,6 +248,8 @@ public sealed class CoopBridgePackageBuilder
             serverAssembly,
             clientAssembly,
             clientZip,
+            disabledSubModules,
+            clientOnlySubModules,
             records,
             contentRecords,
             authorityRules,
@@ -217,7 +272,8 @@ public sealed class CoopBridgePackageBuilder
         BridgeGameVersionCompatibility? gameVersionCompatibility,
         IReadOnlyList<BridgeClientAssemblyResolve> clientAssemblyResolves,
         IReadOnlyList<BridgeServerMapTerrainSize> serverMapTerrainSizes,
-        IReadOnlyList<BridgeRuntimeFeature> runtimeFeatures)
+        IReadOnlyList<BridgeRuntimeFeature> runtimeFeatures,
+        IReadOnlyList<BridgeDisabledSubModule> disabledSubModules)
     {
         var builder = new StringBuilder("BCS-COOP-BRIDGE|2\n");
         foreach (var feature in runtimeFeatures.OrderBy(value => value.ToString(), StringComparer.Ordinal))
@@ -251,7 +307,16 @@ public sealed class CoopBridgePackageBuilder
                 .Append(Encode(record.ModuleId)).Append('|')
                 .Append(Encode(record.Version)).Append('|')
                 .Append(Encode(record.DllName)).Append('|')
-                .Append(string.Empty)
+                .Append(record.Sha256)
+                .Append('\n');
+        }
+        foreach (var disabled in disabledSubModules
+                     .OrderBy(value => value.ModuleId, StringComparer.Ordinal)
+                     .ThenBy(value => value.DllName, StringComparer.Ordinal))
+        {
+            builder.Append("DISABLED_SUBMODULE|")
+                .Append(Encode(disabled.ModuleId)).Append('|')
+                .Append(Encode(disabled.DllName))
                 .Append('\n');
         }
         foreach (var exclusion in contentExclusions
@@ -334,6 +399,130 @@ public sealed class CoopBridgePackageBuilder
         return Utf8NoBom.GetBytes(builder.ToString());
     }
 
+    private static IReadOnlyList<BridgeDisabledSubModule> NormalizeDisabledSubModules(
+        IReadOnlyList<BridgeDisabledSubModule> disabledSubModules,
+        IReadOnlyList<BannerlordModule> modules,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> declaredDllsByModule)
+    {
+        var modulesById = modules.ToDictionary(
+            module => module.Id,
+            StringComparer.OrdinalIgnoreCase);
+        var normalized = new List<BridgeDisabledSubModule>(disabledSubModules.Count);
+        foreach (var disabled in disabledSubModules)
+        {
+            if (disabled is null)
+                throw new InvalidDataException("Disabled submodule records cannot be null.");
+            if (string.IsNullOrWhiteSpace(disabled.ModuleId))
+                throw new InvalidDataException("Disabled submodule module IDs cannot be empty.");
+            if (!modulesById.TryGetValue(disabled.ModuleId, out var module))
+            {
+                throw new InvalidDataException(
+                    $"Disabled submodule references an unknown bridge module: {disabled.ModuleId}");
+            }
+            if (module.Id.Equals("Coop", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    "Coop submodules cannot be disabled by a generated compatibility bridge.");
+            }
+            if (!IsSafeDllName(disabled.DllName))
+            {
+                throw new InvalidDataException(
+                    $"Unsafe disabled submodule DLL name: {disabled.DllName}");
+            }
+
+            var declaredDll = declaredDllsByModule[module.Id]
+                .SingleOrDefault(name => name.Equals(
+                    disabled.DllName,
+                    StringComparison.OrdinalIgnoreCase));
+            if (declaredDll is null)
+            {
+                throw new InvalidDataException(
+                    $"Disabled submodule is not declared by {module.Id}: {disabled.DllName}");
+            }
+
+            normalized.Add(new BridgeDisabledSubModule(module.Id, declaredDll));
+        }
+
+        var duplicate = normalized
+            .GroupBy(value => value.ModuleId, StringComparer.OrdinalIgnoreCase)
+            .SelectMany(group => group.GroupBy(
+                value => value.DllName,
+                StringComparer.OrdinalIgnoreCase))
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new InvalidDataException(
+                $"Duplicate disabled submodule DLL: {duplicate.First().ModuleId}/{duplicate.Key}");
+        }
+
+        return normalized
+            .OrderBy(value => value.ModuleId, StringComparer.Ordinal)
+            .ThenBy(value => value.DllName, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static IReadOnlyList<BridgeClientOnlySubModule> NormalizeClientOnlySubModules(
+        IReadOnlyList<BridgeClientOnlySubModule> clientOnlySubModules,
+        IReadOnlyList<BannerlordModule> modules,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> declaredDllsByModule)
+    {
+        var modulesById = modules.ToDictionary(
+            module => module.Id,
+            StringComparer.OrdinalIgnoreCase);
+        var normalized = new List<BridgeClientOnlySubModule>(clientOnlySubModules.Count);
+        foreach (var clientOnly in clientOnlySubModules)
+        {
+            if (clientOnly is null)
+                throw new InvalidDataException("Client-only submodule records cannot be null.");
+            if (string.IsNullOrWhiteSpace(clientOnly.ModuleId))
+                throw new InvalidDataException("Client-only submodule module IDs cannot be empty.");
+            if (!modulesById.TryGetValue(clientOnly.ModuleId, out var module))
+            {
+                throw new InvalidDataException(
+                    $"Client-only submodule references an unknown bridge module: {clientOnly.ModuleId}");
+            }
+            if (module.Id.Equals("Coop", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    "Coop submodules cannot be marked client-only by a generated compatibility bridge.");
+            }
+            if (!IsSafeDllName(clientOnly.DllName))
+            {
+                throw new InvalidDataException(
+                    $"Unsafe client-only submodule DLL name: {clientOnly.DllName}");
+            }
+
+            var declaredDll = declaredDllsByModule[module.Id]
+                .SingleOrDefault(name => name.Equals(
+                    clientOnly.DllName,
+                    StringComparison.OrdinalIgnoreCase));
+            if (declaredDll is null)
+            {
+                throw new InvalidDataException(
+                    $"Client-only submodule is not declared by {module.Id}: {clientOnly.DllName}");
+            }
+
+            normalized.Add(new BridgeClientOnlySubModule(module.Id, declaredDll));
+        }
+
+        var duplicate = normalized
+            .GroupBy(value => value.ModuleId, StringComparer.OrdinalIgnoreCase)
+            .SelectMany(group => group.GroupBy(
+                value => value.DllName,
+                StringComparer.OrdinalIgnoreCase))
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicate is not null)
+        {
+            throw new InvalidDataException(
+                $"Duplicate client-only submodule DLL: {duplicate.First().ModuleId}/{duplicate.Key}");
+        }
+
+        return normalized
+            .OrderBy(value => value.ModuleId, StringComparer.Ordinal)
+            .ThenBy(value => value.DllName, StringComparer.Ordinal)
+            .ToArray();
+    }
+
     private static void ValidateRuntimeFeatures(IReadOnlyList<BridgeRuntimeFeature> runtimeFeatures)
     {
         var seen = new HashSet<BridgeRuntimeFeature>();
@@ -347,9 +536,14 @@ public sealed class CoopBridgePackageBuilder
     }
 
     private static void ValidateClientAssemblyResolves(
-        IReadOnlyList<BridgeClientAssemblyResolve> resolvers)
+        IReadOnlyList<BridgeClientAssemblyResolve> resolvers,
+        IReadOnlyList<BridgeDisabledSubModule> disabledSubModules)
     {
+        var disabledKeys = disabledSubModules
+            .Select(disabled => disabled.ModuleId + "\0" + disabled.DllName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenAssemblyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var resolver in resolvers)
         {
             var relative = resolver.RelativePath.Replace('\\', '/');
@@ -364,6 +558,13 @@ public sealed class CoopBridgePackageBuilder
             }
             if (!seen.Add(resolver.ModuleId + "|" + relative))
                 throw new InvalidDataException("Duplicate client assembly resolver.");
+            if (disabledKeys.Contains(
+                    resolver.ModuleId + "\0" + Path.GetFileName(relative)))
+            {
+                throw new InvalidDataException(
+                    "Client assembly resolver targets a disabled submodule: " +
+                    resolver.ModuleId + "/" + Path.GetFileName(relative));
+            }
             if (!File.Exists(resolver.SourcePath) ||
                 (File.GetAttributes(resolver.SourcePath) & FileAttributes.ReparsePoint) != 0)
             {
@@ -386,6 +587,11 @@ public sealed class CoopBridgePackageBuilder
             {
                 throw new InvalidDataException(
                     "Client assembly resolver file name does not match its assembly identity.");
+            }
+            if (!seenAssemblyNames.Add(assemblyName!))
+            {
+                throw new InvalidDataException(
+                    "Duplicate client assembly resolver simple name: " + assemblyName + ".");
             }
         }
     }
@@ -435,7 +641,8 @@ public sealed class CoopBridgePackageBuilder
     private static void ValidateAuthorityRules(
         IReadOnlyList<BridgeAuthorityRule> authorityRules,
         IReadOnlyList<BannerlordModule> modules,
-        IReadOnlyList<BridgeModuleRecord> records)
+        IReadOnlyList<BridgeModuleRecord> records,
+        IReadOnlyList<BridgeClientOnlySubModule> clientOnlySubModules)
     {
         var moduleIds = modules.Select(module => module.Id)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -455,6 +662,15 @@ public sealed class CoopBridgePackageBuilder
             {
                 throw new InvalidDataException(
                     $"Authority rule targets an undeclared assembly: {rule.ModuleId}/{rule.DllName}");
+            }
+            if (rule.Scope != BridgeInvocationScope.ClientOnly &&
+                clientOnlySubModules.Any(value =>
+                    value.ModuleId.Equals(rule.ModuleId, StringComparison.OrdinalIgnoreCase) &&
+                    value.DllName.Equals(rule.DllName, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidDataException(
+                    $"Non-client authority rule targets a client-only submodule: " +
+                    $"{rule.ModuleId}/{rule.DllName}");
             }
             if (string.IsNullOrWhiteSpace(rule.TypeName) ||
                 string.IsNullOrWhiteSpace(rule.MethodName) ||
@@ -860,23 +1076,56 @@ public sealed class CoopBridgePackageBuilder
             MaxCharactersInDocument = 4 * 1024 * 1024
         });
         document.Load(reader);
-        var names = document.SelectNodes("/Module/SubModules/SubModule/DLLName")!
-            .OfType<XmlElement>()
-            .Select(element => element.GetAttribute("value"))
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        foreach (var name in names)
+        var names = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var element in document
+                     .SelectNodes("/Module/SubModules/SubModule/DLLName")!
+                     .OfType<XmlElement>())
         {
-            if (!Path.GetFileName(name).Equals(name, StringComparison.Ordinal) ||
-                !Path.GetExtension(name).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+            var name = element.GetAttribute("value");
+            if (!IsSafeDllName(name))
             {
                 throw new InvalidDataException(
                     $"Unsafe declared DLL name in {manifestPath}: {name}");
             }
+            if (!seen.Add(name))
+            {
+                throw new InvalidDataException(
+                    $"Duplicate declared DLL name in {manifestPath}: {name}");
+            }
+            names.Add(name);
         }
         return names;
     }
+
+    internal static string ComputeBridgeId(byte[] configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        return ComputeBridgeId(
+            configuration,
+            ReadBridgeAssembly(ServerBridgeAssemblyResource, ServerBridgeAssemblyHash),
+            ReadBridgeAssembly(ClientBridgeAssemblyResource, ClientBridgeAssemblyHash));
+    }
+
+    private static string ComputeBridgeId(
+        byte[] configuration,
+        byte[] serverAssembly,
+        byte[] clientAssembly)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(configuration);
+        hash.AppendData(serverAssembly);
+        hash.AppendData(clientAssembly);
+        return BridgeIdPrefix + Convert.ToHexString(hash.GetHashAndReset())[..24]
+            .ToLowerInvariant();
+    }
+
+    private static bool IsSafeDllName(string? name) =>
+        !string.IsNullOrWhiteSpace(name) &&
+        name.Equals(name.Trim(), StringComparison.Ordinal) &&
+        Path.GetFileName(name).Equals(name, StringComparison.Ordinal) &&
+        Path.GetExtension(name).Equals(".dll", StringComparison.OrdinalIgnoreCase) &&
+        name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0;
 
     private static IReadOnlyDictionary<string, string> EnumerateAssemblies(
         string moduleRoot,
@@ -1096,6 +1345,14 @@ public sealed record BridgeModuleRecord(
     string DllName,
     string Sha256);
 
+public sealed record BridgeDisabledSubModule(
+    string ModuleId,
+    string DllName);
+
+public sealed record BridgeClientOnlySubModule(
+    string ModuleId,
+    string DllName);
+
 public sealed record BridgeContentRecord(
     string ModuleId,
     string Sha256);
@@ -1177,6 +1434,8 @@ public sealed record CoopBridgePackage(
     byte[] Assembly,
     byte[] ClientAssembly,
     byte[] ClientPackageZip,
+    IReadOnlyList<BridgeDisabledSubModule> DisabledSubModules,
+    IReadOnlyList<BridgeClientOnlySubModule> ClientOnlySubModules,
     IReadOnlyList<BridgeModuleRecord> ModuleRecords,
     IReadOnlyList<BridgeContentRecord> ContentRecords,
     IReadOnlyList<BridgeAuthorityRule> AuthorityRules,

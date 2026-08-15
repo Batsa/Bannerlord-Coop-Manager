@@ -92,6 +92,27 @@ internal static class BridgeInstallationRegression
             Assert(!viewModel.IsDirty && viewModel.CanPrepareSelectedBridge,
                 "Dropped bridge recipe required Analyze, enable, reorder, or Save before preparation.");
 
+            var pendingSelection = new BridgeDllSelection(
+                selected.Id,
+                selected.Version,
+                ["Test.dll"],
+                []);
+            viewModel.ApplyBridgeDllSelection(pendingSelection);
+            viewModel.SelectedModule = null;
+            viewModel.SelectedModule = selected;
+            BridgeDllSelection? reopenedSelection = null;
+            viewModel.BridgeDllSelectionRequested += value => reopenedSelection = value;
+            viewModel.OpenBridgeDllOptionsCommand.Execute(null);
+            Assert(reopenedSelection is { SelectedDllNames.Count: 0 } &&
+                   !reopenedSelection.IsSelected("Test.dll"),
+                "Changing rows discarded the pending bridge DLL selection.");
+            viewModel.InitializeAsync().GetAwaiter().GetResult();
+            reopenedSelection = null;
+            viewModel.OpenBridgeDllOptionsCommand.Execute(null);
+            Assert(reopenedSelection is { SelectedDllNames.Count: 1 } &&
+                   reopenedSelection.IsSelected("Test.dll"),
+                "Rescanning retained a stale pending bridge DLL selection.");
+
             var refusedOverwrite = false;
             try
             {
@@ -333,7 +354,11 @@ internal static class BridgeInstallationRegression
             "<Id value=\"Europe1700\" />" +
             $"<Version value=\"{version}\" />" +
             "<DependedModules />" +
-            "<SubModules />" +
+            "<SubModules><SubModule>" +
+            "<Name value=\"Test\" />" +
+            "<DLLName value=\"Test.dll\" />" +
+            "<SubModuleClassType value=\"Test.SubModule\" />" +
+            "</SubModule></SubModules>" +
             "</Module>");
     }
 

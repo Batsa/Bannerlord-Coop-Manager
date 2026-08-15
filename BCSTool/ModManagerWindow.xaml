@@ -142,7 +142,11 @@
                         <TextBlock Text="Overhaul setup" FontWeight="SemiBold"
                                    Foreground="#17365D"/>
                         <TextBlock Margin="0,5,0,8" TextWrapping="Wrap"
-                                   Text="1. Drop the overhaul folder onto the module list.&#x0a;2. Click the button below."/>
+                                   Text="1. Drop the overhaul folder onto the module list.&#x0a;2. Optionally choose its DLLs.&#x0a;3. Prepare the bridge."/>
+                        <Button Content="Bridge DLL Options"
+                                Command="{Binding OpenBridgeDllOptionsCommand}"
+                                MinWidth="165" Margin="0,0,0,8"
+                                ToolTip="Include or exclude any DLL declared by the selected bridge-managed mod; all are included by default on a fresh install"/>
                         <Button Content="Prepare / Install Bridge"
                                 Command="{Binding InstallOrUpdateBridgeCommand}"
                                 MinWidth="165" FontWeight="SemiBold" Margin="0,0,0,8"

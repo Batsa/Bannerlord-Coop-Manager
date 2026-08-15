@@ -29,14 +29,42 @@ internal static class CompatibilityRecipeRegistry
                 context.Blockers,
                 context.Warnings,
                 context.Proposed,
-                context.SelectedIds),
-            CreateBridgeOptions: static module => new CompatibilityRecipeBridgeOptions(
-                CoopCompatibilityPatcher.Europe1700AuthorityRules,
-                CoopCompatibilityPatcher.Europe1700ContentExclusions,
+                context.SelectedIds,
+                context.SelectedDllNames,
+                context.DisabledDllNames),
+            CreateBridgeOptions: static (module, selectedDllNames, disabledDllNames) =>
+                new CompatibilityRecipeBridgeOptions(
+                CoopCompatibilityPatcher.Europe1700AuthorityRules
+                    .Where(rule => selectedDllNames.Contains(
+                        rule.DllName,
+                        StringComparer.OrdinalIgnoreCase))
+                    .ToArray(),
+                CoopCompatibilityPatcher.Europe1700ContentExclusions
+                    .Where(exclusion =>
+                        selectedDllNames.Contains(
+                            "ClansResourceAdder.dll",
+                            StringComparer.OrdinalIgnoreCase) ||
+                        !exclusion.RelativePath.Equals(
+                            "bin/Win64_Shipping_Server/conf_clans_resource_adder.xml",
+                            StringComparison.OrdinalIgnoreCase))
+                    .ToArray(),
                 CoopCompatibilityPatcher.Europe1700ServerFileRedirects,
                 CoopCompatibilityPatcher.CreateEurope1700SchemaOverlays(module),
-                CoopCompatibilityPatcher.CreateEurope1700ClientAssemblyResolves(),
-                CoopCompatibilityPatcher.Europe1700ServerMapTerrainSizes),
+                selectedDllNames.Contains(
+                    "BattleArtilleryReworked.dll",
+                    StringComparer.OrdinalIgnoreCase)
+                    ? CoopCompatibilityPatcher.CreateEurope1700ClientAssemblyResolves()
+                    : Array.Empty<BridgeClientAssemblyResolve>(),
+                CoopCompatibilityPatcher.Europe1700ServerMapTerrainSizes,
+                disabledDllNames
+                    .Select(dllName => new BridgeDisabledSubModule(module.Id, dllName))
+                    .ToArray(),
+                selectedDllNames
+                    .Where(dllName => CoopCompatibilityPatcher.Europe1700ClientOnlyDlls.Contains(
+                        dllName,
+                        StringComparer.OrdinalIgnoreCase))
+                    .Select(dllName => new BridgeClientOnlySubModule(module.Id, dllName))
+                    .ToArray()),
             RuntimeFeatures: BridgeRuntimeFeatureSets.Europe1700,
             CampaignSaveDescription: "EOE",
             SupportsPopulationGuide: true)
@@ -61,7 +89,11 @@ internal sealed record CompatibilityRecipeDefinition(
     string CurrentRuleId,
     IReadOnlyList<string> RecognizedRuleIds,
     Action<CompatibilityRecipePlanContext> BuildPlan,
-    Func<BannerlordModule, CompatibilityRecipeBridgeOptions> CreateBridgeOptions,
+    Func<
+        BannerlordModule,
+        IReadOnlyCollection<string>,
+        IReadOnlyCollection<string>,
+        CompatibilityRecipeBridgeOptions> CreateBridgeOptions,
     IReadOnlyList<BridgeRuntimeFeature> RuntimeFeatures,
     string CampaignSaveDescription,
     bool SupportsPopulationGuide);
@@ -73,7 +105,9 @@ internal sealed record CompatibilityRecipePlanContext(
     ICollection<string> Blockers,
     ICollection<string> Warnings,
     ICollection<CoopCompatibilityPatcher.PendingChange> Proposed,
-    ICollection<string> SelectedIds);
+    ICollection<string> SelectedIds,
+    IReadOnlyCollection<string> SelectedDllNames,
+    IReadOnlyCollection<string> DisabledDllNames);
 
 internal sealed record CompatibilityRecipeBridgeOptions(
     IReadOnlyList<BridgeAuthorityRule> AuthorityRules,
@@ -81,7 +115,9 @@ internal sealed record CompatibilityRecipeBridgeOptions(
     IReadOnlyList<BridgeServerFileRedirect> ServerFileRedirects,
     IReadOnlyList<BridgeServerXmlOverlay> ServerXmlOverlays,
     IReadOnlyList<BridgeClientAssemblyResolve> ClientAssemblyResolves,
-    IReadOnlyList<BridgeServerMapTerrainSize> ServerMapTerrainSizes);
+    IReadOnlyList<BridgeServerMapTerrainSize> ServerMapTerrainSizes,
+    IReadOnlyList<BridgeDisabledSubModule> DisabledSubModules,
+    IReadOnlyList<BridgeClientOnlySubModule> ClientOnlySubModules);
 
 internal static class BridgeRuntimeFeatureSets
 {

@@ -24,6 +24,7 @@ public sealed class ModManagerViewModel : BindableBase
     private readonly BridgePopulationSettingsService _bridgePopulationSettingsService;
     private BannerlordModule? _selectedModule;
     private BridgePopulationSettingsTarget? _selectedBridgeSettingsTarget;
+    private BridgeDllSelection? _pendingBridgeDllSelection;
     private string _statusMessage = "Ready to scan dedicated-server modules.";
     private string _validationSummary = string.Empty;
     private bool _isBusy;
@@ -63,6 +64,9 @@ public sealed class ModManagerViewModel : BindableBase
         InstallOrUpdateBridgeCommand = new AsyncRelayCommand(
             InstallOrUpdateBridgeAsync,
             CanInstallOrUpdateBridge);
+        OpenBridgeDllOptionsCommand = new RelayCommand(
+            OpenBridgeDllOptions,
+            CanOpenBridgeDllOptions);
         OpenBridgePopulationSettingsCommand = new RelayCommand(
             OpenBridgePopulationSettings,
             CanOpenBridgePopulationSettings);
@@ -151,6 +155,7 @@ public sealed class ModManagerViewModel : BindableBase
     public ICommand DeleteCommand { get; }
     public ICommand AnalyzeCommand { get; }
     public ICommand InstallOrUpdateBridgeCommand { get; }
+    public ICommand OpenBridgeDllOptionsCommand { get; }
     public ICommand OpenBridgePopulationSettingsCommand { get; }
     public ICommand RevertBridgeInstallationCommand { get; }
 
@@ -160,11 +165,13 @@ public sealed class ModManagerViewModel : BindableBase
     /// </summary>
     public event Action<CoopCompatibilityReport>? CompatibilityReportReady;
     public event Action<BridgeInstallationResult>? BridgeInstallationCompleted;
+    public event Action<BridgeDllSelection>? BridgeDllSelectionRequested;
     public event Action<BridgePopulationSettingsTarget>? BridgePopulationSettingsRequested;
 
     public BridgeInstallationResult? LastBridgeInstallationResult { get; private set; }
 
     internal bool CanPrepareSelectedBridge => CanInstallOrUpdateBridge();
+    internal bool CanOpenSelectedBridgeDllOptions => CanOpenBridgeDllOptions();
     internal bool CanOpenSelectedBridgePopulationSettings =>
         CanOpenBridgePopulationSettings();
 
@@ -475,11 +482,21 @@ public sealed class ModManagerViewModel : BindableBase
         try
         {
             var snapshot = Modules.ToArray();
-            var result = await Task.Run(() =>
-                _bridgeInstallationService.InstallOrUpdate(
+            var selection = _pendingBridgeDllSelection is { } pending &&
+                            pending.ModuleId.Equals(module.Id, StringComparison.OrdinalIgnoreCase) &&
+                            pending.ModuleVersion.Equals(module.Version, StringComparison.OrdinalIgnoreCase)
+                ? pending
+                : null;
+            var result = await Task.Run(() => selection is null
+                ? _bridgeInstallationService.InstallOrUpdate(
                     module,
                     snapshot,
-                    ServerRoot));
+                    ServerRoot)
+                : _bridgeInstallationService.InstallOrUpdate(
+                    module,
+                    snapshot,
+                    ServerRoot,
+                    selection));
             StatusMessage = result.ChangesApplied
                 ? "Bridge installed/updated. " +
                   (result.ClientPackagePath is null
@@ -508,6 +525,65 @@ public sealed class ModManagerViewModel : BindableBase
 
         if (completed is not null)
             BridgeInstallationCompleted?.Invoke(completed);
+    }
+
+    private void OpenBridgeDllOptions()
+    {
+        var module = SelectedModule;
+        if (module is null || !CanOpenBridgeDllOptions())
+            return;
+
+        try
+        {
+            var selection = _pendingBridgeDllSelection;
+            if (selection is null ||
+                !selection.ModuleId.Equals(module.Id, StringComparison.OrdinalIgnoreCase) ||
+                !selection.ModuleVersion.Equals(module.Version, StringComparison.OrdinalIgnoreCase))
+            {
+                selection = _bridgeInstallationService.ResolveDllSelection(
+                    module,
+                    Modules.ToArray(),
+                    ServerRoot);
+            }
+            else
+            {
+                selection = _bridgeInstallationService.ValidateCurrentDllSelection(
+                    module,
+                    selection);
+            }
+
+            _pendingBridgeDllSelection = selection;
+            BridgeDllSelectionRequested?.Invoke(selection);
+        }
+        catch (Exception exception)
+        {
+            _pendingBridgeDllSelection = null;
+            StatusMessage = exception.Message;
+            MessageBox.Show(
+                exception.Message,
+                "Could Not Open Bridge DLL Options",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    public void ApplyBridgeDllSelection(BridgeDllSelection selection)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        var module = SelectedModule ?? throw new InvalidOperationException(
+            "Select a bridge-managed module before applying DLL options.");
+        if (!selection.ModuleId.Equals(module.Id, StringComparison.OrdinalIgnoreCase) ||
+            !selection.ModuleVersion.Equals(module.Version, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Bridge DLL options belong to a different selected module or version.");
+        }
+
+        _pendingBridgeDllSelection = selection;
+        StatusMessage =
+            $"Bridge DLL options ready: {selection.SelectedDllNames.Count} of " +
+            $"{selection.AvailableDllNames.Count} included for {module.Name}. " +
+            "Click Prepare / Install Bridge to apply them.";
     }
 
     private void OpenBridgePopulationSettings()
@@ -654,7 +730,10 @@ public sealed class ModManagerViewModel : BindableBase
     private bool CanDeleteSelected() =>
         !IsBusy &&
         !IsDirty &&
-        SelectedModule is { IsInstalled: true, IsRequired: false };
+        SelectedModule is { IsInstalled: true, IsRequired: false } module &&
+        !module.Id.StartsWith(
+            CoopBridgePackageBuilder.BridgeIdPrefix,
+            StringComparison.OrdinalIgnoreCase);
 
     private bool CanAnalyzeSelected() =>
         !IsBusy &&
@@ -665,6 +744,13 @@ public sealed class ModManagerViewModel : BindableBase
         !IsBusy &&
         _bridgeInstallationService.IsKnownRecipe(SelectedModule) &&
         SelectedModule is { IsServerCompatible: true } module &&
+        !string.IsNullOrWhiteSpace(module.Path);
+
+    private bool CanOpenBridgeDllOptions() =>
+        !IsBusy &&
+        !IsDirty &&
+        _bridgeInstallationService.IsKnownRecipe(SelectedModule) &&
+        SelectedModule is { IsInstalled: true } module &&
         !string.IsNullOrWhiteSpace(module.Path);
 
     private bool CanOpenBridgePopulationSettings() =>
@@ -713,13 +799,18 @@ public sealed class ModManagerViewModel : BindableBase
 
     private void ReplaceModules(IReadOnlyList<BannerlordModule> modules)
     {
+        _pendingBridgeDllSelection = null;
         foreach (var module in Modules)
             module.PropertyChanged -= Module_PropertyChanged;
         Modules.Clear();
 
         foreach (var module in modules)
         {
-            module.SetBridgeManaged(_bridgeInstallationService.IsKnownRecipe(module));
+            var generatedBridge = module.Id.StartsWith(
+                CoopBridgePackageBuilder.BridgeIdPrefix,
+                StringComparison.OrdinalIgnoreCase);
+            module.SetBridgeManaged(
+                generatedBridge || _bridgeInstallationService.IsKnownRecipe(module));
             module.PropertyChanged += Module_PropertyChanged;
             Modules.Add(module);
         }

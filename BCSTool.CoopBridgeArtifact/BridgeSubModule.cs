@@ -32,9 +32,9 @@ using TaleWorlds.Library;
 using TaleWorlds.MountAndBlade;
 using TaleWorlds.ObjectSystem;
 
-[assembly: AssemblyVersion("0.6.67.0")]
-[assembly: AssemblyFileVersion("0.6.67.0")]
-[assembly: AssemblyInformationalVersion("0.6.67")]
+[assembly: AssemblyVersion("0.6.68.0")]
+[assembly: AssemblyFileVersion("0.6.68.0")]
+[assembly: AssemblyInformationalVersion("0.6.68")]
 
 namespace BCS.CoopBridge
 {
@@ -5700,13 +5700,52 @@ namespace BCS.CoopBridge
                 var serverFileRedirects = new List<ServerFileRedirect>();
                 var serverXmlOverlays = new List<ServerXmlOverlay>();
                 var clientAssemblyResolves = new List<ClientAssemblyResolveRule>();
+                var clientAssemblyResolveTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var clientAssemblyResolveNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 ServerMapTerrainSizeRule serverMapTerrainSize = null;
                 GameVersionCompatibilityRule gameVersionCompatibility = null;
                 var ignoredContent = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
                 var runtimeFeatures = new HashSet<string>(StringComparer.Ordinal);
+                var enabledSubModules = new Dictionary<string, SubModuleRule>(StringComparer.OrdinalIgnoreCase);
+                var disabledSubModules = new Dictionary<string, SubModuleRule>(StringComparer.OrdinalIgnoreCase);
+                var clientOnlySubModules = new Dictionary<string, SubModuleRule>(StringComparer.OrdinalIgnoreCase);
+                var configuredModuleIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var line in lines.Skip(1))
                 {
                     var fields = line.Split('|');
+                    if (fields.Length > 0 &&
+                        string.Equals(fields[0], "DISABLED_SUBMODULE", StringComparison.Ordinal))
+                    {
+                        if (configurationSchema != 2)
+                        {
+                            throw new InvalidDataException(
+                                "Disabled-submodule records require bridge configuration schema 2.");
+                        }
+                        if (fields.Length != 3)
+                            throw new InvalidDataException("Malformed disabled-submodule record.");
+
+                        var disabledModuleId = Decode(fields[1]);
+                        var disabledDllName = Decode(fields[2]);
+                        ModuleIdentity disabledModule;
+                        if (!installed.TryGetValue(disabledModuleId, out disabledModule))
+                        {
+                            throw new InvalidDataException(
+                                "Disabled-submodule module is missing: " + disabledModuleId);
+                        }
+                        if (!IsSafeDllFileName(disabledDllName))
+                        {
+                            throw new InvalidDataException(
+                                "Unsafe DLL name in disabled-submodule record: " + disabledDllName);
+                        }
+
+                        var disabledKey = BuildSubModuleKey(disabledModuleId, disabledDllName);
+                        if (disabledSubModules.ContainsKey(disabledKey))
+                            throw new InvalidDataException("Duplicate disabled-submodule record.");
+                        disabledSubModules.Add(
+                            disabledKey,
+                            new SubModuleRule(disabledModule, disabledDllName));
+                        continue;
+                    }
                     if (fields.Length == 2 &&
                         string.Equals(fields[0], "RUNTIME_FEATURE", StringComparison.Ordinal))
                     {
@@ -5774,6 +5813,12 @@ namespace BCS.CoopBridge
                         {
                             throw new InvalidDataException("Unsafe client assembly resolver record.");
                         }
+                        var expectedAssemblyName = RegisterClientAssemblyResolverSimpleName(
+                            clientAssemblyResolveNames,
+                            resolverRelativePath);
+                        clientAssemblyResolveTargets.Add(BuildSubModuleKey(
+                            resolverModuleId,
+                            Path.GetFileName(resolverRelativePath)));
 #if !BCS_SERVER
                         ModuleIdentity resolverModule;
                         if (!installed.TryGetValue(resolverModuleId, out resolverModule))
@@ -5788,7 +5833,6 @@ namespace BCS.CoopBridge
                             resolverPath,
                             "Client assembly resolver");
                         var resolverAssemblyName = AssemblyName.GetAssemblyName(resolverPath).Name;
-                        var expectedAssemblyName = Path.GetFileNameWithoutExtension(resolverRelativePath);
                         if (!string.Equals(
                                 resolverAssemblyName,
                                 expectedAssemblyName,
@@ -6016,6 +6060,15 @@ namespace BCS.CoopBridge
                     var moduleId = Decode(fields[1]);
                     var version = Decode(fields[2]);
                     var dllName = Decode(fields[3]);
+                    var clientOnly = configurationSchema == 2 &&
+                                     string.Equals(fields[4], "CLIENT_ONLY", StringComparison.Ordinal);
+                    if (configurationSchema == 2 &&
+                        fields[4].Length != 0 &&
+                        !clientOnly)
+                    {
+                        throw new InvalidDataException(
+                            "Unsupported MODULE runtime-role marker: " + fields[4]);
+                    }
                     ModuleIdentity module;
                     if (!installed.TryGetValue(moduleId, out module))
                         throw new InvalidDataException("Required Coop bridge module is missing: " + moduleId);
@@ -6025,15 +6078,36 @@ namespace BCS.CoopBridge
                             "Coop bridge module version mismatch for " + moduleId +
                             ". Expected " + version + ", found " + module.Version + ".");
                     }
+                    configuredModuleIds.Add(moduleId);
 
                     if (dllName.Length == 0)
+                    {
+                        if (clientOnly)
+                            throw new InvalidDataException("Empty MODULE record cannot be client-only.");
                         continue;
-                    if (!string.Equals(Path.GetFileName(dllName), dllName, StringComparison.Ordinal) ||
-                        !string.Equals(Path.GetExtension(dllName), ".dll", StringComparison.OrdinalIgnoreCase))
+                    }
+                    if (!IsSafeDllFileName(dllName))
                     {
                         throw new InvalidDataException("Unsafe DLL name in BCS Coop bridge configuration: " + dllName);
                     }
 
+                    if (configurationSchema == 2)
+                    {
+                        var enabledKey = BuildSubModuleKey(moduleId, dllName);
+                        if (enabledSubModules.ContainsKey(enabledKey) ||
+                            clientOnlySubModules.ContainsKey(enabledKey))
+                        {
+                            throw new InvalidDataException("Duplicate enabled-submodule record.");
+                        }
+                        (clientOnly ? clientOnlySubModules : enabledSubModules).Add(
+                            enabledKey,
+                            new SubModuleRule(module, dllName));
+                    }
+
+#if BCS_SERVER
+                    if (clientOnly)
+                        continue;
+#endif
                     var dllPath = FindAssembly(module.RootPath, dllName);
                     if (dllPath == null)
                         throw new FileNotFoundException("Required Coop bridge assembly is missing: " + moduleId + "/" + dllName);
@@ -6042,6 +6116,72 @@ namespace BCS.CoopBridge
                         dllPath,
                         dllName,
                         "Required Coop bridge assembly");
+                }
+
+                foreach (var disabled in disabledSubModules)
+                {
+                    if (!configuredModuleIds.Contains(disabled.Value.Module.Id))
+                    {
+                        throw new InvalidDataException(
+                            "Disabled-submodule module has no MODULE identity record: " +
+                            disabled.Value.Module.Id);
+                    }
+                    if (enabledSubModules.ContainsKey(disabled.Key))
+                    {
+                        throw new InvalidDataException(
+                            "A Coop bridge submodule cannot be both enabled and disabled: " +
+                            disabled.Value.Module.Id + "/" + disabled.Value.DllName);
+                    }
+                    if (clientOnlySubModules.ContainsKey(disabled.Key))
+                    {
+                        throw new InvalidDataException(
+                            "A Coop bridge submodule cannot be both client-only and disabled: " +
+                            disabled.Value.Module.Id + "/" + disabled.Value.DllName);
+                    }
+                    if (authorityRules.Any(rule => string.Equals(
+                            BuildSubModuleKey(rule.ModuleId, rule.DllName),
+                            disabled.Key,
+                            StringComparison.OrdinalIgnoreCase)))
+                    {
+                        throw new InvalidDataException(
+                            "Authority rule targets a disabled submodule: " +
+                            disabled.Value.Module.Id + "/" + disabled.Value.DllName);
+                    }
+                    if (clientAssemblyResolveTargets.Contains(disabled.Key))
+                    {
+                        throw new InvalidDataException(
+                            "Client assembly resolver targets a disabled submodule: " +
+                            disabled.Value.Module.Id + "/" + disabled.Value.DllName);
+                    }
+                }
+                foreach (var clientOnly in clientOnlySubModules)
+                {
+                    if (!configuredModuleIds.Contains(clientOnly.Value.Module.Id))
+                    {
+                        throw new InvalidDataException(
+                            "Client-only submodule module has no MODULE identity record: " +
+                            clientOnly.Value.Module.Id);
+                    }
+                    if (authorityRules.Any(rule =>
+                            rule.Scope != AuthorityScope.ClientOnly &&
+                            string.Equals(
+                                BuildSubModuleKey(rule.ModuleId, rule.DllName),
+                                clientOnly.Key,
+                                StringComparison.OrdinalIgnoreCase)))
+                    {
+                        throw new InvalidDataException(
+                            "Non-client authority rule targets a client-only submodule: " +
+                            clientOnly.Value.Module.Id + "/" + clientOnly.Value.DllName);
+                    }
+                }
+                if (configurationSchema == 2)
+                {
+                    ValidateSubModuleInventories(
+                        installed,
+                        configuredModuleIds,
+                        enabledSubModules,
+                        disabledSubModules,
+                        clientOnlySubModules);
                 }
 
                 if (configurationSchema == 1)
@@ -6361,6 +6501,309 @@ namespace BCS.CoopBridge
                 Value(root, "Id"),
                 Value(root, "Version"),
                 Path.GetDirectoryName(manifestPath));
+        }
+
+        private static string BuildSubModuleKey(string moduleId, string dllName)
+        {
+            return (moduleId ?? string.Empty) + "\0" + (dllName ?? string.Empty);
+        }
+
+        private static string RegisterClientAssemblyResolverSimpleName(
+            HashSet<string> resolverSimpleNames,
+            string resolverRelativePath)
+        {
+            var resolverSimpleName = Path.GetFileNameWithoutExtension(
+                resolverRelativePath);
+            if (!resolverSimpleNames.Add(resolverSimpleName))
+            {
+                throw new InvalidDataException(
+                    "Duplicate client assembly resolver simple name: " +
+                    resolverSimpleName + ".");
+            }
+            return resolverSimpleName;
+        }
+
+        private static bool IsSafeDllFileName(string dllName)
+        {
+            if (string.IsNullOrWhiteSpace(dllName))
+                return false;
+            try
+            {
+                return !Path.IsPathRooted(dllName) &&
+                       dllName.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 &&
+                       string.Equals(Path.GetFileName(dllName), dllName, StringComparison.Ordinal) &&
+                       string.Equals(Path.GetExtension(dllName), ".dll", StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception exception) when (
+                exception is ArgumentException ||
+                exception is NotSupportedException ||
+                exception is PathTooLongException)
+            {
+                return false;
+            }
+        }
+
+        private static void ValidateSubModuleInventories(
+            IDictionary<string, ModuleIdentity> installed,
+            IEnumerable<string> configuredModuleIds,
+            IDictionary<string, SubModuleRule> enabledSubModules,
+            IDictionary<string, SubModuleRule> disabledSubModules,
+            IDictionary<string, SubModuleRule> clientOnlySubModules)
+        {
+            foreach (var moduleId in configuredModuleIds)
+            {
+                if (string.Equals(moduleId, "Coop", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                ModuleIdentity module;
+                if (!installed.TryGetValue(moduleId, out module))
+                    throw new InvalidDataException("Configured bridge module is missing: " + moduleId);
+
+                var declarations = ReadSubModuleDeclarations(module);
+                var hasExplicitRolePolicy = disabledSubModules.Values.Any(rule => string.Equals(
+                                                rule.Module.Id,
+                                                moduleId,
+                                                StringComparison.OrdinalIgnoreCase)) ||
+                                            clientOnlySubModules.Values.Any(rule => string.Equals(
+                                                rule.Module.Id,
+                                                moduleId,
+                                                StringComparison.OrdinalIgnoreCase));
+                var declarationsByDll = new Dictionary<string, XmlElement>(
+                    StringComparer.OrdinalIgnoreCase);
+                foreach (var subModule in declarations)
+                {
+                    var dllElements = subModule.SelectNodes("./DLLName")
+                        .OfType<XmlElement>()
+                        .ToArray();
+                    if (dllElements.Length == 0)
+                        continue;
+                    if (dllElements.Length != 1)
+                    {
+                        throw new InvalidDataException(
+                            "Bridge module submodule repeats DLLName: " + moduleId);
+                    }
+
+                    var dllName = dllElements[0].GetAttribute("value");
+                    if (!IsSafeDllFileName(dllName))
+                    {
+                        throw new InvalidDataException(
+                            "Unsafe DLL declaration in bridge module manifest: " +
+                            moduleId + "/" + dllName);
+                    }
+                    if (declarationsByDll.ContainsKey(dllName))
+                    {
+                        throw new InvalidDataException(
+                            "Duplicate DLL declaration in bridge module manifest: " +
+                            moduleId + "/" + dllName);
+                    }
+                    declarationsByDll.Add(dllName, subModule);
+                }
+
+                var expectedDlls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var enabled in enabledSubModules.Values.Where(rule => string.Equals(
+                             rule.Module.Id,
+                             moduleId,
+                             StringComparison.OrdinalIgnoreCase)))
+                {
+                    expectedDlls.Add(enabled.DllName);
+                }
+#if BCS_SERVER
+                foreach (var disabled in disabledSubModules.Values.Where(rule => string.Equals(
+                             rule.Module.Id,
+                             moduleId,
+                             StringComparison.OrdinalIgnoreCase)))
+                {
+                    expectedDlls.Add(disabled.DllName);
+                }
+#endif
+                foreach (var clientOnly in clientOnlySubModules.Values.Where(rule => string.Equals(
+                             rule.Module.Id,
+                             moduleId,
+                             StringComparison.OrdinalIgnoreCase)))
+                {
+                    expectedDlls.Add(clientOnly.DllName);
+                }
+                if (!expectedDlls.SetEquals(declarationsByDll.Keys))
+                {
+                    throw new InvalidDataException(
+                        "Bridge module DLL declarations do not exactly match the configured runtime role: " +
+                        moduleId);
+                }
+
+                foreach (var enabled in enabledSubModules.Values.Where(rule => string.Equals(
+                             rule.Module.Id,
+                             moduleId,
+                             StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (!hasExplicitRolePolicy)
+                        continue;
+                    XmlElement declaration;
+                    if (!declarationsByDll.TryGetValue(enabled.DllName, out declaration) ||
+                        !IsSubModuleActiveForCurrentRole(declaration))
+                    {
+                        throw new InvalidDataException(
+                            "Enabled Coop bridge submodule is not active for this runtime role: " +
+                            moduleId + "/" + enabled.DllName);
+                    }
+                }
+
+                foreach (var disabled in disabledSubModules.Values.Where(rule => string.Equals(
+                             rule.Module.Id,
+                             moduleId,
+                             StringComparison.OrdinalIgnoreCase)))
+                {
+#if BCS_SERVER
+                    XmlElement declaration;
+                    if (!declarationsByDll.TryGetValue(disabled.DllName, out declaration) ||
+                        IsSubModuleActiveForCurrentRole(declaration))
+                    {
+                        throw new InvalidDataException(
+                            "Disabled Coop bridge submodule is active for this runtime role: " +
+                            moduleId + "/" + disabled.DllName);
+                    }
+#endif
+                    ValidateDisabledAssemblyNotLoaded(disabled);
+                }
+
+                foreach (var clientOnly in clientOnlySubModules.Values.Where(rule => string.Equals(
+                             rule.Module.Id,
+                             moduleId,
+                             StringComparison.OrdinalIgnoreCase)))
+                {
+                    XmlElement declaration;
+                    if (!declarationsByDll.TryGetValue(clientOnly.DllName, out declaration))
+                    {
+                        throw new InvalidDataException(
+                            "Client-only Coop bridge submodule is missing for this runtime role: " +
+                            moduleId + "/" + clientOnly.DllName);
+                    }
+#if BCS_SERVER
+                    if (IsSubModuleActiveForCurrentRole(declaration))
+                    {
+                        throw new InvalidDataException(
+                            "Client-only Coop bridge submodule is active on the server: " +
+                            moduleId + "/" + clientOnly.DllName);
+                    }
+                    ValidateDisabledAssemblyNotLoaded(clientOnly);
+#else
+                    if (!IsSubModuleActiveForCurrentRole(declaration))
+                    {
+                        throw new InvalidDataException(
+                            "Client-only Coop bridge submodule is not active on the client: " +
+                            moduleId + "/" + clientOnly.DllName);
+                    }
+#endif
+                }
+            }
+        }
+
+        private static XmlElement[] ReadSubModuleDeclarations(ModuleIdentity module)
+        {
+            var manifestPath = Path.Combine(module.RootPath, "SubModule.xml");
+            ValidateRequiredModuleRegularFile(
+                module.RootPath,
+                manifestPath,
+                "Bridge submodule manifest");
+
+            var document = new XmlDocument { XmlResolver = null };
+            using (var reader = XmlReader.Create(manifestPath, new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null,
+                MaxCharactersInDocument = 4 * 1024 * 1024
+            }))
+            {
+                document.Load(reader);
+            }
+
+            var root = document.DocumentElement;
+            if (root == null || !string.Equals(root.LocalName, "Module", StringComparison.Ordinal))
+                throw new InvalidDataException("Invalid Bannerlord module manifest: " + manifestPath);
+            if (!string.Equals(Value(root, "Id"), module.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    "Bannerlord module identity changed during bridge submodule validation: " +
+                    module.Id);
+            }
+
+            return root.SelectNodes("./SubModules/SubModule")
+                .OfType<XmlElement>()
+                .ToArray();
+        }
+
+        private static bool IsSubModuleActiveForCurrentRole(XmlElement subModule)
+        {
+#if BCS_SERVER
+            return !IsServerSuppressedSubModule(subModule);
+#else
+            return true;
+#endif
+        }
+
+        private static bool IsServerSuppressedSubModule(XmlElement subModule)
+        {
+            var tags = subModule.ChildNodes.OfType<XmlElement>()
+                .Where(element => string.Equals(
+                    element.LocalName,
+                    "Tags",
+                    StringComparison.OrdinalIgnoreCase))
+                .SelectMany(container => container.ChildNodes.OfType<XmlElement>())
+                .Where(element => string.Equals(
+                    element.LocalName,
+                    "Tag",
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            return HasUnambiguousTagValue(tags, "DedicatedServerType", "none") &&
+                   HasUnambiguousTagValue(tags, "IsNoRenderModeElement", "false");
+        }
+
+        private static bool HasUnambiguousTagValue(
+            IEnumerable<XmlElement> tags,
+            string key,
+            string expectedValue)
+        {
+            var matching = tags.Where(tag => string.Equals(
+                    tag.GetAttribute("key"),
+                    key,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            return matching.Length > 0 && matching.All(tag => string.Equals(
+                tag.GetAttribute("value"),
+                expectedValue,
+                StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static void ValidateDisabledAssemblyNotLoaded(SubModuleRule rule)
+        {
+            var moduleRoot = Path.GetFullPath(rule.Module.RootPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
+                Path.DirectorySeparatorChar;
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                string location;
+                try
+                {
+                    location = assembly.Location;
+                }
+                catch (NotSupportedException)
+                {
+                    continue;
+                }
+                if (string.IsNullOrWhiteSpace(location))
+                    continue;
+
+                var canonicalLocation = Path.GetFullPath(location);
+                if (canonicalLocation.StartsWith(moduleRoot, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(
+                        Path.GetFileName(canonicalLocation),
+                        rule.DllName,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException(
+                        "Disabled Coop bridge submodule assembly is already loaded: " +
+                        rule.Module.Id + "/" + rule.DllName);
+                }
+            }
         }
 
         private static string Value(XmlElement root, string elementName)
@@ -7129,6 +7572,18 @@ namespace BCS.CoopBridge
             internal string Id { get; private set; }
             internal string Version { get; private set; }
             internal string RootPath { get; private set; }
+        }
+
+        private sealed class SubModuleRule
+        {
+            internal SubModuleRule(ModuleIdentity module, string dllName)
+            {
+                Module = module;
+                DllName = dllName;
+            }
+
+            internal ModuleIdentity Module { get; private set; }
+            internal string DllName { get; private set; }
         }
 
         private sealed class AuthorityRule

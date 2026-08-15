@@ -31,7 +31,7 @@ public sealed class BannerlordModule : BindableBase
             : !IsServerCompatible
                 ? "This official module is not compatible with the dedicated server."
                 : IsBridgeManaged
-                    ? "This overhaul is enabled and ordered automatically by Prepare / Install Bridge."
+                    ? "This module is enabled and ordered automatically by Prepare / Install Bridge."
                 : "Enable or disable this dedicated-server module.";
 
     public bool Enabled

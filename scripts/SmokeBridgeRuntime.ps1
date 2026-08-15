@@ -51,8 +51,21 @@ try {
     [System.IO.Directory]::CreateDirectory($contentBin) | Out-Null
     $native = Join-Path $modules 'Native'
     [System.IO.Directory]::CreateDirectory($native) | Out-Null
-    $serverNativeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="Native"/><Id value="Native"/><Version value="v1.4.8"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules/><SubModules/></Module>'
-    $clientNativeManifest = $serverNativeManifest
+    $nativeServerBin = Join-Path $native 'bin\Win64_Shipping_Server'
+    $nativeClientBin = Join-Path $native 'bin\Win64_Shipping_Client'
+    [System.IO.Directory]::CreateDirectory($nativeServerBin) | Out-Null
+    [System.IO.Directory]::CreateDirectory($nativeClientBin) | Out-Null
+    $nativeActiveSubModule = '<SubModule><Name value="NativeSmoke"/><DLLName value="NativeSmoke.dll"/><SubModuleClassType value="NativeSmoke.SubModule"/></SubModule>'
+    $nativeClientOnlySubModule = '<SubModule><Name value="ClientOnly"/><DLLName value="ClientOnly.dll"/><SubModuleClassType value="ClientOnly.SubModule"/></SubModule>'
+    $nativeClientOnlySuppressedSubModule = '<SubModule><Name value="ClientOnly"/><DLLName value="ClientOnly.dll"/><SubModuleClassType value="ClientOnly.SubModule"/><Tags><Tag key="DedicatedServerType" value="none"/><Tag key="IsNoRenderModeElement" value="false"/></Tags></SubModule>'
+    $nativeDisabledSubModule = '<SubModule><Name value="Disabled"/><DLLName value="Disabled.dll"/><SubModuleClassType value="Disabled.SubModule"/><Tags><Tag key="DedicatedServerType" value="none"/><Tag key="IsNoRenderModeElement" value="false"/></Tags></SubModule>'
+    $nativeManifestPrefix = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="Native"/><Id value="Native"/><Version value="v1.4.8"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules/><SubModules>'
+    $nativeManifestSuffix = '</SubModules></Module>'
+    $serverNativeManifest = $nativeManifestPrefix + $nativeActiveSubModule + $nativeClientOnlySuppressedSubModule + $nativeDisabledSubModule + $nativeManifestSuffix
+    $serverNativeClientOnlyActiveManifest = $nativeManifestPrefix + $nativeActiveSubModule + $nativeClientOnlySubModule + $nativeDisabledSubModule + $nativeManifestSuffix
+    $clientNativeManifest = $nativeManifestPrefix + $nativeActiveSubModule + $nativeClientOnlySubModule + $nativeManifestSuffix
+    $clientNativeDisabledManifest = $nativeManifestPrefix + $nativeActiveSubModule + $nativeClientOnlySubModule + $nativeDisabledSubModule + $nativeManifestSuffix
+    $clientNativeExtraManifest = $nativeManifestPrefix + $nativeActiveSubModule + $nativeClientOnlySubModule + '<SubModule><Name value="Extra"/><DLLName value="Extra.dll"/><SubModuleClassType value="Extra.SubModule"/></SubModule>' + $nativeManifestSuffix
     $nativeManifestPath = Join-Path $native 'SubModule.xml'
     [System.IO.File]::WriteAllText($nativeManifestPath, $serverNativeManifest, $utf8)
     $contentManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="Coop"/><Id value="Coop"/><Version value="v1.0.0"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules/><SubModules/></Module>'
@@ -68,6 +81,11 @@ try {
 
     $id64 = [Convert]::ToBase64String($utf8.GetBytes('Coop'))
     $version64 = [Convert]::ToBase64String($utf8.GetBytes('v1.0.0'))
+    $nativeId64 = [Convert]::ToBase64String($utf8.GetBytes('Native'))
+    $nativeVersion64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.8'))
+    $nativeSmokeDll64 = [Convert]::ToBase64String($utf8.GetBytes('NativeSmoke.dll'))
+    $clientOnlyDll64 = [Convert]::ToBase64String($utf8.GetBytes('ClientOnly.dll'))
+    $disabledDll64 = [Convert]::ToBase64String($utf8.GetBytes('Disabled.dll'))
     $fileSha = [System.Security.Cryptography.SHA256]::Create()
     try {
         $fileHash = $fileSha.ComputeHash([System.IO.File]::ReadAllBytes($contentXmlPath))
@@ -101,6 +119,18 @@ try {
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
+    $nativeSmokeClientPath = Join-Path $nativeClientBin 'NativeSmoke.dll'
+    & $frameworkCompiler /nologo /target:library /optimize+ /out:$nativeSmokeClientPath (Join-Path $WorkspaceRoot 'BCSTool.CoopBridgeArtifact\AuthoritySmokeFixture.cs')
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+    Copy-Item -LiteralPath $nativeSmokeClientPath `
+        -Destination (Join-Path $nativeServerBin 'NativeSmoke.dll')
+    $clientOnlyClientPath = Join-Path $nativeClientBin 'ClientOnly.dll'
+    & $frameworkCompiler /nologo /target:library /optimize+ /out:$clientOnlyClientPath (Join-Path $WorkspaceRoot 'BCSTool.CoopBridgeArtifact\AuthoritySmokeFixture.cs')
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
     $gameInterfaceFixturePath = Join-Path $contentBin 'GameInterface.dll'
     & $frameworkCompiler /nologo /target:library /optimize+ /out:$gameInterfaceFixturePath "/reference:$(Join-Path $gameBin 'TaleWorlds.Library.dll')" "/reference:$netStandardFacade" (Join-Path $WorkspaceRoot 'BCSTool.CoopBridgeArtifact\GameVersionSmokeFixture.cs')
     if ($LASTEXITCODE -ne 0) {
@@ -108,22 +138,6 @@ try {
     }
     Copy-Item -LiteralPath (Join-Path $coopBin 'Common.dll') `
         -Destination (Join-Path $contentBin 'Common.dll')
-    $fixtureSha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $fixtureHash = ([BitConverter]::ToString($fixtureSha.ComputeHash([System.IO.File]::ReadAllBytes($fixturePath)))).Replace('-', '')
-    }
-    finally {
-        $fixtureSha.Dispose()
-    }
-    $gameInterfaceFixtureSha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $gameInterfaceFixtureHash = ([BitConverter]::ToString(
-            $gameInterfaceFixtureSha.ComputeHash(
-                [System.IO.File]::ReadAllBytes($gameInterfaceFixturePath)))).Replace('-', '')
-    }
-    finally {
-        $gameInterfaceFixtureSha.Dispose()
-    }
     $dll64 = [Convert]::ToBase64String($utf8.GetBytes('AuthoritySmokeFixture.dll'))
     $gameInterfaceDll64 = [Convert]::ToBase64String($utf8.GetBytes('GameInterface.dll'))
     $type64 = [Convert]::ToBase64String($utf8.GetBytes('AuthoritySmokeFixture.Target'))
@@ -152,8 +166,11 @@ try {
     $configText = 'BCS-COOP-BRIDGE|2' + [char]10 +
         $runtimeFeatureText +
         'GAME_VERSION_COMPAT|' + $serverGameVersion64 + '|' + $clientGameVersion64 + '|' + $serverRuntimeVersion64 + '|' + $clientRuntimeVersion64 + [char]10 +
-        'MODULE|' + $id64 + '|' + $version64 + '|' + $dll64 + '|' + $fixtureHash + [char]10 +
-        'MODULE|' + $id64 + '|' + $version64 + '|' + $gameInterfaceDll64 + '|' + $gameInterfaceFixtureHash + [char]10 +
+        'MODULE|' + $id64 + '|' + $version64 + '|' + $dll64 + '|' + [char]10 +
+        'MODULE|' + $id64 + '|' + $version64 + '|' + $gameInterfaceDll64 + '|' + [char]10 +
+        'MODULE|' + $nativeId64 + '|' + $nativeVersion64 + '|' + $nativeSmokeDll64 + '|' + [char]10 +
+        'MODULE|' + $nativeId64 + '|' + $nativeVersion64 + '|' + $clientOnlyDll64 + '|CLIENT_ONLY' + [char]10 +
+        'DISABLED_SUBMODULE|' + $nativeId64 + '|' + $disabledDll64 + [char]10 +
         'IGNORE_CONTENT|' + $id64 + '|' + $visualPath64 + [char]10 +
         'CONTENT|' + $id64 + '|' + $contentHash + [char]10 +
         'AUTHORITY|' + $id64 + '|' + $dll64 + '|' + $type64 + '|' + $method64 + '|0|SERVER_ONLY' + [char]10 +
@@ -187,7 +204,7 @@ try {
     $clientBridgeBin = Join-Path $bridgeRoot 'bin\Win64_Shipping_Client'
     [System.IO.Directory]::CreateDirectory($serverBridgeBin) | Out-Null
     [System.IO.Directory]::CreateDirectory($clientBridgeBin) | Out-Null
-    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.67"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
+    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.68"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
     [System.IO.File]::WriteAllText((Join-Path $bridgeRoot 'SubModule.xml'), $bridgeManifest, $utf8)
     [System.IO.File]::WriteAllBytes((Join-Path $bridgeRoot 'bcs-coop-bridge.config'), $configBytes)
     Copy-Item -LiteralPath $serverBridgeAssemblySource -Destination (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll')
@@ -246,6 +263,21 @@ try {
         Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_GAME_VERSION -ErrorAction SilentlyContinue
     }
 
+    [System.IO.File]::WriteAllText(
+        $nativeManifestPath,
+        $serverNativeClientOnlyActiveManifest,
+        $utf8)
+    try {
+        & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
+        if ($LASTEXITCODE -eq 0) {
+            throw 'Server bridge runtime accepted an active client-only submodule.'
+        }
+        Write-Output 'PASS: server bridge runtime rejected an active client-only submodule.'
+    }
+    finally {
+        [System.IO.File]::WriteAllText($nativeManifestPath, $serverNativeManifest, $utf8)
+    }
+
     $externalModules = Join-Path $smokeRoot 'WorkshopModules'
     [System.IO.Directory]::CreateDirectory($externalModules) | Out-Null
     $externalContent = Join-Path $externalModules 'ContentPack'
@@ -272,6 +304,25 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw 'Client bridge runtime could not discover an active module outside the local Modules directory.'
         }
+        [System.IO.File]::WriteAllText(
+            $nativeManifestPath,
+            $clientNativeDisabledManifest,
+            $utf8)
+        & $hostPath (Join-Path $clientBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
+        if ($LASTEXITCODE -eq 0) {
+            throw 'Client bridge runtime accepted a disabled submodule declaration.'
+        }
+        Write-Output 'PASS: client bridge runtime rejected a disabled submodule declaration.'
+
+        [System.IO.File]::WriteAllText(
+            $nativeManifestPath,
+            $clientNativeExtraManifest,
+            $utf8)
+        & $hostPath (Join-Path $clientBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
+        if ($LASTEXITCODE -eq 0) {
+            throw 'Client bridge runtime accepted an unconfigured DLL declaration.'
+        }
+        Write-Output 'PASS: client bridge runtime rejected an unconfigured DLL declaration.'
     }
     finally {
         Remove-Item Env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY -ErrorAction SilentlyContinue
@@ -323,9 +374,15 @@ try {
     finally {
         Remove-Item Env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY -ErrorAction SilentlyContinue
     }
-    & $hostPath (Join-Path $clientBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Generic client bridge runtime activated a target-specific compatibility feature.'
+    [System.IO.File]::WriteAllText($nativeManifestPath, $clientNativeManifest, $utf8)
+    try {
+        & $hostPath (Join-Path $clientBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Generic client bridge runtime activated a target-specific compatibility feature.'
+        }
+    }
+    finally {
+        [System.IO.File]::WriteAllText($nativeManifestPath, $serverNativeManifest, $utf8)
     }
     Remove-Item Env:BCS_BRIDGE_SMOKE_DISABLED_FEATURES -ErrorAction SilentlyContinue
     $env:BCS_BRIDGE_SMOKE_EXPECTED_FEATURES = $runtimeFeatures -join '|'
@@ -338,7 +395,12 @@ try {
         [string[]] @("`r`n", "`n"),
         [System.StringSplitOptions]::RemoveEmptyEntries) |
         Select-Object -Skip 1 |
-        Where-Object { -not $_.StartsWith('RUNTIME_FEATURE|', [StringComparison]::Ordinal) }
+        Where-Object {
+            -not $_.StartsWith('RUNTIME_FEATURE|', [StringComparison]::Ordinal) -and
+            -not $_.StartsWith('DISABLED_SUBMODULE|', [StringComparison]::Ordinal) -and
+            -not ($_.StartsWith('MODULE|', [StringComparison]::Ordinal) -and
+                  $_.EndsWith('|CLIENT_ONLY', [StringComparison]::Ordinal))
+        }
     $legacyConfigText = 'BCS-COOP-BRIDGE|1' + [char]10 +
         ($legacyConfigLines -join [char]10) + [char]10
     $legacyConfigBytes = $utf8.GetBytes($legacyConfigText)
@@ -367,9 +429,15 @@ try {
     finally {
         Remove-Item Env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY -ErrorAction SilentlyContinue
     }
-    & $hostPath (Join-Path $clientBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Client bridge runtime did not preserve schema 1 compatibility features.'
+    [System.IO.File]::WriteAllText($nativeManifestPath, $clientNativeManifest, $utf8)
+    try {
+        & $hostPath (Join-Path $clientBridgeBin 'BCS.CoopBridge.dll') $harmonyBin $gameBin $coopBin
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Client bridge runtime did not preserve schema 1 compatibility features.'
+        }
+    }
+    finally {
+        [System.IO.File]::WriteAllText($nativeManifestPath, $serverNativeManifest, $utf8)
     }
     Write-Output 'PASS: legacy schema 1 preserved all historical runtime compatibility features.'
 
