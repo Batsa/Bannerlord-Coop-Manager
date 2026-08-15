@@ -11,7 +11,7 @@ client bridge packaging, client-save import, persistent server
 logging, and a version-scoped compatibility path for **Empires of Europe 1700
 (EOE)**.
 
-> Current application version: `0.3.0-beta.6`
+> Current application version: `0.3.0-beta.7`
 >
 > Current generated bridge runtime: `0.6.67`
 >
@@ -86,7 +86,7 @@ No installer, .NET SDK, or source build is required.
 
 1. Open [GitHub Releases](https://github.com/Batsa/Bannerlord-Coop-Manager/releases).
 2. Under the newest release's **Assets**, download the file named like
-   `Bannerlord-Coop-Manager-v0.3.0-beta.6-win-x64.zip`. Do not download the
+   `Bannerlord-Coop-Manager-v0.3.0-beta.7-win-x64.zip`. Do not download the
    automatically generated **Source code** archives.
 3. Right-click the downloaded ZIP and select **Extract All**. Extract it to a
    normal writable folder, such as `Documents\Bannerlord Coop Manager`.
