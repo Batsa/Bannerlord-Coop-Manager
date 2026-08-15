@@ -95,31 +95,9 @@ public sealed class CoopCompatibilityPatcher
             "Sandbox"
         };
 
-    private static readonly string[] Europe1700RequiredAssemblies =
+    internal static readonly string[] Europe1700ClientOnlyDlls =
     [
-        "XMLMeleePatch.dll",
-        "BattleArtilleryReworked.dll",
-        "Europe1700.dll",
-        "Bannerlord.EOEPatches.dll",
-        "BannerColorPersistence.dll",
-        "ClansResourceAdder.dll",
-        "CustomizableClanTier.dll"
-    ];
-
-    private static readonly string[] Europe1700RequiredServerDlls =
-    [
-        "XMLMeleePatch.dll",
-        "BattleArtilleryReworked.dll",
-        "Europe1700.dll",
-        "Bannerlord.EOEPatches.dll",
-        "ClansResourceAdder.dll",
-        "CustomizableClanTier.dll"
-    ];
-
-    private static readonly string[] Europe1700OptionalServerDlls =
-    [
-        "EOE.CustomBattlePatch.dll",
-        "RF_BattleAI.dll"
+        "BannerColorPersistence.dll"
     ];
 
     internal static readonly BridgeAuthorityRule[] Europe1700AuthorityRules =
@@ -321,7 +299,8 @@ public sealed class CoopCompatibilityPatcher
     public CoopPreparationPlan CreatePlan(
         BannerlordModule selected,
         IReadOnlyList<BannerlordModule> installedModules,
-        string serverRoot)
+        string serverRoot,
+        BridgeDllSelection? bridgeDllSelection = null)
     {
         ArgumentNullException.ThrowIfNull(selected);
         ArgumentNullException.ThrowIfNull(installedModules);
@@ -369,6 +348,7 @@ public sealed class CoopCompatibilityPatcher
         else if (CompatibilityRecipeRegistry.FindByRootModule(selected.Id) is { } recipe)
         {
             ruleId = recipe.CurrentRuleId;
+            var dllSelection = ResolveBridgeDllSelection(selected, bridgeDllSelection);
             recipe.BuildPlan(new CompatibilityRecipePlanContext(
                 selected,
                 byId,
@@ -376,10 +356,15 @@ public sealed class CoopCompatibilityPatcher
                 blockers,
                 warnings,
                 proposed,
-                selectedIds));
+                selectedIds,
+                dllSelection.Selected,
+                dllSelection.Disabled));
             if (blockers.Count == 0)
             {
-                var options = recipe.CreateBridgeOptions(selected);
+                var options = recipe.CreateBridgeOptions(
+                    selected,
+                    dllSelection.Selected,
+                    dllSelection.Disabled);
                 AddBridgePackage(
                     installedModules,
                     selectedIds,
@@ -394,7 +379,9 @@ public sealed class CoopCompatibilityPatcher
                     options.ClientAssemblyResolves,
                     options.ServerMapTerrainSizes,
                     recipe.RuntimeFeatures,
-                    recipe.CampaignSaveDescription);
+                    recipe.CampaignSaveDescription,
+                    options.DisabledSubModules,
+                    options.ClientOnlySubModules);
             }
         }
         else
@@ -897,12 +884,30 @@ public sealed class CoopCompatibilityPatcher
         ICollection<string> blockers,
         ICollection<string> warnings,
         ICollection<PendingChange> proposed,
-        ICollection<string> selectedIds)
+        ICollection<string> selectedIds,
+        IReadOnlyCollection<string>? selectedDllNames = null,
+        IReadOnlyCollection<string>? disabledDllNames = null)
     {
         EnsureDirectChild(module.Path, modulesRoot, "Empires of Europe 1700 module");
         selectedIds.Add(module.Id);
         var manifest = LoadManifest(Path.Combine(module.Path, "SubModule.xml"));
-        var serverDlls = SelectEurope1700ServerDlls(manifest);
+        var dllSelection = ValidateEurope1700DllSelection(
+            manifest,
+            selectedDllNames,
+            disabledDllNames);
+        var selectedDlls = dllSelection.Enabled;
+        var disabledDlls = dllSelection.Disabled;
+        var serverDlls = SelectEurope1700ServerDlls(manifest)
+            .Where(dllName => selectedDlls.Contains(
+                dllName,
+                StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+        var serverDisabledDlls = disabledDlls
+            .Concat(selectedDlls.Where(dllName => Europe1700ClientOnlyDlls.Contains(
+                dllName,
+                StringComparer.OrdinalIgnoreCase)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         if (!module.Version.Equals("v1.4.7.1", StringComparison.OrdinalIgnoreCase))
         {
             blockers.Add(
@@ -917,7 +922,7 @@ public sealed class CoopCompatibilityPatcher
         }
 
         var clientBin = Path.Combine(module.Path, "bin", "Win64_Shipping_Client");
-        foreach (var expectedAssembly in Europe1700RequiredAssemblies)
+        foreach (var expectedAssembly in selectedDlls)
         {
             var path = Path.Combine(clientBin, expectedAssembly);
             if (!File.Exists(path))
@@ -927,16 +932,19 @@ public sealed class CoopCompatibilityPatcher
             }
         }
 
+        var clansEnabled = serverDlls.Contains(
+            "ClansResourceAdder.dll",
+            StringComparer.OrdinalIgnoreCase);
         var clansResourceConfig = Path.Combine(clientBin, "conf_clans_resource_adder.xml");
         byte[]? clansResourceConfigBytes = null;
-        if (!File.Exists(clansResourceConfig))
+        if (clansEnabled && !File.Exists(clansResourceConfig))
         {
             blockers.Add(
                 "Empires of Europe 1700 ClansResourceAdder configuration is missing: " +
                 clansResourceConfig);
         }
 
-        else
+        else if (clansEnabled)
             clansResourceConfigBytes = File.ReadAllBytes(clansResourceConfig);
 
         var mainMapScene = Path.Combine(
@@ -990,17 +998,22 @@ public sealed class CoopCompatibilityPatcher
 
         string? storyModeBin = null;
         string? storyModeHash = null;
-        var bannerlordRoot = ServerExecutableLocator.FindBannerlordInstallRoot();
-        if (bannerlordRoot is null)
+        var artilleryEnabled = serverDlls.Contains(
+            "BattleArtilleryReworked.dll",
+            StringComparer.OrdinalIgnoreCase);
+        var bannerlordRoot = artilleryEnabled
+            ? ServerExecutableLocator.FindBannerlordInstallRoot()
+            : null;
+        if (artilleryEnabled && bannerlordRoot is null)
         {
             blockers.Add(
                 "Empires of Europe 1700 artillery requires the installed Bannerlord StoryMode runtime, " +
                 "but the Bannerlord client installation could not be located.");
         }
-        else
+        else if (artilleryEnabled)
         {
             storyModeBin = Path.Combine(
-                bannerlordRoot,
+                bannerlordRoot!,
                 "Modules",
                 "StoryMode",
                 "bin",
@@ -1036,6 +1049,7 @@ public sealed class CoopCompatibilityPatcher
             addCoopOrdering: false,
             enableDllNames: serverDlls,
             proposed,
+            disableDllNames: serverDisabledDlls,
             sourceManifest: manifest);
         AddClientDllProjection(module, proposed, serverDlls);
         AddEurope1700HeadlessCollisionTransformation(module, proposed);
@@ -1044,35 +1058,45 @@ public sealed class CoopCompatibilityPatcher
         AddEurope1700TrebuchetPrefabTransformation(module, proposed);
         AddEurope1700ManagedDependencyProfile(
             modulesRoot,
-            storyModeBin!,
-            storyModeHash!,
+            storyModeBin,
+            storyModeHash,
             proposed);
-        AddPendingChange(
-            proposed,
-            Path.Combine(
-                module.Path,
-                "bin",
-                "Win64_Shipping_Server",
-                "conf_clans_resource_adder.xml"),
-            clansResourceConfigBytes!,
-            "Project ClansResourceAdder configuration into the server bin");
-        var enabledOptionalDlls = Europe1700OptionalServerDlls
-            .Where(dll => serverDlls.Contains(dll, StringComparer.OrdinalIgnoreCase))
-            .ToArray();
-        var disabledOptionalDlls = Europe1700OptionalServerDlls
-            .Where(dll => !serverDlls.Contains(dll, StringComparer.OrdinalIgnoreCase))
-            .ToArray();
+        if (clansEnabled)
+        {
+            AddPendingChange(
+                proposed,
+                Path.Combine(
+                    module.Path,
+                    "bin",
+                    "Win64_Shipping_Server",
+                    "conf_clans_resource_adder.xml"),
+                clansResourceConfigBytes!,
+                "Project ClansResourceAdder configuration into the server bin");
+        }
         warnings.Add(
-            "EOE optional server submodules enabled from active SubModule.xml declarations: " +
-            (enabledOptionalDlls.Length == 0 ? "none" : string.Join(", ", enabledOptionalDlls)) + ". " +
-            "Commented-out or removed optional declarations remain disabled even when a loose DLL exists: " +
-            (disabledOptionalDlls.Length == 0 ? "none" : string.Join(", ", disabledOptionalDlls)) + ". " +
-            "The declared BannerColorPersistence submodule remains disabled on the dedicated server.");
-        warnings.Add(
-            "The bridge suppresses ClansResourceAdder daily mutations on clients and allows them only on the " +
-            "authoritative Coop server. It also suppresses EOEPatches' music/UI startup hook on the headless server " +
-            "while retaining its gameplay Harmony patches. Real join, save, reconnect, campaign tick, and " +
-            "field/siege battle tests remain required.");
+            "EOE bridge DLL selection: " +
+            (selectedDlls.Count == 0 ? "none included" : "included " + string.Join(", ", selectedDlls)) + ". " +
+            (disabledDlls.Count == 0 ? "No declared DLLs excluded." :
+                "Excluded " + string.Join(", ", disabledDlls) + ". ") +
+            "Dedicated-server active DLLs: " +
+            (serverDlls.Length == 0 ? "none enabled" : "enabled " + string.Join(", ", serverDlls)) + ". " +
+            "Selected client-only DLLs remain server-suppressed: " +
+            (selectedDlls.Where(dllName => Europe1700ClientOnlyDlls.Contains(
+                    dllName,
+                    StringComparer.OrdinalIgnoreCase)).Any()
+                ? string.Join(", ", selectedDlls.Where(dllName => Europe1700ClientOnlyDlls.Contains(
+                    dllName,
+                    StringComparer.OrdinalIgnoreCase)))
+                : "none") + ".");
+        if (clansEnabled || serverDlls.Contains(
+                "Bannerlord.EOEPatches.dll",
+                StringComparer.OrdinalIgnoreCase))
+        {
+            warnings.Add(
+                "Selected EOE authority adapters remain role-scoped: ClansResourceAdder mutations are server-only " +
+                "and EOEPatches' music/UI startup hook is client-only. Real join, save, reconnect, campaign tick, " +
+                "and field/siege battle tests remain required.");
+        }
         warnings.Add(
             "EOE client animation TPACs crash Bannerlord's no-render asset loader. The server projection keeps " +
             "all 24 EOE action IDs, maps their visual animations to Native headless equivalents, and " +
@@ -1082,13 +1106,19 @@ public sealed class CoopCompatibilityPatcher
             "legacy NPC equipment-type, and invalid equipment-slot overlays. EOE files remain unchanged. " +
             "Firearm alternate melee modes are retained through a reversible server Items.xsd correction, " +
             "which must validate the complete EOE items_guns.xml before installation.");
-        warnings.Add(
-            "BattleArtilleryReworked references StoryMode.CampaignStoryMode while EOE declares no StoryMode " +
-            "dependency and the dedicated-server package omits StoryMode.dll. BCS locates the installed official " +
-            "StoryMode binary for both role-specific resolvers; no official game files are copied or redistributed.");
-        warnings.Add(
-            "ClansResourceAdder resolves conf_clans_resource_adder.xml beside its loaded assembly. BCS validates and " +
-            "projects the EOE-supplied configuration into the server bin so campaign initialization does not fail.");
+        if (artilleryEnabled)
+        {
+            warnings.Add(
+                "BattleArtilleryReworked references StoryMode.CampaignStoryMode while EOE declares no StoryMode " +
+                "dependency and the dedicated-server package omits StoryMode.dll. BCS locates the installed official " +
+                "StoryMode binary for both role-specific resolvers; no official game files are copied or redistributed.");
+        }
+        if (clansEnabled)
+        {
+            warnings.Add(
+                "ClansResourceAdder resolves conf_clans_resource_adder.xml beside its loaded assembly. BCS validates and " +
+                "projects the EOE-supplied configuration into the server bin so campaign initialization does not fail.");
+        }
         warnings.Add(
             "The released dedicated server selects Sandbox's settlement distance cache even while EOE's Main_map " +
             "is active. The generated bridge redirects only that server cache read to EOE's cache; " +
@@ -1572,15 +1602,22 @@ public sealed class CoopCompatibilityPatcher
 
     private static void AddEurope1700ManagedDependencyProfile(
         string modulesRoot,
-        string storyModeBin,
-        string storyModeHash,
+        string? storyModeBin,
+        string? storyModeHash,
         ICollection<PendingChange> proposed)
     {
+        if ((storyModeBin is null) != (storyModeHash is null))
+            throw new InvalidDataException("EOE StoryMode dependency profile input is incomplete.");
+
         var serverRoot = Directory.GetParent(Directory.GetParent(modulesRoot)!.FullName)!.FullName;
         var profilePath = Path.Combine(
             serverRoot,
             DedicatedServerLaunchBuilder.ManagedDependencyProfileFileName);
-        var profile = File.Exists(profilePath)
+        var profileExists = File.Exists(profilePath);
+        if (!profileExists && storyModeBin is null)
+            return;
+
+        var profile = profileExists
             ? JsonSerializer.Deserialize<GeneratedManagedDependencyProfile>(
                   File.ReadAllText(profilePath, Utf8NoBom),
                   JsonOptions())
@@ -1595,18 +1632,21 @@ public sealed class CoopCompatibilityPatcher
 
         profile.Directories.RemoveAll(entry => entry.RequiredFiles.Any(file =>
             file.Name.Equals("StoryMode.dll", StringComparison.OrdinalIgnoreCase)));
-        profile.Directories.Add(new GeneratedManagedDependencyDirectory
+        if (storyModeBin is not null)
         {
-            Path = Path.GetFullPath(storyModeBin),
-            RequiredFiles =
-            [
-                new GeneratedManagedDependencyFile
-                {
-                    Name = "StoryMode.dll",
-                    Sha256 = storyModeHash
-                }
-            ]
-        });
+            profile.Directories.Add(new GeneratedManagedDependencyDirectory
+            {
+                Path = Path.GetFullPath(storyModeBin),
+                RequiredFiles =
+                [
+                    new GeneratedManagedDependencyFile
+                    {
+                        Name = "StoryMode.dll",
+                        Sha256 = storyModeHash!
+                    }
+                ]
+            });
+        }
 
         var bytes = Utf8NoBom.GetBytes(
             JsonSerializer.Serialize(profile, JsonOptions()) + Environment.NewLine);
@@ -1614,7 +1654,9 @@ public sealed class CoopCompatibilityPatcher
             proposed,
             profilePath,
             bytes,
-            "Register Bannerlord StoryMode runtime for EOE artillery on the dedicated server");
+            storyModeBin is null
+                ? "Remove the EOE artillery StoryMode runtime registration"
+                : "Register Bannerlord StoryMode runtime for EOE artillery on the dedicated server");
     }
 
     private static void AddEurope1700TrebuchetPrefabTransformation(
@@ -1935,6 +1977,7 @@ public sealed class CoopCompatibilityPatcher
         bool addCoopOrdering,
         IReadOnlyCollection<string> enableDllNames,
         ICollection<PendingChange> proposed,
+        IReadOnlyCollection<string>? disableDllNames = null,
         bool suppressSubModules = false,
         XmlDocument? sourceManifest = null)
     {
@@ -1974,22 +2017,29 @@ public sealed class CoopCompatibilityPatcher
             existing.SetAttribute("Optional", "true");
         }
 
-        foreach (var enableDllName in enableDllNames)
+        disableDllNames ??= Array.Empty<string>();
+        var disabledSet = disableDllNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (enableDllNames.Any(disabledSet.Contains))
+            throw new InvalidDataException("A server submodule DLL cannot be both enabled and disabled.");
+
+        foreach (var dllName in enableDllNames
+                     .Concat(disableDllNames)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var submodules = root.SelectNodes("./SubModules/SubModule")!
                 .OfType<XmlElement>()
                 .Where(element =>
-                    Value(element, "DLLName").Equals(enableDllName, StringComparison.OrdinalIgnoreCase))
+                    Value(element, "DLLName").Equals(dllName, StringComparison.OrdinalIgnoreCase))
                 .ToArray();
             if (submodules.Length == 0)
                 throw new InvalidDataException(
-                    $"Manifest does not declare expected server submodule '{enableDllName}': {manifestPath}");
+                    $"Manifest does not declare expected server submodule '{dllName}': {manifestPath}");
 
             foreach (var submodule in submodules)
             {
                 var tags = submodule.ChildNodes.OfType<XmlElement>().FirstOrDefault(element =>
                     element.LocalName.Equals("Tags", StringComparison.OrdinalIgnoreCase));
-                if (suppressSubModules)
+                if (suppressSubModules || disabledSet.Contains(dllName))
                 {
                     if (tags is null)
                     {
@@ -2211,7 +2261,9 @@ public sealed class CoopCompatibilityPatcher
         IReadOnlyList<BridgeClientAssemblyResolve>? clientAssemblyResolves = null,
         IReadOnlyList<BridgeServerMapTerrainSize>? serverMapTerrainSizes = null,
         IReadOnlyList<BridgeRuntimeFeature>? runtimeFeatures = null,
-        string campaignSaveDescription = "campaign")
+        string campaignSaveDescription = "campaign",
+        IReadOnlyList<BridgeDisabledSubModule>? disabledSubModules = null,
+        IReadOnlyList<BridgeClientOnlySubModule>? clientOnlySubModules = null)
     {
         var compatibleModules = installedModules
             .Where(module => module.IsInstalled &&
@@ -2237,7 +2289,9 @@ public sealed class CoopCompatibilityPatcher
             gameVersionCompatibility: CreateGameVersionCompatibility(serverRoot),
             clientAssemblyResolves: clientAssemblyResolves,
             serverMapTerrainSizes: serverMapTerrainSizes,
-            runtimeFeatures: runtimeFeatures);
+            runtimeFeatures: runtimeFeatures,
+            disabledSubModules: disabledSubModules,
+            clientOnlySubModules: clientOnlySubModules);
         var bridgeRoot = Path.Combine(
             serverRoot,
             "engine",
@@ -2286,6 +2340,15 @@ public sealed class CoopCompatibilityPatcher
             $"Every client must install the generated package bcs-client-packages\\{package.ModuleId}.zip. " +
             "Coop will reject a different bridge module ID/version, and the bridge requires the declared module paths " +
             "and managed assembly identities at startup.");
+        if (package.DisabledSubModules.Count > 0)
+        {
+            warnings.Add(
+                "Before launching each client, remove or comment these DLL declarations from the matching client " +
+                "mod SubModule.xml: " +
+                string.Join(", ", package.DisabledSubModules.Select(value =>
+                    value.ModuleId + "/" + value.DllName)) +
+                ". The generated package does not overwrite client Workshop manifests and fails closed if one remains active.");
+        }
         warnings.Add(
             $"The bridge never creates or repairs campaign state. Select an existing {campaignSaveDescription} save before starting " +
             "the server; missing-save handling remains owned by Bannerlord Coop.");
@@ -3042,30 +3105,128 @@ public sealed class CoopCompatibilityPatcher
 
     private static IEnumerable<string> DeclaredDllNames(XmlDocument document)
     {
-        var names = document.SelectNodes("/Module/SubModules/SubModule/DLLName")!
-            .OfType<XmlElement>()
-            .Select(element => element.GetAttribute("value"))
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .ToArray();
-        foreach (var name in names)
+        var names = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var element in document
+                     .SelectNodes("/Module/SubModules/SubModule/DLLName")!
+                     .OfType<XmlElement>())
         {
+            var name = element.GetAttribute("value");
             if (!Path.GetFileName(name).Equals(name, StringComparison.Ordinal) ||
-                !Path.GetExtension(name).Equals(".dll", StringComparison.OrdinalIgnoreCase))
+                !Path.GetExtension(name).Equals(".dll", StringComparison.OrdinalIgnoreCase) ||
+                !name.Equals(name.Trim(), StringComparison.Ordinal) ||
+                name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
             {
                 throw new InvalidDataException($"Unsafe declared DLL name: {name}");
             }
+            if (!seen.Add(name))
+                throw new InvalidDataException($"Duplicate declared DLL name: {name}");
+            names.Add(name);
         }
         return names;
+    }
+
+    private static (
+        IReadOnlyList<string> Selected,
+        IReadOnlyList<string> Disabled) ResolveBridgeDllSelection(
+        BannerlordModule module,
+        BridgeDllSelection? selection)
+    {
+        var manifest = LoadManifest(Path.Combine(module.Path, "SubModule.xml"));
+        var declared = DeclaredDllNames(manifest).ToArray();
+        if (selection is null)
+            return (declared, Array.Empty<string>());
+
+        if (!selection.ModuleId.Equals(module.Id, StringComparison.OrdinalIgnoreCase) ||
+            !selection.ModuleVersion.Equals(module.Version, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "The bridge DLL selection belongs to a different module or module version.");
+        }
+
+        var available = selection.AvailableDllNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (available.Count != declared.Length ||
+            declared.Any(dllName => !available.Contains(dllName)))
+        {
+            throw new InvalidDataException(
+                $"The declared DLL set changed after bridge options were selected for {module.Id}. " +
+                "Reopen Bridge DLL Options and review the current manifest.");
+        }
+
+        var selected = declared
+            .Where(selection.IsSelected)
+            .ToArray();
+        if (selected.Length != selection.SelectedDllNames.Count)
+        {
+            throw new InvalidDataException(
+                $"The bridge DLL selection contains an undeclared DLL for {module.Id}.");
+        }
+
+        return (
+            selected,
+            declared.Where(dllName => !selection.IsSelected(dllName)).ToArray());
     }
 
     internal static IReadOnlyList<string> SelectEurope1700ServerDlls(XmlDocument manifest)
     {
         ArgumentNullException.ThrowIfNull(manifest);
-        var declaredDlls = DeclaredDllNames(manifest)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return Europe1700RequiredServerDlls
-            .Concat(Europe1700OptionalServerDlls.Where(declaredDlls.Contains))
+        return DeclaredDllNames(manifest)
+            .Where(dllName => !Europe1700ClientOnlyDlls.Contains(
+                dllName,
+                StringComparer.OrdinalIgnoreCase))
             .ToArray();
+    }
+
+    private static (
+        IReadOnlyList<string> Enabled,
+        IReadOnlyList<string> Disabled) ValidateEurope1700DllSelection(
+        XmlDocument manifest,
+        IReadOnlyCollection<string>? selectedDllNames,
+        IReadOnlyCollection<string>? disabledDllNames)
+    {
+        var declared = DeclaredDllNames(manifest).ToArray();
+        var declaredSet = declared.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        static HashSet<string> ValidateSubset(
+            IReadOnlyCollection<string> values,
+            IReadOnlySet<string> declaredValues,
+            string description)
+        {
+            var result = values.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (result.Count != values.Count)
+                throw new InvalidDataException($"EOE {description} DLL selection contains duplicates.");
+            var unknown = result.FirstOrDefault(value => !declaredValues.Contains(value));
+            if (unknown is not null)
+            {
+                throw new InvalidDataException(
+                    $"EOE {description} DLL selection is not declared by the module: {unknown}");
+            }
+            return result;
+        }
+
+        var disabledSet = disabledDllNames is null
+            ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            : ValidateSubset(disabledDllNames, declaredSet, "disabled");
+        var enabledSet = selectedDllNames is null
+            ? declaredSet.Where(value => !disabledSet.Contains(value))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : ValidateSubset(selectedDllNames, declaredSet, "enabled");
+        if (disabledDllNames is null)
+        {
+            disabledSet = declaredSet.Where(value => !enabledSet.Contains(value))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        if (enabledSet.Overlaps(disabledSet) ||
+            enabledSet.Count + disabledSet.Count != declaredSet.Count)
+        {
+            throw new InvalidDataException(
+                "EOE enabled and disabled DLL selections must form an exact partition of declared DLLs.");
+        }
+
+        return (
+            declared.Where(enabledSet.Contains).ToArray(),
+            declared.Where(disabledSet.Contains).ToArray());
     }
 
     private static string? FindDeclaredDll(string modulePath, string dllName)

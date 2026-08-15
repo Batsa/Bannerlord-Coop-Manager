@@ -42,6 +42,7 @@ public partial class ModManagerWindow : Window
         DataContext = viewModel;
         _viewModel.CompatibilityReportReady += ShowCompatibilityReport;
         _viewModel.BridgeInstallationCompleted += CompleteBridgeInstallation;
+        _viewModel.BridgeDllSelectionRequested += ShowBridgeDllSelection;
         _viewModel.BridgePopulationSettingsRequested += ShowBridgePopulationSettings;
     }
 
@@ -83,6 +84,35 @@ public partial class ModManagerWindow : Window
         }
     }
 
+    private void ShowBridgeDllSelection(BridgeDllSelection selection)
+    {
+        try
+        {
+            var displayName = _viewModel.SelectedModule?.Name ?? selection.ModuleId;
+            var window = new BridgeDllSelectionWindow(
+                displayName,
+                selection.AvailableDllNames,
+                selection.SelectedDllNames)
+            {
+                Owner = this
+            };
+            if (window.ShowDialog() == true)
+            {
+                _viewModel.ApplyBridgeDllSelection(
+                    selection.WithSelectedDllNames(window.SelectedDllNames));
+            }
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "Could Not Apply Bridge DLL Options",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
         await _viewModel.InitializeAsync();
@@ -94,6 +124,7 @@ public partial class ModManagerWindow : Window
         {
             _viewModel.CompatibilityReportReady -= ShowCompatibilityReport;
             _viewModel.BridgeInstallationCompleted -= CompleteBridgeInstallation;
+            _viewModel.BridgeDllSelectionRequested -= ShowBridgeDllSelection;
             _viewModel.BridgePopulationSettingsRequested -= ShowBridgePopulationSettings;
             return;
         }
@@ -112,6 +143,7 @@ public partial class ModManagerWindow : Window
         _allowClose = true;
         _viewModel.CompatibilityReportReady -= ShowCompatibilityReport;
         _viewModel.BridgeInstallationCompleted -= CompleteBridgeInstallation;
+        _viewModel.BridgeDllSelectionRequested -= ShowBridgeDllSelection;
         _viewModel.BridgePopulationSettingsRequested -= ShowBridgePopulationSettings;
     }
 

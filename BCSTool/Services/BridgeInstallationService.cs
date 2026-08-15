@@ -16,6 +16,7 @@ public sealed class BridgeInstallationService
 
     private readonly ModuleScanner _moduleScanner;
     private readonly CoopCompatibilityPatcher _compatibilityPatcher;
+    private readonly BridgeDllSelectionService _bridgeDllSelectionService;
     private readonly Func<
         BannerlordModule,
         IReadOnlyList<BannerlordModule>,
@@ -36,10 +37,12 @@ public sealed class BridgeInstallationService
             BannerlordModule,
             IReadOnlyList<BannerlordModule>,
             string,
-            BridgeInstallationResult>? installOrUpdate)
+            BridgeInstallationResult>? installOrUpdate,
+        BridgeDllSelectionService? bridgeDllSelectionService = null)
     {
         _moduleScanner = moduleScanner;
         _compatibilityPatcher = compatibilityPatcher;
+        _bridgeDllSelectionService = bridgeDllSelectionService ?? new BridgeDllSelectionService();
         _installOrUpdate = installOrUpdate ?? InstallOrUpdate;
     }
 
@@ -57,9 +60,20 @@ public sealed class BridgeInstallationService
         IReadOnlyList<BannerlordModule> installedModules,
         string serverRoot)
     {
+        var selection = ResolveDllSelection(module, installedModules, serverRoot);
+        return InstallOrUpdate(module, installedModules, serverRoot, selection);
+    }
+
+    public BridgeInstallationResult InstallOrUpdate(
+        BannerlordModule module,
+        IReadOnlyList<BannerlordModule> installedModules,
+        string serverRoot,
+        BridgeDllSelection bridgeDllSelection)
+    {
         ArgumentNullException.ThrowIfNull(module);
         ArgumentNullException.ThrowIfNull(installedModules);
         ArgumentException.ThrowIfNullOrWhiteSpace(serverRoot);
+        ArgumentNullException.ThrowIfNull(bridgeDllSelection);
 
         if (!IsKnownRecipe(module))
         {
@@ -67,10 +81,14 @@ public sealed class BridgeInstallationService
                 $"No generated bridge recipe is available for module '{module.Id}'.");
         }
 
+        var validatedSelection = _bridgeDllSelectionService.ValidateCurrentManifest(
+            module,
+            bridgeDllSelection);
         var plan = _compatibilityPatcher.CreatePlan(
             module,
             installedModules,
-            serverRoot);
+            serverRoot,
+            validatedSelection);
         if (plan.Blockers.Count > 0)
         {
             throw new InvalidDataException(
@@ -97,6 +115,17 @@ public sealed class BridgeInstallationService
             ClientPackagePath: clientPackage,
             BackupDirectory: applied.BackupDirectory);
     }
+
+    public BridgeDllSelection ResolveDllSelection(
+        BannerlordModule module,
+        IReadOnlyList<BannerlordModule> installedModules,
+        string serverRoot) =>
+        _bridgeDllSelectionService.Resolve(module, installedModules, serverRoot);
+
+    public BridgeDllSelection ValidateCurrentDllSelection(
+        BannerlordModule module,
+        BridgeDllSelection selection) =>
+        _bridgeDllSelectionService.ValidateCurrentManifest(module, selection);
 
     /// <summary>
     /// Repairs bridge-owned files before process creation when a supported

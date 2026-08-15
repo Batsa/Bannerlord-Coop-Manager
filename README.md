@@ -13,7 +13,7 @@ logging, and a version-scoped compatibility path for **Empires of Europe 1700
 
 > Current application version: `0.3.0-beta.7`
 >
-> Current generated bridge runtime: `0.6.67`
+> Current generated bridge runtime: `0.6.68`
 >
 > Upstream base: [`AppleDeath318/BCSTool@f7bc05c`](https://github.com/AppleDeath318/BCSTool/commit/f7bc05c672dad169663f9c8b245e5b01b5422742)
 
@@ -32,7 +32,7 @@ release**.
 | EOE server startup and client join | Demonstrated in the prior hand test |
 | EOE 1696x1696 map/weather correction | Hand-tested; observed weather/MapEvent index failures stopped |
 | Ordinary Coop battles | Multiple battles completed in the prior hand test |
-| Bridge `0.6.67` recipe-scoped runtime features, character-creation lifecycle repair, overlays, registry/population/workshop-cache fixes, and semantic runtime-version compatibility | Built and regression-tested; live hand retest pending |
+| Bridge `0.6.68` recipe-scoped runtime features, per-DLL selection, character-creation lifecycle repair, overlays, registry/population/workshop-cache fixes, and semantic runtime-version compatibility | Built and regression-tested; live hand retest pending |
 | Optional caravan/villager/bandit population controls | Implemented as server-only soft limits; live campaign retest pending |
 | World-map client movement | Still under investigation; teleporting/stalls were observed |
 | Save/reconnect, late join, and long-duration acceptance | Not yet proven on the final build |
@@ -52,7 +52,7 @@ The current EOE path was developed and tested against:
 | Bannerlord Coop | `0.1.2` |
 | Empires of Europe 1700 | `1.4.7.1` |
 | Dedicated-server game runtime | `1.4.8` |
-| Generated bridge | `0.6.67` |
+| Generated bridge | `0.6.68` |
 
 These are supported compatibility versions, not floating minimum versions. The
 bridge installation validates versions, required files, paths, assembly identities,
@@ -137,11 +137,14 @@ For the mod-list portion of setup, the complete supported workflow is exactly:
 2. Open **Server Mods**.
 3. Drag the supported overhaul's module folder—the folder containing
    `SubModule.xml`—onto the module list.
-4. Click **Prepare / Install Bridge**.
+4. Optional: select the overhaul and click **Bridge DLL Options**. Every DLL
+   actively declared in its `SubModule.xml` is selected on a fresh install; use
+   individual checkboxes, **Select All**, or **Clear All**.
+5. Click **Prepare / Install Bridge**.
 
 The drop itself is consent to import the server copy. The button is
 consent to perform the backed-up bridge operation. There are no routine
-confirmation dialogs and no required Analyze, checkbox, reorder, or Save Load
+confirmation dialogs and no required DLL-options, Analyze, reorder, or Save Load
 Order step. On success the Server Mods window closes, the main status reports
 readiness, the Bannerlord Coop Manager Console records the matching client ZIP path, and the
 next server action can be **Start** after the campaign save is selected/imported.
@@ -151,7 +154,8 @@ projections under `Europe1700\bin\Win64_Shipping_Server`, the
 `conf_clans_resource_adder.xml` projection beside `ClansResourceAdder.dll`,
 headless XML overlays, the server load-order profile, the generated bridge
 module, and its matching client ZIP. Start runs the same recipe as a preflight
-and repairs missing bridge-owned projections before launching Bannerlord.
+  and repairs missing bridge-owned projections with the installed DLL selection
+  before launching Bannerlord.
 Existing module folders are never silently replaced. For a clean or freshly
 created server Modules directory, the supported overhaul setup remains exactly
 the two actions above.
@@ -199,10 +203,25 @@ imported dedicated-server EOE copy receives backed-up manifest/headless-file
 transformations; bridge-owned overlays and projections are recorded in the backup manifest.
 **Revert Bridge Install** restores the latest recorded installation.
 
-`RF_BattleAI.dll` and `EOE.CustomBattlePatch.dll` are optional. Bridge install
-projects either DLL only while its submodule is actively declared in EOE's
-`SubModule.xml`. Commenting out, removing, or disabling that declaration keeps
-the DLL out of the server projection even when a loose copy remains on disk.
+Every DLL actively declared by the selected overhaul is available in **Bridge
+DLL Options**, including `RF_BattleAI.dll` and `EOE.CustomBattlePatch.dll` when
+those declarations exist, and all declarations are selected by default. Disabled DLLs are omitted from bridge `MODULE`
+requirements and server projection, and their server declarations receive the
+dedicated/no-render suppression tags. The exact selection is part of the bridge
+identity and generated client package. Reinstalling with a different selection
+therefore creates a different bridge ID, and the normal backup/revert operation
+restores the prior manifest and bridge configuration.
+
+EOE's selected `BannerColorPersistence.dll` keeps its existing client-only role:
+it remains included for clients and suppressed on the dedicated server. Clearing
+its checkbox turns it into a global exclusion like any other DLL.
+
+The client ZIP intentionally does not overwrite a Workshop mod's
+`SubModule.xml`. Before launching each client, remove or comment the same
+disabled DLL declarations in that client's mod manifest. Bridge `0.6.68` checks
+this policy on both roles and rejects an active mismatch; because the target mod
+loads before the bridge, that check cannot undo behavior from a DLL that the
+client already started.
 
 ### Optional bridge population settings
 
@@ -407,7 +426,7 @@ player-identifying information.
   the last hand test. New diagnostics can determine whether party
   disorganization or missing TroopRoster registration contributes, but no
   speculative movement rewrite has been added.
-- The `0.6.67` bridge targets proven server `Failed to get ID` roots: orphaned
+- The `0.6.68` bridge targets proven server `Failed to get ID` roots: orphaned
   load-time party visuals, headless map-event visuals, deterministic loaded-Armies,
   nullable Army targets, pre-registration PartyComponent links, and synthetic
   workshop warehouse-roster copies. The previous log also contained a separate
@@ -447,7 +466,7 @@ dotnet build .\BCSTool.sln -c Release --no-restore
 dotnet run --project .\BCSTool.RegressionTests\BCSTool.RegressionTests.csproj -c Release --no-build
 ```
 
-The regression runner currently contains 60 named checks and finishes with:
+The regression runner currently contains 62 named checks and finishes with:
 
 ```text
 All Bannerlord Coop Manager regression checks passed.

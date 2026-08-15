@@ -478,6 +478,7 @@ Run("invalid enabled load order blocks server launch", TestInvalidManagedModuleL
 Run("ConPTY quotes Windows arguments safely", TestConPtyArgumentQuoting);
 Run("managed engine console logging is lossless and rotated", TestServerConsoleLogWriter);
 Run("bridge installation recipe and start preflight are scoped", BridgeInstallationRegression.Run);
+Run("bridge DLL selection defaults and migration are fail-closed", BridgeDllSelectionRegression.Run);
 Run("bridge population settings are scoped, strict, and identity-neutral", BridgePopulationSettingsRegression.Run);
 Run("applied content-only module replans without pending state", TestAppliedContentModuleReplansAsNoOp);
 Run("content compatibility prepare and revert are lossless", TestContentCompatibilityPrepareAndRevert);
@@ -491,6 +492,7 @@ Run("bridge builder rejects linked module roots and bins", TestBridgeBuilderReje
 Run("bridge builder rejects module DLL identity mismatch", TestBridgeBuilderRejectsAssemblyIdentityMismatch);
 Run("bridge builder ignores native support DLLs", TestBridgeBuilderIgnoresNativeSupportDll);
 Run("non-Coop bridge records only declared DLLs", TestBridgeBuilderOmitsUndeclaredManagedSidecars);
+Run("bridge DLL exclusions are strict, deterministic, and identity-bound", TestBridgeDllExclusions);
 Run("bridge game-version compatibility is version-scoped", TestBridgeGameVersionCompatibility);
 Run("ModuleManager semantic game revisions are observed fail closed", TestModuleManagerSemanticRevisionReader);
 Run("bridge authority rules are module-bound", TestBridgeAuthorityRuleConfiguration);
@@ -509,7 +511,7 @@ Run("EOE headless action types repair the bomb reload ID", TestEurope1700Headles
 Run("EOE malformed trebuchet prefab receives exact syntax repair", TestEurope1700TrebuchetPrefabRepair);
 Run("EOE repeated Weapon schema repair is semantic and fail closed", TestEurope1700ItemsSchemaRepair);
 Run("EOE dedicated-server schema repairs are exact and fail closed", TestEurope1700SchemaRepairs);
-Run("EOE optional server DLLs follow active manifest declarations", TestEurope1700OptionalServerDllSelection);
+Run("EOE server DLL roles preserve client-only policy", TestEurope1700OptionalServerDllSelection);
 Run("compatibility rules accept only verified Coop releases", TestSupportedReleasedCoopVersions);
 Run("campaign save discovery hides Coop-owned backup generations", TestCampaignSaveDiscovery);
 Run("launcher delegates campaign save backups to Coop", TestLauncherDelegatesCampaignBackupsToCoop);
@@ -809,6 +811,58 @@ void VerifyRuntimeModuleAssemblyValidation(byte[] bridgeAssembly)
                 "System.Reflection.AssemblyName::GetAssemblyName",
                 StringComparison.Ordinal)),
         "Runtime module-assembly validation lost managed simple-identity inspection.");
+}
+
+void VerifyRuntimeResolverSimpleNameValidation(byte[] bridgeAssembly)
+{
+    using (var stream = new MemoryStream(bridgeAssembly, writable: false))
+    using (var pe = new PEReader(stream))
+    {
+        var metadata = pe.GetMetadataReader();
+        var bridgeRuntimeHandle = metadata.TypeDefinitions.Single(handle =>
+            DescribeTypeDefinition(metadata, metadata.GetTypeDefinition(handle)) ==
+            "BCS.CoopBridge.BridgeRuntime");
+        var bridgeRuntime = metadata.GetTypeDefinition(bridgeRuntimeHandle);
+        MethodDefinitionHandle FindMethod(string name) => bridgeRuntime.GetMethods().Single(handle =>
+            metadata.GetString(metadata.GetMethodDefinition(handle).Name) == name);
+
+        var validatePackageHandle = FindMethod("ValidateInstalledPackage");
+        var registerNameHandle = FindMethod("RegisterClientAssemblyResolverSimpleName");
+        var packageBody = pe.GetMethodBody(
+            metadata.GetMethodDefinition(validatePackageHandle).RelativeVirtualAddress);
+        var packageCalls = ReadInlineMethodTokens(
+            packageBody.GetILBytes() ?? throw new InvalidDataException(
+                "Packaged bridge validation has no IL body."),
+            metadata);
+        Assert(packageCalls.Contains(MetadataTokens.GetToken(registerNameHandle)),
+            "Runtime parser does not validate resolver simple-name ownership.");
+    }
+
+    var runtimeAssembly = Assembly.Load(bridgeAssembly);
+    var runtimeType = runtimeAssembly.GetType("BCS.CoopBridge.BridgeRuntime", throwOnError: true)!;
+    var registerName = runtimeType.GetMethod(
+        "RegisterClientAssemblyResolverSimpleName",
+        BindingFlags.Static | BindingFlags.NonPublic) ??
+        throw new MissingMethodException(
+            runtimeType.FullName,
+            "RegisterClientAssemblyResolverSimpleName");
+    var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    registerName.Invoke(null, [names, "bin/First/SharedRuntime.dll"]);
+    var duplicateRejected = false;
+    try
+    {
+        registerName.Invoke(null, [names, "bin/Second/sharedruntime.dll"]);
+    }
+    catch (TargetInvocationException exception) when (
+        exception.InnerException is InvalidDataException invalidData &&
+        invalidData.Message.Contains(
+            "Duplicate client assembly resolver simple name",
+            StringComparison.Ordinal))
+    {
+        duplicateRejected = true;
+    }
+    Assert(duplicateRejected,
+        "Runtime parser accepted duplicate client resolver simple names.");
 }
 
 IReadOnlyList<int> ReadInlineMethodTokens(byte[] bytes, MetadataReader metadata)
@@ -1280,6 +1334,7 @@ void TestEurope1700OptionalServerDllSelection()
 {
     const string customBattle = "EOE.CustomBattlePatch.dll";
     const string rfBattleAi = "RF_BattleAI.dll";
+    const string clientOnly = "BannerColorPersistence.dll";
     var required = new[]
     {
         "XMLMeleePatch.dll",
@@ -1326,7 +1381,8 @@ void TestEurope1700OptionalServerDllSelection()
     void Verify(string optionalXml, string[] expected, string scenario)
     {
         var manifest = new XmlDocument { XmlResolver = null };
-        manifest.LoadXml($"<Module><SubModules>{optionalXml}</SubModules></Module>");
+        var requiredXml = string.Concat(required.Select(SubModule)) + SubModule(clientOnly);
+        manifest.LoadXml($"<Module><SubModules>{requiredXml}{optionalXml}</SubModules></Module>");
         var actual = CoopCompatibilityPatcher.SelectEurope1700ServerDlls(manifest);
         Assert(actual.SequenceEqual(expected, StringComparer.OrdinalIgnoreCase),
             $"EOE {scenario} selected [{string.Join(", ", actual)}], expected [{string.Join(", ", expected)}].");
@@ -2738,6 +2794,31 @@ void TestGenericBridgePackage()
                 clientAssemblyResolves: [resolver with { Sha256 = string.Empty }]);
             Assert(resolverWithoutHash.ClientAssemblyResolves.Count == 1,
                 "Bridge rejected an identity-valid client assembly resolver without a byte pin.");
+            var alternateExternalModule = CreateModule(
+                modulesDirectory,
+                "AlternateExternalRuntime",
+                "v1.0.0");
+            var alternateExternalBin = Path.Combine(
+                alternateExternalModule,
+                "bin",
+                "Win64_Shipping_Client");
+            Directory.CreateDirectory(alternateExternalBin);
+            var alternateExternalAssembly = Path.Combine(
+                alternateExternalBin,
+                "BCSTool.RegressionTests.dll");
+            File.Copy(
+                typeof(RegressionCampaignBehavior).Assembly.Location,
+                alternateExternalAssembly);
+            var duplicateSimpleNameResolver = new BridgeClientAssemblyResolve(
+                "AlternateExternalRuntime",
+                "bin/Win64_Shipping_Client/BCSTool.RegressionTests.dll",
+                externalHash,
+                alternateExternalAssembly);
+            AssertThrowsInvalidData(
+                () => packageBuilder.Build(
+                    inputs,
+                    clientAssemblyResolves: [resolver, duplicateSimpleNameResolver]),
+                "Bridge accepted duplicate client resolver simple names across module roots.");
 
             Assert(first.ModuleId == second.ModuleId,
                 "Bridge ID changed when equivalent inputs were reordered.");
@@ -2967,6 +3048,8 @@ void TestGenericBridgePackage()
             }
             VerifyRuntimeModuleAssemblyValidation(first.Assembly);
             VerifyRuntimeModuleAssemblyValidation(first.ClientAssembly);
+            VerifyRuntimeResolverSimpleNameValidation(first.Assembly);
+            VerifyRuntimeResolverSimpleNameValidation(first.ClientAssembly);
 
             File.WriteAllText(
                 Path.Combine(contentPath, "ModuleData", "content.xml"),
@@ -3215,6 +3298,152 @@ void TestBridgeBuilderOmitsUndeclaredManagedSidecars()
             Assert(baseline.Configuration.SequenceEqual(withSidecar.Configuration) &&
                    withSidecar.Configuration.SequenceEqual(withChangedSidecar.Configuration),
                 "Undeclared managed sidecar bytes changed bridge configuration.");
+        });
+}
+
+void TestBridgeDllExclusions()
+{
+    WithTemporaryModules(
+        (_, modulesDirectory) =>
+        {
+            var moduleRoot = CreateModule(
+                modulesDirectory,
+                "SelectableModule",
+                "v1.0.0",
+                declaredDll: "First.dll");
+            var manifestPath = Path.Combine(moduleRoot, "SubModule.xml");
+            var manifest = File.ReadAllText(manifestPath);
+            manifest = manifest.Replace(
+                "</SubModules>",
+                """
+                  <SubModule>
+                    <Name value="Second" />
+                    <DLLName value="Second.dll" />
+                    <SubModuleClassType value="Second.SubModule" />
+                  </SubModule>
+                </SubModules>
+                """,
+                StringComparison.Ordinal);
+            File.WriteAllText(manifestPath, manifest);
+
+            var bin = Path.Combine(moduleRoot, "bin", "Win64_Shipping_Client");
+            Directory.CreateDirectory(bin);
+            WriteManagedAssembly(Path.Combine(bin, "First.dll"), "First");
+            WriteManagedAssembly(Path.Combine(bin, "Second.dll"), "Second");
+            var module = new ModuleScanner().Scan(modulesDirectory).Single();
+            var builder = new CoopBridgePackageBuilder();
+            var baseline = builder.Build([module]);
+            var disabled = builder.Build(
+                [module],
+                disabledSubModules: [new BridgeDisabledSubModule("SelectableModule", "Second.dll")]);
+            var normalized = builder.Build(
+                [module],
+                disabledSubModules: [new BridgeDisabledSubModule("selectablemodule", "second.DLL")]);
+            var clientOnly = builder.Build(
+                [module],
+                clientOnlySubModules:
+                [new BridgeClientOnlySubModule("selectablemodule", "second.DLL")]);
+
+            Assert(disabled.DisabledSubModules.SequenceEqual(
+                    [new BridgeDisabledSubModule("SelectableModule", "Second.dll")]),
+                "Bridge did not canonicalize its disabled DLL record.");
+            Assert(disabled.ModuleRecords.Any(record => record.DllName == "First.dll") &&
+                   disabled.ModuleRecords.All(record => record.DllName != "Second.dll"),
+                "Disabled DLL remained in bridge module records.");
+            Assert(System.Text.Encoding.UTF8.GetString(disabled.Configuration)
+                    .Contains("DISABLED_SUBMODULE|", StringComparison.Ordinal),
+                "Disabled DLL was not serialized into bridge configuration.");
+            Assert(disabled.ModuleId != baseline.ModuleId,
+                "DLL selection did not affect bridge package identity.");
+            Assert(disabled.ModuleId == normalized.ModuleId &&
+                   disabled.Configuration.SequenceEqual(normalized.Configuration),
+                "Equivalent DLL selections were not canonical and deterministic.");
+            Assert(clientOnly.ClientOnlySubModules.SequenceEqual(
+                       [new BridgeClientOnlySubModule("SelectableModule", "Second.dll")]) &&
+                   clientOnly.ModuleRecords.Single(record => record.DllName == "Second.dll").Sha256 ==
+                   CoopBridgePackageBuilder.ClientOnlyModuleMarker &&
+                   System.Text.Encoding.UTF8.GetString(clientOnly.Configuration)
+                       .Contains("|CLIENT_ONLY\n", StringComparison.Ordinal),
+                "Bridge did not preserve a selected client-only DLL role in its identity configuration.");
+            var secondPath = Path.Combine(bin, "Second.dll");
+            var secondResolver = new BridgeClientAssemblyResolve(
+                "SelectableModule",
+                "bin/Win64_Shipping_Client/Second.dll",
+                string.Empty,
+                secondPath);
+            builder.Build(
+                [module],
+                clientAssemblyResolves: [secondResolver],
+                clientOnlySubModules:
+                [new BridgeClientOnlySubModule("SelectableModule", "Second.dll")]);
+            AssertThrowsInvalidData(
+                () => builder.Build(
+                    [module],
+                    clientAssemblyResolves: [secondResolver],
+                    disabledSubModules:
+                    [new BridgeDisabledSubModule("SelectableModule", "Second.dll")]),
+                "Bridge accepted a client resolver for a globally disabled DLL.");
+            AssertThrowsInvalidData(
+                () => builder.Build(
+                    [module],
+                    authorityRules:
+                    [
+                        new BridgeAuthorityRule(
+                            "SelectableModule",
+                            "Second.dll",
+                            "Second.SubModule",
+                            "OnLoad",
+                            0)
+                    ],
+                    clientOnlySubModules:
+                    [new BridgeClientOnlySubModule("SelectableModule", "Second.dll")]),
+                "Bridge accepted a server authority rule for a client-only DLL.");
+            AssertThrowsInvalidData(
+                () => builder.Build(
+                    [module],
+                    disabledSubModules:
+                    [new BridgeDisabledSubModule("SelectableModule", "Second.dll")],
+                    clientOnlySubModules:
+                    [new BridgeClientOnlySubModule("SelectableModule", "Second.dll")]),
+                "Bridge accepted overlapping disabled and client-only DLL policies.");
+
+            File.Delete(secondPath);
+            var missingDisabled = builder.Build(
+                [module],
+                disabledSubModules: [new BridgeDisabledSubModule("SelectableModule", "Second.dll")]);
+            Assert(missingDisabled.DisabledSubModules.Count == 1,
+                "Bridge rejected a disabled DLL whose loose file was absent.");
+            var none = builder.Build(
+                [module],
+                disabledSubModules:
+                [
+                    new BridgeDisabledSubModule("SelectableModule", "First.dll"),
+                    new BridgeDisabledSubModule("SelectableModule", "Second.dll")
+                ]);
+            Assert(none.ModuleRecords.Count == 1 && none.ModuleRecords[0].DllName.Length == 0,
+                "Selecting no DLLs did not retain a content-only module identity record.");
+
+            AssertThrowsInvalidData(
+                () => builder.Build(
+                    [module],
+                    disabledSubModules:
+                    [new BridgeDisabledSubModule("SelectableModule", "Unknown.dll")]),
+                "Bridge accepted an undeclared disabled DLL.");
+            AssertThrowsInvalidData(
+                () => builder.Build(
+                    [module],
+                    disabledSubModules:
+                    [new BridgeDisabledSubModule("SelectableModule", "../Second.dll")]),
+                "Bridge accepted an unsafe disabled DLL path.");
+            AssertThrowsInvalidData(
+                () => builder.Build(
+                    [module],
+                    disabledSubModules:
+                    [
+                        new BridgeDisabledSubModule("SelectableModule", "First.dll"),
+                        new BridgeDisabledSubModule("selectablemodule", "FIRST.DLL")
+                    ]),
+                "Bridge accepted a duplicate disabled DLL selection.");
         });
 }
 
