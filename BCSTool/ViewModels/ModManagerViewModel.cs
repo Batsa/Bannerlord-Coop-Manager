@@ -86,6 +86,7 @@ public sealed class ModManagerViewModel : BindableBase
                 return;
 
             RefreshSelectedBridgeSettingsTarget();
+            OnPropertyChanged(nameof(DeleteModuleHelpText));
             CommandManager.InvalidateRequerySuggested();
         }
     }
@@ -93,6 +94,25 @@ public sealed class ModManagerViewModel : BindableBase
     public int InstalledCount => Modules.Count(module => module.IsInstalled);
     public int ActiveCount => Modules.Count(module => module.IsInstalled && module.Enabled);
     public string ServerRoot => _moduleManager.ServerRoot;
+    public string DeleteModuleHelpText
+    {
+        get
+        {
+            if (IsBusy)
+                return "Wait for the current server-mod operation to finish.";
+            if (IsDirty)
+                return "Save or rescan the pending module changes before deleting a module.";
+            if (SelectedModule is null)
+                return "Select an installed non-core module to delete.";
+
+            return _moduleRemovalService.GetRemovalBlocker(SelectedModule, Modules) ??
+                   (SelectedModule.Id.StartsWith(
+                       CoopBridgePackageBuilder.BridgeIdPrefix,
+                       StringComparison.OrdinalIgnoreCase)
+                       ? "Send this inactive historical bridge folder to the Windows Recycle Bin."
+                       : "Send the selected non-core module folder to the Windows Recycle Bin.");
+        }
+    }
 
     public string StatusMessage
     {
@@ -112,7 +132,10 @@ public sealed class ModManagerViewModel : BindableBase
         private set
         {
             if (SetProperty(ref _isBusy, value))
+            {
+                OnPropertyChanged(nameof(DeleteModuleHelpText));
                 CommandManager.InvalidateRequerySuggested();
+            }
         }
     }
 
@@ -122,7 +145,10 @@ public sealed class ModManagerViewModel : BindableBase
         private set
         {
             if (SetProperty(ref _isDirty, value))
+            {
+                OnPropertyChanged(nameof(DeleteModuleHelpText));
                 CommandManager.InvalidateRequerySuggested();
+            }
         }
     }
 
@@ -589,7 +615,7 @@ public sealed class ModManagerViewModel : BindableBase
     private void OpenBridgePopulationSettings()
     {
         var module = SelectedModule;
-        if (module is null || IsBusy || IsDirty)
+        if (module is null || !CanOpenBridgePopulationSettings())
             return;
 
         try
@@ -607,7 +633,7 @@ public sealed class ModManagerViewModel : BindableBase
             StatusMessage = exception.Message;
             MessageBox.Show(
                 exception.Message,
-                "Could Not Open Bridge Population Settings",
+                "Could Not Open Population & Trade Settings",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
@@ -730,10 +756,8 @@ public sealed class ModManagerViewModel : BindableBase
     private bool CanDeleteSelected() =>
         !IsBusy &&
         !IsDirty &&
-        SelectedModule is { IsInstalled: true, IsRequired: false } module &&
-        !module.Id.StartsWith(
-            CoopBridgePackageBuilder.BridgeIdPrefix,
-            StringComparison.OrdinalIgnoreCase);
+        SelectedModule is { } module &&
+        _moduleRemovalService.GetRemovalBlocker(module, Modules) is null;
 
     private bool CanAnalyzeSelected() =>
         !IsBusy &&
@@ -771,6 +795,7 @@ public sealed class ModManagerViewModel : BindableBase
         if (e.PropertyName != nameof(BannerlordModule.Enabled))
             return;
 
+        OnPropertyChanged(nameof(DeleteModuleHelpText));
         MarkChanged();
     }
 

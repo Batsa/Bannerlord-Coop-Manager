@@ -76,6 +76,19 @@ public sealed class ModuleManager
 
         foreach (var id in orderedIds)
         {
+            if (!installedById.ContainsKey(id) &&
+                savedById.TryGetValue(id, out var missingSaved) &&
+                !missingSaved.Enabled &&
+                id.StartsWith(
+                    CoopBridgePackageBuilder.BridgeIdPrefix,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                // Deleted historical bridges remain as disabled profile entries
+                // while the current installation backup owns those exact bytes.
+                // Keep that rollback record without resurrecting a missing UI row.
+                continue;
+            }
+
             var required = AlwaysRequiredModules.Contains(id);
             var serverCompatible = !NonServerOfficialModules.Contains(id);
 
@@ -149,6 +162,8 @@ public sealed class ModuleManager
         ReplaceSafely(bytes);
         _profileHash = Hash(File.ReadAllBytes(_profilePath));
     }
+
+    internal void EnsureProfileStillCurrent() => EnsureProfileUnchanged();
 
     private IReadOnlyList<ModuleEntry> ReadProfileIfPresent()
     {

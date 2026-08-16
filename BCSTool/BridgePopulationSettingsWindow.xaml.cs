@@ -8,7 +8,7 @@ using BCSTool.Services;
 namespace BCSTool;
 
 /// <summary>
-/// Edits server-only population controls for the selected generated bridge.
+/// Edits server-only population and trade controls for a bridge-managed overhaul.
 /// </summary>
 public partial class BridgePopulationSettingsWindow : Window
 {
@@ -31,12 +31,15 @@ public partial class BridgePopulationSettingsWindow : Window
 
         BridgeNameText.Text =
             $"{target.BridgeDisplayName} for {target.OverhaulDisplayName}";
-        SettingsPathText.Text = settingsService.SettingsPath;
+        SettingsPathText.Text =
+            settingsService.SettingsPath + Environment.NewLine +
+            settingsService.EconomySettingsPath;
         ShowPopulationGuide(target);
     }
 
     private void Settings_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        SaveStatusText.Text = string.Empty;
         if (e.PropertyName == nameof(BridgePopulationSettings.AutomaticNpcCaravansPerTown))
             UpdateCaravanPerTownGuide();
     }
@@ -48,7 +51,7 @@ public partial class BridgePopulationSettingsWindow : Window
             MessageBox.Show(
                 this,
                 "One or more population values are not valid. Correct the highlighted fields before saving.",
-                "Bridge Population Settings",
+                "Population & Trade Settings",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
             return false;
@@ -56,9 +59,20 @@ public partial class BridgePopulationSettingsWindow : Window
 
         try
         {
-            _settingsService.Save(_settings);
+            var saveResult = _settingsService.Save(_settings);
             _savedSnapshot = _settingsService.CreateSnapshot(_settings);
-            SaveStatusText.Text = "Saved. Changes apply after the server restarts.";
+            SaveStatusText.Text = saveResult.CleanupPending
+                ? "Saved. Transaction cleanup is pending; changes still apply after restart."
+                : "Saved. Changes apply after the server restarts.";
+            if (saveResult.WarningMessage is not null)
+            {
+                MessageBox.Show(
+                    this,
+                    saveResult.WarningMessage,
+                    "Population & Trade Settings",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
             return true;
         }
         catch (Exception exception)
@@ -66,7 +80,7 @@ public partial class BridgePopulationSettingsWindow : Window
             MessageBox.Show(
                 this,
                 exception.Message,
-                "Bridge Population Settings",
+                "Population & Trade Settings",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
             return false;
@@ -128,11 +142,13 @@ public partial class BridgePopulationSettingsWindow : Window
             " These are advisory native-scale values; imported or custom campaign state can differ.";
         CaravanGuideText.Text =
             $"Calculated native baseline: {_populationGuide.CalculatedAutomaticCaravanBaseline:N0} " +
-            $"({_populationGuide.TownCount:N0} towns × 2 merchant caravans).";
+            $"({_populationGuide.TownCount:N0} towns × 2 merchant caravans). " +
+            "When using one caravan per town, 2x capacity and new-caravan budget are advisory starting values, not guaranteed economic equivalence.";
         UpdateCaravanPerTownGuide();
         VillagerGuideText.Text =
             $"Calculated native ceiling: {_populationGuide.CalculatedActiveVillagerPartyCeiling:N0} " +
-            $"({_populationGuide.VillageCount:N0} villages × 1 active party).";
+            $"({_populationGuide.VillageCount:N0} villages × 1 active party). " +
+            "Virtual shipments apply only to native departures rejected by the configured bridge ceiling.";
     }
 
     private void UpdateCaravanPerTownGuide()
@@ -145,8 +161,8 @@ public partial class BridgePopulationSettingsWindow : Window
             return;
         }
 
-        var calculatedTarget = checked(
-            _populationGuide.TownCount * _settings.AutomaticNpcCaravansPerTown);
+        var calculatedTarget =
+            (long)_populationGuide.TownCount * _settings.AutomaticNpcCaravansPerTown;
         CaravanPerTownGuideText.Text =
             $"Current bridge target: {_populationGuide.TownCount:N0} towns × " +
             $"{_settings.AutomaticNpcCaravansPerTown:N0} = up to {calculatedTarget:N0} " +

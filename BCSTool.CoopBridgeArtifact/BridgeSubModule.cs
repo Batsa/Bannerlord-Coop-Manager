@@ -1,12 +1,16 @@
 #if BCS_SERVER
 using Common;
 using Common.Messaging;
+using Coop.Core.Server.Connections;
+using GameInterface.Services.ObjectManager;
 using GameInterface.Services.Modules;
+using GameInterface.Services.Players;
 using TaleWorlds.CampaignSystem;
 using TaleWorlds.CampaignSystem.CampaignBehaviors;
 using TaleWorlds.CampaignSystem.Party;
 using TaleWorlds.CampaignSystem.Roster;
 using TaleWorlds.CampaignSystem.Settlements;
+using TaleWorlds.CampaignSystem.Settlements.Workshops;
 #endif
 using HarmonyLib;
 using System;
@@ -24,17 +28,22 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Xml;
 #if !BCS_SERVER
+using TaleWorlds.CampaignSystem;
+using TaleWorlds.CampaignSystem.Encounters;
+using TaleWorlds.CampaignSystem.Map;
 using TaleWorlds.CampaignSystem.MapEvents;
 using TaleWorlds.CampaignSystem.Party;
+using TaleWorlds.CampaignSystem.Settlements;
 #endif
 using TaleWorlds.Core;
 using TaleWorlds.Library;
 using TaleWorlds.MountAndBlade;
 using TaleWorlds.ObjectSystem;
+using TaleWorlds.SaveSystem;
 
-[assembly: AssemblyVersion("0.6.68.0")]
-[assembly: AssemblyFileVersion("0.6.68.0")]
-[assembly: AssemblyInformationalVersion("0.6.68")]
+[assembly: AssemblyVersion("0.6.73.0")]
+[assembly: AssemblyFileVersion("0.6.73.0")]
+[assembly: AssemblyInformationalVersion("0.6.73")]
 
 namespace BCS.CoopBridge
 {
@@ -53,6 +62,32 @@ namespace BCS.CoopBridge
             {
                 BridgeRuntime.RecordStartupFailure(exception);
                 throw;
+            }
+        }
+
+        protected override void OnApplicationTick(float dt)
+        {
+            base.OnApplicationTick(dt);
+#if !BCS_SERVER
+            ClientDeterministicBattleSceneProjection.OnApplicationTick();
+#endif
+        }
+
+        protected override void OnGameStart(Game game, IGameStarter gameStarterObject)
+        {
+            base.OnGameStart(game, gameStarterObject);
+            var campaignStarter = gameStarterObject as CampaignGameStarter;
+            if (campaignStarter != null)
+            {
+#if BCS_SERVER
+                campaignStarter.AddBehavior(new BridgeEconomyCampaignBehavior());
+#else
+                if (BridgeRuntime.IsRuntimeFeatureEnabled(
+                        BridgeRuntime.ServerPopulationControlFeature))
+                {
+                    campaignStarter.AddBehavior(new BridgeEconomyCampaignBehavior());
+                }
+#endif
             }
         }
     }
@@ -3755,25 +3790,832 @@ namespace BCS.CoopBridge
         }
     }
 
+    public sealed class BridgeEconomySaveableTypeDefiner : SaveableTypeDefiner
+    {
+        public BridgeEconomySaveableTypeDefiner()
+            : base(62814000)
+        {
+        }
+
+        protected override void DefineContainerDefinitions()
+        {
+            ConstructContainerDefinition(typeof(Dictionary<Village, int>));
+            ConstructContainerDefinition(typeof(Dictionary<Village, Settlement>));
+            ConstructContainerDefinition(
+                typeof(Dictionary<Village, List<EquipmentElement>>));
+            ConstructContainerDefinition(typeof(Dictionary<Village, List<int>>));
+        }
+    }
+
+    internal sealed class BridgeEconomyCampaignBehavior : CampaignBehaviorBase
+    {
+        private const int OutboundPhase = 0;
+        private const int ReturnPhase = 1;
+
+        private Dictionary<Town, CampaignTime> townVisitTimes =
+            new Dictionary<Town, CampaignTime>();
+        private Dictionary<Village, CampaignTime> shipmentDueTimes =
+            new Dictionary<Village, CampaignTime>();
+        private Dictionary<Village, int> shipmentPhases =
+            new Dictionary<Village, int>();
+        private Dictionary<Village, int> shipmentIncomes =
+            new Dictionary<Village, int>();
+        private Dictionary<Village, Settlement> shipmentDestinations =
+            new Dictionary<Village, Settlement>();
+        private Dictionary<Village, List<EquipmentElement>> shipmentItems =
+            new Dictionary<Village, List<EquipmentElement>>();
+        private Dictionary<Village, List<int>> shipmentCounts =
+            new Dictionary<Village, List<int>>();
+        private Dictionary<Village, CampaignTime> lastDepartureTimes =
+            new Dictionary<Village, CampaignTime>();
+#if BCS_SERVER
+        private MobileParty targetCountCacheParty;
+        private readonly Dictionary<Settlement, int> targetCountCache =
+            new Dictionary<Settlement, int>();
+        private bool nullVillagerPriceWarningLogged;
+#endif
+
+        public override void RegisterEvents()
+        {
+#if BCS_SERVER
+            CampaignEvents.AfterSettlementEntered.AddNonSerializedListener(
+                this,
+                OnAfterSettlementEntered);
+            CampaignEvents.QuarterHourlyTickEvent.AddNonSerializedListener(
+                this,
+                OnRegionalPopulationQuarterHour);
+            CampaignEvents.HourlyTickEvent.AddNonSerializedListener(this, OnHourlyTick);
+            CampaignEvents.DailyTickEvent.AddNonSerializedListener(this, OnDailyTick);
+#endif
+        }
+
+        public override void SyncData(IDataStore dataStore)
+        {
+            dataStore.SyncData("BCSBridgeEconomyTownVisitTimes", ref townVisitTimes);
+            dataStore.SyncData("BCSBridgeEconomyShipmentDueTimes", ref shipmentDueTimes);
+            dataStore.SyncData("BCSBridgeEconomyShipmentPhases", ref shipmentPhases);
+            dataStore.SyncData("BCSBridgeEconomyShipmentIncomes", ref shipmentIncomes);
+            dataStore.SyncData(
+                "BCSBridgeEconomyShipmentDestinations",
+                ref shipmentDestinations);
+            dataStore.SyncData("BCSBridgeEconomyShipmentItems", ref shipmentItems);
+            dataStore.SyncData("BCSBridgeEconomyShipmentCounts", ref shipmentCounts);
+            dataStore.SyncData("BCSBridgeEconomyLastDepartureTimes", ref lastDepartureTimes);
+            townVisitTimes = townVisitTimes ?? new Dictionary<Town, CampaignTime>();
+            shipmentDueTimes = shipmentDueTimes ?? new Dictionary<Village, CampaignTime>();
+            shipmentPhases = shipmentPhases ?? new Dictionary<Village, int>();
+            shipmentIncomes = shipmentIncomes ?? new Dictionary<Village, int>();
+            shipmentDestinations = shipmentDestinations ??
+                                   new Dictionary<Village, Settlement>();
+            shipmentItems = shipmentItems ??
+                            new Dictionary<Village, List<EquipmentElement>>();
+            shipmentCounts = shipmentCounts ??
+                             new Dictionary<Village, List<int>>();
+            lastDepartureTimes = lastDepartureTimes ??
+                                 new Dictionary<Village, CampaignTime>();
+        }
+
+#if BCS_SERVER
+        internal bool TryScheduleVirtualShipment(Village village)
+        {
+            if (!ServerPopulationControl.VirtualVillagerShipmentsEnabled ||
+                !IsVillageSafe(village) ||
+                shipmentDueTimes.ContainsKey(village))
+            {
+                return false;
+            }
+
+            CampaignTime lastDeparture;
+            var hadLastDeparture =
+                lastDepartureTimes.TryGetValue(village, out lastDeparture);
+            if (hadLastDeparture &&
+                lastDeparture.ElapsedDaysUntilNow <
+                ServerPopulationControl.VirtualVillagerCooldownDays)
+            {
+                return false;
+            }
+
+            float travelHours;
+            var destination = village.TradeBound;
+            if (destination == null || !destination.IsTown ||
+                IsHostileDestination(village, destination) ||
+                !TryGetTravelHours(village.Settlement, destination, out travelHours))
+            {
+                return false;
+            }
+
+            var reservedItems = new List<EquipmentElement>();
+            var reservedCounts = new List<int>();
+            try
+            {
+                ReserveGoods(village, reservedItems, reservedCounts);
+                if (reservedItems.Count == 0)
+                    return false;
+
+                shipmentDestinations[village] = destination;
+                shipmentItems[village] = reservedItems;
+                shipmentCounts[village] = reservedCounts;
+                shipmentDueTimes[village] = CampaignTime.HoursFromNow(travelHours);
+                shipmentPhases[village] = OutboundPhase;
+                shipmentIncomes[village] = 0;
+                lastDepartureTimes[village] = CampaignTime.Now;
+                RegionalPopulationControl.RecordVirtualCycleScheduled();
+                return true;
+            }
+            catch (Exception exception)
+            {
+                try
+                {
+                    RestoreManifest(village, reservedItems, reservedCounts);
+                    ClearPendingShipmentState(village);
+                    if (hadLastDeparture)
+                        lastDepartureTimes[village] = lastDeparture;
+                    else
+                        lastDepartureTimes.Remove(village);
+                }
+                catch (Exception rollbackException)
+                {
+                    try
+                    {
+                        PreserveFailedReservation(
+                            village,
+                            destination,
+                            reservedItems,
+                            reservedCounts);
+                    }
+                    catch (Exception preservationException)
+                    {
+                        throw new InvalidOperationException(
+                            "Virtual villager cargo reservation rollback and " +
+                            "preservation failed.",
+                            new AggregateException(
+                                exception,
+                                rollbackException,
+                                preservationException));
+                    }
+                    throw new InvalidOperationException(
+                        "Virtual villager cargo reservation rollback failed; " +
+                        "the remaining manifest was preserved for retry.",
+                        new AggregateException(exception, rollbackException));
+                }
+                Console.WriteLine(
+                    "[BCS Coop Bridge] Virtual villager shipment was not scheduled: " +
+                    exception);
+                return false;
+            }
+        }
+
+        internal bool HasPendingVirtualShipment(Village village)
+        {
+            return village != null && shipmentDueTimes.ContainsKey(village);
+        }
+
+        private void OnRegionalPopulationQuarterHour()
+        {
+            RegionalPopulationControl.SweepPatrolRegionTransitions();
+            RegionalPopulationControl.SweepVillagerDepartureLatches();
+        }
+
+        private void OnDailyTick()
+        {
+            RegionalPopulationControl.WriteDailySummary(shipmentDueTimes.Count);
+        }
+
+        private void PreserveFailedReservation(
+            Village village,
+            Settlement destination,
+            List<EquipmentElement> items,
+            List<int> counts)
+        {
+            shipmentDestinations[village] = destination;
+            shipmentItems[village] = items;
+            shipmentCounts[village] = counts;
+            shipmentDueTimes[village] = CampaignTime.HoursFromNow(24f);
+            shipmentPhases[village] = OutboundPhase;
+            shipmentIncomes[village] = 0;
+            lastDepartureTimes[village] = CampaignTime.Now;
+        }
+
+        internal void AdjustCaravanDestinationScore(
+            MobileParty caravanParty,
+            Town town,
+            ref float score)
+        {
+            if (score <= 0f || float.IsNaN(score) || float.IsInfinity(score) ||
+                town == null || !IsAutomaticNpcCaravan(caravanParty) ||
+                ServerPopulationControl.CaravanDestinationAgeMaxBonus <= 0d)
+            {
+                return;
+            }
+
+            var ageFraction = 1d;
+            CampaignTime lastVisit;
+            if (townVisitTimes.TryGetValue(town, out lastVisit))
+            {
+                ageFraction = lastVisit.ElapsedDaysUntilNow /
+                              ServerPopulationControl.CaravanDestinationAgeHorizonDays;
+                ageFraction = Math.Max(0d, Math.Min(1d, ageFraction));
+            }
+            if (HasOtherCaravanTargeting(caravanParty, town.Settlement))
+                ageFraction = 0d;
+
+            var adjusted = score *
+                           (1d + ServerPopulationControl.CaravanDestinationAgeMaxBonus *
+                            ageFraction);
+            score = adjusted >= float.MaxValue ? float.MaxValue : (float)adjusted;
+        }
+
+        private void OnAfterSettlementEntered(
+            MobileParty mobileParty,
+            Settlement settlement,
+            Hero hero)
+        {
+            if (IsAutomaticNpcCaravan(mobileParty) && settlement != null &&
+                settlement.Town != null)
+            {
+                townVisitTimes[settlement.Town] = CampaignTime.Now;
+            }
+        }
+
+        private void OnHourlyTick()
+        {
+            targetCountCacheParty = null;
+            targetCountCache.Clear();
+            NormalizeShipmentState();
+            foreach (var village in shipmentDueTimes.Keys.ToList())
+            {
+                CampaignTime dueTime;
+                if (!shipmentDueTimes.TryGetValue(village, out dueTime) ||
+                    dueTime.RemainingHoursFromNow > 0f)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    int phase;
+                    if (!shipmentPhases.TryGetValue(village, out phase) ||
+                        phase == OutboundPhase)
+                    {
+                        ProcessOutbound(village);
+                    }
+                    else if (phase == ReturnPhase)
+                    {
+                        ProcessReturn(village);
+                    }
+                    else
+                    {
+                        DeferShipment(village);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    Console.WriteLine(
+                        "[BCS Coop Bridge] Virtual villager shipment deferred: " +
+                        exception);
+                    DeferShipment(village);
+                }
+            }
+        }
+
+        private void ProcessOutbound(Village village)
+        {
+            Settlement destination;
+            List<EquipmentElement> items;
+            List<int> counts;
+            MobileParty priceContext;
+            float travelHours;
+            if (village == null ||
+                !shipmentDestinations.TryGetValue(village, out destination) ||
+                !TryGetCargoManifest(village, out items, out counts) ||
+                !IsVillageSafe(village) ||
+                !TryGetTravelHours(village.Settlement, destination, out travelHours))
+            {
+                DeferShipment(village);
+                return;
+            }
+            if (IsHostileDestination(village, destination))
+            {
+                shipmentPhases[village] = ReturnPhase;
+                shipmentDueTimes[village] = CampaignTime.HoursFromNow(travelHours);
+                return;
+            }
+            if (!IsDestinationSafe(destination))
+            {
+                DeferShipment(village);
+                return;
+            }
+            priceContext = ResolveVillagerPriceContext(village);
+            if (priceContext == null && !nullVillagerPriceWarningLogged)
+            {
+                nullVillagerPriceWarningLogged = true;
+                Console.WriteLine(
+                    "[BCS Coop Bridge] No active villager trade party was available " +
+                    "for virtual shipment pricing; null-party pricing is an " +
+                    "approximation. No party was created.");
+            }
+
+            TransferGoods(village, destination.Town, priceContext, items, counts);
+            shipmentPhases[village] = ReturnPhase;
+            shipmentDueTimes[village] = CampaignTime.HoursFromNow(travelHours);
+        }
+
+        private void ProcessReturn(Village village)
+        {
+            List<EquipmentElement> items;
+            List<int> counts;
+            if (!IsVillageSafe(village) ||
+                !TryGetCargoManifest(village, out items, out counts))
+            {
+                DeferShipment(village);
+                return;
+            }
+
+            RestoreManifest(village, items, counts);
+            int income;
+            if (shipmentIncomes.TryGetValue(village, out income) && income > 0)
+            {
+                var tax = Campaign.Current.Models.SettlementTaxModel
+                    .CalculateVillageTaxFromIncome(village, income);
+                var total = (long)village.TradeTaxAccumulated + tax;
+                village.TradeTaxAccumulated = total >= int.MaxValue
+                     ? int.MaxValue
+                    : total <= int.MinValue ? int.MinValue : (int)total;
+                shipmentIncomes[village] = 0;
+            }
+            CompleteShipment(village);
+        }
+
+        private static void ReserveGoods(
+            Village village,
+            List<EquipmentElement> items,
+            List<int> counts)
+        {
+            var source = village.Settlement.ItemRoster;
+            var capacity = GetVirtualCargoCapacity(village);
+            if (source == null || capacity <= 0f)
+                return;
+
+            for (var pass = 0; pass < 4; pass++)
+            {
+                for (var index = source.Count - 1;
+                     index >= 0;
+                     index--)
+                {
+                    var element = source.GetElementCopyAtIndex(index);
+                    var equipment = element.EquipmentElement;
+                    var item = equipment.Item;
+                    if (item == null || element.Amount <= 0)
+                        continue;
+                    var amount = MBRandom.RoundRandomized(element.Amount * 0.2f);
+                    var consumesCapacity = !item.HasHorseComponent && item.Weight > 0f;
+                    if (consumesCapacity)
+                        amount = Math.Min(amount, (int)Math.Floor(capacity / item.Weight));
+                    if (amount <= 0)
+                        continue;
+
+                    AddReservedEntry(source, items, counts, equipment, amount);
+                    if (consumesCapacity)
+                        capacity = Math.Max(0f, capacity - amount * item.Weight);
+                }
+            }
+        }
+
+        private void TransferGoods(
+            Village village,
+            Town destination,
+            MobileParty priceContext,
+            List<EquipmentElement> items,
+            List<int> counts)
+        {
+            var target = destination == null || destination.Settlement == null
+                ? null
+                : destination.Settlement.ItemRoster;
+            if (target == null)
+                throw new InvalidDataException(
+                    "Virtual villager destination roster is unavailable.");
+
+            for (var index = 0; index < items.Count && destination.Gold > 0; index++)
+            {
+                var equipment = items[index];
+                var amount = counts[index];
+                if (equipment.Item == null || amount <= 0)
+                    continue;
+
+                var price = destination.GetItemPrice(equipment, priceContext, true);
+                if (price <= 0)
+                    continue;
+                amount = Math.Min(amount, Math.Max(0, destination.Gold) / price);
+                if (amount <= 0)
+                    continue;
+
+                var lineIncome = amount * price;
+                target.AddToCounts(equipment, amount);
+                try
+                {
+                    destination.ChangeGold(-lineIncome);
+                }
+                catch
+                {
+                    target.AddToCounts(equipment, -amount);
+                    throw;
+                }
+                counts[index] -= amount;
+                AddShipmentIncome(village, lineIncome);
+            }
+        }
+
+        private static MobileParty ResolveVillagerPriceContext(Village village)
+        {
+            MobileParty sameOrigin = null;
+            MobileParty sameFaction = null;
+            MobileParty anyVillager = null;
+            var originSettlement = village == null ? null : village.Settlement;
+            var originFaction = originSettlement == null
+                ? null
+                : originSettlement.MapFaction;
+            foreach (var party in MobileParty.AllVillagerParties)
+            {
+                if (party == null || !party.IsActive || !party.IsVillager ||
+                    !party.IsPartyTradeActive)
+                {
+                    continue;
+                }
+                if (IsEarlierParty(party, anyVillager))
+                    anyVillager = party;
+                if (ReferenceEquals(party.HomeSettlement, originSettlement) &&
+                    IsEarlierParty(party, sameOrigin))
+                {
+                    sameOrigin = party;
+                }
+                if (originFaction != null &&
+                    ReferenceEquals(party.MapFaction, originFaction) &&
+                    IsEarlierParty(party, sameFaction))
+                {
+                    sameFaction = party;
+                }
+            }
+            return sameOrigin ?? sameFaction ?? anyVillager;
+        }
+
+        private static bool IsEarlierParty(MobileParty candidate, MobileParty current)
+        {
+            return current == null ||
+                   string.CompareOrdinal(candidate.StringId, current.StringId) < 0;
+        }
+
+        private static void AddReservedEntry(
+            ItemRoster source,
+            List<EquipmentElement> items,
+            List<int> counts,
+            EquipmentElement equipment,
+            int amount)
+        {
+            items.Add(equipment);
+            try
+            {
+                counts.Add(amount);
+            }
+            catch
+            {
+                items.RemoveAt(items.Count - 1);
+                throw;
+            }
+
+            try
+            {
+                source.AddToCounts(equipment, -amount);
+            }
+            catch
+            {
+                counts.RemoveAt(counts.Count - 1);
+                items.RemoveAt(items.Count - 1);
+                throw;
+            }
+        }
+
+        private void AddShipmentIncome(Village village, int lineIncome)
+        {
+            int income;
+            if (!shipmentIncomes.TryGetValue(village, out income))
+                income = 0;
+            shipmentIncomes[village] = income >= int.MaxValue - lineIncome
+                ? int.MaxValue
+                : income + lineIncome;
+        }
+
+        private static void RestoreManifest(
+            Village village,
+            List<EquipmentElement> items,
+            List<int> counts)
+        {
+            if (village == null || village.Settlement == null ||
+                village.Settlement.ItemRoster == null || items == null || counts == null ||
+                items.Count != counts.Count)
+            {
+                throw new InvalidDataException(
+                    "Virtual villager cargo manifest cannot be restored.");
+            }
+
+            var roster = village.Settlement.ItemRoster;
+            for (var index = 0; index < items.Count; index++)
+            {
+                var amount = counts[index];
+                if (amount <= 0)
+                    continue;
+                if (items[index].Item == null)
+                    throw new InvalidDataException(
+                        "Virtual villager cargo item is unavailable.");
+                roster.AddToCounts(items[index], amount);
+                counts[index] = 0;
+            }
+        }
+
+        private bool TryGetCargoManifest(
+            Village village,
+            out List<EquipmentElement> items,
+            out List<int> counts)
+        {
+            items = null;
+            counts = null;
+            if (!shipmentItems.TryGetValue(village, out items) ||
+                !shipmentCounts.TryGetValue(village, out counts) ||
+                items == null || counts == null || items.Count != counts.Count)
+            {
+                return false;
+            }
+            for (var index = 0; index < counts.Count; index++)
+            {
+                if (counts[index] < 0)
+                    return false;
+            }
+            return true;
+        }
+
+        private static float GetVirtualCargoCapacity(Village village)
+        {
+            var observed = new List<int>();
+            foreach (var party in MobileParty.AllVillagerParties)
+            {
+                if (party != null && party.IsActive && party.InventoryCapacity > 0)
+                    observed.Add(party.InventoryCapacity);
+            }
+
+            double capacity;
+            if (observed.Count > 0)
+            {
+                observed.Sort();
+                var middle = observed.Count / 2;
+                capacity = observed.Count % 2 == 0
+                    ? (observed[middle - 1] + (double)observed[middle]) / 2d
+                    : observed[middle];
+            }
+            else
+            {
+                var partySize = Campaign.Current.Models.PartySizeLimitModel
+                    .GetIdealVillagerPartySize(village);
+                capacity = (10d + Math.Max(0, partySize) * 20d) *
+                           ServerPopulationControl.VillagerPartyCapacityMultiplier;
+            }
+            var scaled = capacity * ServerPopulationControl.VirtualVillagerCargoMultiplier;
+            return scaled >= float.MaxValue ? float.MaxValue : (float)scaled;
+        }
+
+        private static bool TryGetTravelHours(
+            Settlement source,
+            Settlement destination,
+            out float hours)
+        {
+            hours = 0f;
+            var campaign = Campaign.Current;
+            if (source == null || destination == null || campaign == null ||
+                campaign.Models == null || campaign.Models.MapDistanceModel == null)
+            {
+                return false;
+            }
+            if (ReferenceEquals(source, destination))
+            {
+                hours = 1f;
+                return true;
+            }
+
+            var distance = campaign.Models.MapDistanceModel.GetDistance(
+                source,
+                destination,
+                false,
+                false,
+                MobileParty.NavigationType.Default);
+            var speed = campaign.EstimatedAverageVillagerPartySpeed;
+            if (!IsPositiveFinite(distance) || !IsPositiveFinite(speed))
+                return false;
+            var scaled = distance / (double)speed *
+                         ServerPopulationControl.VirtualVillagerTravelTimeMultiplier;
+            if (scaled <= 0d || double.IsNaN(scaled) || double.IsInfinity(scaled) ||
+                scaled >= float.MaxValue)
+                return false;
+            hours = Math.Max(1f, (float)scaled);
+            return true;
+        }
+
+        private static bool IsPositiveFinite(float value)
+        {
+            return value > 0f && !float.IsNaN(value) && !float.IsInfinity(value) &&
+                   value < float.MaxValue;
+        }
+
+        private static bool IsVillageSafe(Village village)
+        {
+            return village != null && village.VillageState == Village.VillageStates.Normal &&
+                   village.Settlement != null && !village.Settlement.IsUnderSiege;
+        }
+
+        private static bool IsDestinationSafe(Settlement destination)
+        {
+            return destination != null && destination.IsTown && destination.Town != null &&
+                   !destination.IsUnderSiege;
+        }
+
+        private static bool IsHostileDestination(
+            Village village,
+            Settlement destination)
+        {
+            var origin = village == null ? null : village.Settlement;
+            var originFaction = origin == null ? null : origin.MapFaction;
+            var destinationFaction = destination == null
+                ? null
+                : destination.MapFaction;
+            return originFaction != null && destinationFaction != null &&
+                   FactionManager.IsAtWarAgainstFaction(
+                       originFaction,
+                       destinationFaction);
+        }
+
+        private static bool IsAutomaticNpcCaravan(MobileParty party)
+        {
+            if (party == null || !party.IsActive || !party.IsCaravan ||
+                !party.IsPartyTradeActive)
+            {
+                return false;
+            }
+            var playerClan = Clan.PlayerClan;
+            return playerClan == null ||
+                   (!ReferenceEquals(party.ActualClan, playerClan) &&
+                    (party.Owner == null ||
+                     !ReferenceEquals(party.Owner.Clan, playerClan)));
+        }
+
+        private bool HasOtherCaravanTargeting(
+            MobileParty caravanParty,
+            Settlement destination)
+        {
+            if (!ReferenceEquals(targetCountCacheParty, caravanParty))
+            {
+                targetCountCache.Clear();
+                foreach (var other in MobileParty.AllCaravanParties)
+                {
+                    if (!IsAutomaticNpcCaravan(other) || other.TargetSettlement == null)
+                        continue;
+                    int count;
+                    targetCountCache.TryGetValue(other.TargetSettlement, out count);
+                    targetCountCache[other.TargetSettlement] = count + 1;
+                }
+                targetCountCacheParty = caravanParty;
+            }
+
+            int targetingCount;
+            if (destination == null ||
+                !targetCountCache.TryGetValue(destination, out targetingCount))
+            {
+                return false;
+            }
+            if (ReferenceEquals(caravanParty.TargetSettlement, destination))
+                targetingCount--;
+            return targetingCount > 0;
+        }
+
+        private void DeferShipment(Village village)
+        {
+            if (village != null && shipmentDueTimes.ContainsKey(village))
+                shipmentDueTimes[village] = CampaignTime.HoursFromNow(24f);
+        }
+
+        private void CompleteShipment(Village village)
+        {
+            if (village == null)
+                return;
+            ClearPendingShipmentState(village);
+        }
+
+        private void ClearPendingShipmentState(Village village)
+        {
+            shipmentDueTimes.Remove(village);
+            shipmentPhases.Remove(village);
+            shipmentIncomes.Remove(village);
+            shipmentDestinations.Remove(village);
+            shipmentItems.Remove(village);
+            shipmentCounts.Remove(village);
+        }
+
+        private void NormalizeShipmentState()
+        {
+            var reservedVillages = new HashSet<Village>(shipmentDestinations.Keys);
+            reservedVillages.UnionWith(shipmentItems.Keys);
+            reservedVillages.UnionWith(shipmentCounts.Keys);
+            foreach (var village in reservedVillages)
+            {
+                if (village != null && !shipmentDueTimes.ContainsKey(village))
+                    shipmentDueTimes[village] = CampaignTime.HoursFromNow(1f);
+            }
+
+            foreach (var village in shipmentDueTimes.Keys.ToList())
+            {
+                if (village == null)
+                    continue;
+                if (!shipmentPhases.ContainsKey(village))
+                    shipmentPhases[village] = OutboundPhase;
+                if (!shipmentIncomes.ContainsKey(village))
+                    shipmentIncomes[village] = 0;
+            }
+            foreach (var village in shipmentPhases.Keys.ToList())
+            {
+                if (!shipmentDueTimes.ContainsKey(village) &&
+                    !reservedVillages.Contains(village))
+                {
+                    shipmentPhases.Remove(village);
+                }
+            }
+            foreach (var village in shipmentIncomes.Keys.ToList())
+            {
+                if (!shipmentDueTimes.ContainsKey(village) &&
+                    !reservedVillages.Contains(village))
+                {
+                    shipmentIncomes.Remove(village);
+                }
+            }
+        }
+#endif
+    }
+
 #if BCS_SERVER
     internal static class ServerPopulationControl
     {
         private const string SettingsFileName = "bcs-coop-bridge-population.config";
+        private const string EconomySettingsFileName =
+            "bcs-coop-bridge-economy.config";
         private const string HeaderV1 = "BCS-BRIDGE-POPULATION|1";
         private const string HeaderV2 = "BCS-BRIDGE-POPULATION|2";
+        private const string HeaderV3 = "BCS-BRIDGE-POPULATION|3";
+        private const string EconomyHeaderV1 = "BCS-BRIDGE-ECONOMY|1";
         private const string MaximumAutomaticCaravansKey =
             "MAXIMUM_AUTOMATIC_CARAVANS";
         private const string AutomaticNpcCaravansPerTownKey =
             "AUTOMATIC_NPC_CARAVANS_PER_TOWN";
+        private const string CaravanCapacityMultiplierKey =
+            "CARAVAN_CAPACITY_MULTIPLIER";
+        private const string CaravanTradeBudgetMultiplierKey =
+            "CARAVAN_TRADE_BUDGET_MULTIPLIER";
+        private const string CaravanDestinationAgeMaxBonusKey =
+            "CARAVAN_DESTINATION_AGE_MAX_BONUS";
+        private const string CaravanDestinationAgeHorizonDaysKey =
+            "CARAVAN_DESTINATION_AGE_HORIZON_DAYS";
         private const string MaximumActiveVillagerPartiesKey =
             "MAXIMUM_ACTIVE_VILLAGER_PARTIES";
+        private const string VillagerPartyCapacityMultiplierKey =
+            "VILLAGER_PARTY_CAPACITY_MULTIPLIER";
+        private const string VirtualVillagerShipmentsEnabledKey =
+            "VIRTUAL_VILLAGER_SHIPMENTS_ENABLED";
+        private const string VirtualVillagerCargoMultiplierKey =
+            "VIRTUAL_VILLAGER_CARGO_MULTIPLIER";
+        private const string VirtualVillagerCooldownDaysKey =
+            "VIRTUAL_VILLAGER_COOLDOWN_DAYS";
+        private const string VirtualVillagerTravelTimeMultiplierKey =
+            "VIRTUAL_VILLAGER_TRAVEL_TIME_MULTIPLIER";
         private const string BanditPartiesAroundHideoutMultiplierKey =
             "BANDIT_PARTIES_AROUND_HIDEOUT_MULTIPLIER";
+        private const string PlayerActiveSpawnRadiusBanditTravelDaysKey =
+            "PLAYER_ACTIVE_SPAWN_RADIUS_BANDIT_TRAVEL_DAYS";
+        private const string RegionalAmbientOutlawSpawnsEnabledKey =
+            "REGIONAL_AMBIENT_OUTLAW_SPAWNS_ENABLED";
+        private const string RegionalVillagerTradeEnabledKey =
+            "REGIONAL_VILLAGER_TRADE_ENABLED";
+        private const string RegionalSettlementPatrolSpawnsEnabledKey =
+            "REGIONAL_SETTLEMENT_PATROL_SPAWNS_ENABLED";
+        private const string RegionalBattleDeserterSpawnsEnabledKey =
+            "REGIONAL_BATTLE_DESERTER_SPAWNS_ENABLED";
         private const long MaximumSettingsBytes = 64 * 1024;
         private const int MaximumPartyLimit = 1000000;
         private const int DefaultAutomaticNpcCaravansPerTown = 2;
         private const int MaximumAutomaticNpcCaravansPerTown = 10;
+        private const int MaximumEconomyDays = 3650;
+        private const int DefaultCaravanDestinationAgeHorizonDays = 30;
+        private const int DefaultVirtualVillagerCooldownDays = 7;
+        private const double MinimumEconomyMultiplier = 0.1d;
+        private const double MaximumEconomyMultiplier = 10d;
+        private const double MaximumCaravanDestinationAgeBonus = 4d;
         private const double MaximumBanditMultiplier = 10d;
+        private const double DefaultPlayerActiveSpawnRadiusBanditTravelDays = 0.5d;
+        private const double MinimumPlayerActiveSpawnRadiusBanditTravelDays = 0.1d;
+        private const double MaximumPlayerActiveSpawnRadiusBanditTravelDays = 30d;
         private const string HarmonyOwner = "BCS.CoopBridge.population-control";
 
         private static readonly object Sync = new object();
@@ -3783,10 +4625,79 @@ namespace BCS.CoopBridge
         private static int? maximumAutomaticCaravans;
         private static int automaticNpcCaravansPerTown =
             DefaultAutomaticNpcCaravansPerTown;
+        private static double caravanCapacityMultiplier = 1d;
+        private static double caravanTradeBudgetMultiplier = 1d;
+        private static double caravanDestinationAgeMaxBonus;
+        private static int caravanDestinationAgeHorizonDays =
+            DefaultCaravanDestinationAgeHorizonDays;
         private static int? maximumActiveVillagerParties;
+        private static double villagerPartyCapacityMultiplier = 1d;
+        private static bool virtualVillagerShipmentsEnabled;
+        private static double virtualVillagerCargoMultiplier = 1d;
+        private static int virtualVillagerCooldownDays =
+            DefaultVirtualVillagerCooldownDays;
+        private static double virtualVillagerTravelTimeMultiplier = 1d;
         private static double banditPartiesAroundHideoutMultiplier = 1d;
 
+        internal static double CaravanDestinationAgeMaxBonus
+        {
+            get { return caravanDestinationAgeMaxBonus; }
+        }
+
+        internal static int CaravanDestinationAgeHorizonDays
+        {
+            get { return caravanDestinationAgeHorizonDays; }
+        }
+
+        internal static double VillagerPartyCapacityMultiplier
+        {
+            get { return villagerPartyCapacityMultiplier; }
+        }
+
+        internal static bool VirtualVillagerShipmentsEnabled
+        {
+            get { return virtualVillagerShipmentsEnabled; }
+        }
+
+        internal static double VirtualVillagerCargoMultiplier
+        {
+            get { return virtualVillagerCargoMultiplier; }
+        }
+
+        internal static int VirtualVillagerCooldownDays
+        {
+            get { return virtualVillagerCooldownDays; }
+        }
+
+        internal static double VirtualVillagerTravelTimeMultiplier
+        {
+            get { return virtualVillagerTravelTimeMultiplier; }
+        }
+
+        // Retained for the standalone installed-ABI host. Older schemas keep
+        // every regional family disabled, so no player authority is required.
         internal static void Install()
+        {
+            Install(null, null, null);
+        }
+
+        internal static void InstallForAbiSmoke()
+        {
+            RegionalPopulationControl.SetAbiSmokeMode(true);
+            try
+            {
+                Install(null, null, null);
+            }
+            finally
+            {
+                RegionalPopulationControl.SetAbiSmokeMode(false);
+            }
+        }
+
+        internal static void Install(
+            IConnectionCollection connectionCollection,
+            IPlayerManager playerManager,
+            IObjectManager objectManager)
         {
             lock (Sync)
             {
@@ -3794,14 +4705,47 @@ namespace BCS.CoopBridge
                     return;
 
                 var settingsPath = ResolveSettingsPath();
-                var settings = Load(settingsPath);
-                maximumAutomaticCaravans = settings.MaximumAutomaticCaravans;
-                automaticNpcCaravansPerTown = settings.AutomaticNpcCaravansPerTown;
-                maximumActiveVillagerParties = settings.MaximumActiveVillagerParties;
+                var populationSettings = Load(settingsPath);
+                var economySettings = LoadEconomy(ResolveEconomySettingsPath());
+                maximumAutomaticCaravans =
+                    populationSettings.MaximumAutomaticCaravans;
+                automaticNpcCaravansPerTown =
+                    populationSettings.AutomaticNpcCaravansPerTown;
+                caravanCapacityMultiplier = economySettings.CaravanCapacityMultiplier;
+                caravanTradeBudgetMultiplier =
+                    economySettings.CaravanTradeBudgetMultiplier;
+                caravanDestinationAgeMaxBonus =
+                    economySettings.CaravanDestinationAgeMaxBonus;
+                caravanDestinationAgeHorizonDays =
+                    economySettings.CaravanDestinationAgeHorizonDays;
+                maximumActiveVillagerParties =
+                    populationSettings.MaximumActiveVillagerParties;
+                villagerPartyCapacityMultiplier =
+                    economySettings.VillagerPartyCapacityMultiplier;
+                virtualVillagerShipmentsEnabled =
+                    economySettings.VirtualVillagerShipmentsEnabled;
+                virtualVillagerCargoMultiplier =
+                    economySettings.VirtualVillagerCargoMultiplier;
+                virtualVillagerCooldownDays =
+                    economySettings.VirtualVillagerCooldownDays;
+                virtualVillagerTravelTimeMultiplier =
+                    economySettings.VirtualVillagerTravelTimeMultiplier;
                 banditPartiesAroundHideoutMultiplier =
-                    settings.BanditPartiesAroundHideoutMultiplier;
+                    populationSettings.BanditPartiesAroundHideoutMultiplier;
 
                 var harmony = new Harmony(HarmonyOwner);
+                try
+                {
+                RegionalPopulationControl.Install(
+                    populationSettings.PlayerActiveSpawnRadiusBanditTravelDays,
+                    populationSettings.RegionalAmbientOutlawSpawnsEnabled,
+                    populationSettings.RegionalVillagerTradeEnabled,
+                    populationSettings.RegionalSettlementPatrolSpawnsEnabled,
+                    populationSettings.RegionalBattleDeserterSpawnsEnabled,
+                    economySettings.VirtualVillagerShipmentsEnabled,
+                    connectionCollection,
+                    playerManager,
+                    objectManager);
                 harmony.Patch(
                     ResolveExactMethod(
                         typeof(CaravansCampaignBehavior),
@@ -3809,6 +4753,55 @@ namespace BCS.CoopBridge
                         typeof(void),
                         new[] { typeof(Hero), typeof(bool) }),
                     prefix: CreateHarmonyMethod(nameof(BeforeSpawnCaravan), Priority.Last));
+
+                if (Math.Abs(caravanCapacityMultiplier - 1d) > double.Epsilon ||
+                    Math.Abs(villagerPartyCapacityMultiplier - 1d) > double.Epsilon)
+                {
+                    harmony.Patch(
+                        ResolveExactMethod(
+                            typeof(MobileParty),
+                            "get_InventoryCapacity",
+                            typeof(int),
+                            Type.EmptyTypes),
+                        postfix: CreateHarmonyMethod(
+                            nameof(AfterGetInventoryCapacity),
+                            Priority.Last));
+                }
+
+                if (Math.Abs(caravanTradeBudgetMultiplier - 1d) > double.Epsilon)
+                {
+                    harmony.Patch(
+                        ResolveExactMethod(
+                            typeof(MobileParty),
+                            "InitializePartyTrade",
+                            typeof(void),
+                            new[] { typeof(int) }),
+                        prefix: CreateHarmonyMethod(
+                            nameof(BeforeInitializePartyTrade),
+                            Priority.Last));
+                }
+
+                if (caravanDestinationAgeMaxBonus > 0d)
+                {
+                    harmony.Patch(
+                        ResolveExactMethod(
+                            typeof(CaravansCampaignBehavior),
+                            "GetTradeScoreForTown",
+                            typeof(float),
+                            new[]
+                            {
+                                typeof(MobileParty),
+                                typeof(Town),
+                                typeof(CampaignTime),
+                                typeof(float),
+                                typeof(bool),
+                                typeof(MobileParty.NavigationType).MakeByRefType(),
+                                typeof(bool).MakeByRefType()
+                            }),
+                        postfix: CreateHarmonyMethod(
+                            nameof(AfterGetTradeScoreForTown),
+                            Priority.Last));
+                }
 
                 if (maximumActiveVillagerParties.HasValue)
                 {
@@ -3838,13 +4831,33 @@ namespace BCS.CoopBridge
                 Console.WriteLine(
                     "[BCS Coop Bridge] Population controls loaded: caravans=" +
                     FormatLimit(maximumAutomaticCaravans) +
-                    ", npc-caravans-per-town=" +
-                    automaticNpcCaravansPerTown.ToString(CultureInfo.InvariantCulture) +
-                    ", villagers=" + FormatLimit(maximumActiveVillagerParties) +
-                    ", bandits-around-hideouts=" +
+                     ", npc-caravans-per-town=" +
+                     automaticNpcCaravansPerTown.ToString(CultureInfo.InvariantCulture) +
+                     ", caravan-capacity=" +
+                     caravanCapacityMultiplier.ToString("0.###", CultureInfo.InvariantCulture) +
+                     "x, caravan-budget=" +
+                     caravanTradeBudgetMultiplier.ToString("0.###", CultureInfo.InvariantCulture) +
+                     "x, caravan-age-bonus=" +
+                     caravanDestinationAgeMaxBonus.ToString("0.###", CultureInfo.InvariantCulture) +
+                     ", villagers=" + FormatLimit(maximumActiveVillagerParties) +
+                     ", villager-capacity=" +
+                     villagerPartyCapacityMultiplier.ToString("0.###", CultureInfo.InvariantCulture) +
+                     "x, virtual-villagers=" +
+                     (virtualVillagerShipmentsEnabled ? "enabled" : "disabled") +
+                     ", bandits-around-hideouts=" +
                     banditPartiesAroundHideoutMultiplier.ToString(
                         "0.###",
                         CultureInfo.InvariantCulture) + "x. Existing parties were not removed.");
+                }
+                catch (Exception exception)
+                {
+                    harmony.UnpatchAll(HarmonyOwner);
+                    RegionalPopulationControl.Uninstall();
+                    Console.WriteLine(
+                        "[BCS Coop Bridge] ERROR: Population-control startup failed: " +
+                        exception);
+                    throw;
+                }
             }
         }
 
@@ -3966,7 +4979,49 @@ namespace BCS.CoopBridge
             return null;
         }
 
-        private static bool BeforeCreateVillagerParty()
+        private static void AfterGetInventoryCapacity(
+            MobileParty __instance,
+            ref int __result)
+        {
+            double multiplier;
+            if (__instance != null && __instance.IsVillager)
+            {
+                multiplier = villagerPartyCapacityMultiplier;
+            }
+            else if (IsNpcCaravanParty(__instance))
+            {
+                multiplier = caravanCapacityMultiplier;
+            }
+            else
+            {
+                return;
+            }
+
+            __result = ScaleNonNegativeInt(__result, multiplier);
+        }
+
+        private static void BeforeInitializePartyTrade(
+            MobileParty __instance,
+            ref int __0)
+        {
+            if (IsNpcCaravanParty(__instance))
+                __0 = ScaleNonNegativeInt(__0, caravanTradeBudgetMultiplier);
+        }
+
+        private static void AfterGetTradeScoreForTown(
+            MobileParty __0,
+            Town __1,
+            ref float __result)
+        {
+            var campaign = Campaign.Current;
+            var behavior = campaign == null
+                ? null
+                : campaign.GetCampaignBehavior<BridgeEconomyCampaignBehavior>();
+            if (behavior != null)
+                behavior.AdjustCaravanDestinationScore(__0, __1, ref __result);
+        }
+
+        private static bool BeforeCreateVillagerParty(Village __0)
         {
             if (!maximumActiveVillagerParties.HasValue)
                 return true;
@@ -3977,7 +5032,36 @@ namespace BCS.CoopBridge
                 if (party != null && party.IsActive)
                     activeVillagerParties++;
             }
-            return activeVillagerParties < maximumActiveVillagerParties.Value;
+            if (activeVillagerParties < maximumActiveVillagerParties.Value)
+                return true;
+
+            if (virtualVillagerShipmentsEnabled)
+            {
+                var campaign = Campaign.Current;
+                var behavior = campaign == null
+                    ? null
+                    : campaign.GetCampaignBehavior<BridgeEconomyCampaignBehavior>();
+                if (behavior != null)
+                    behavior.TryScheduleVirtualShipment(__0);
+            }
+            return false;
+        }
+
+        private static bool IsNpcCaravanParty(MobileParty party)
+        {
+            if (party == null || !party.IsCaravan)
+                return false;
+            var playerClan = Clan.PlayerClan;
+            return playerClan == null ||
+                   (!ReferenceEquals(party.ActualClan, playerClan) &&
+                    (party.Owner == null ||
+                     !ReferenceEquals(party.Owner.Clan, playerClan)));
+        }
+
+        private static int ScaleNonNegativeInt(int value, double multiplier)
+        {
+            var scaled = Math.Floor(Math.Max(0, value) * multiplier);
+            return scaled >= int.MaxValue ? int.MaxValue : (int)scaled;
         }
 
         private static void AfterGetMaximumBanditPartiesAroundEachHideout(ref int __result)
@@ -4004,6 +5088,18 @@ namespace BCS.CoopBridge
             return Path.Combine(directory.FullName, SettingsFileName);
         }
 
+        private static string ResolveEconomySettingsPath()
+        {
+            var assemblyPath = Assembly.GetExecutingAssembly().Location;
+            var directory = Directory.GetParent(assemblyPath);
+            for (var index = 0; index < 5 && directory != null; index++)
+                directory = directory.Parent;
+            if (directory == null)
+                throw new InvalidDataException(
+                    "Could not resolve the dedicated-server root for economy settings.");
+            return Path.Combine(directory.FullName, EconomySettingsFileName);
+        }
+
         private static PopulationSettings Load(string path)
         {
             if (!File.Exists(path))
@@ -4024,9 +5120,11 @@ namespace BCS.CoopBridge
 
             var isV1 = string.Equals(lines[0], HeaderV1, StringComparison.Ordinal);
             var isV2 = string.Equals(lines[0], HeaderV2, StringComparison.Ordinal);
-            if ((!isV1 && !isV2) ||
+            var isV3 = string.Equals(lines[0], HeaderV3, StringComparison.Ordinal);
+            if ((!isV1 && !isV2 && !isV3) ||
                 (isV1 && lines.Count != 4) ||
-                (isV2 && lines.Count != 5))
+                (isV2 && lines.Count != 5) ||
+                (isV3 && lines.Count != 10))
             {
                 throw new InvalidDataException("Unsupported bridge population settings schema.");
             }
@@ -4035,6 +5133,11 @@ namespace BCS.CoopBridge
             var caravansPerTown = DefaultAutomaticNpcCaravansPerTown;
             int? villagerLimit = null;
             var banditMultiplier = double.NaN;
+            var regionalRadius = DefaultPlayerActiveSpawnRadiusBanditTravelDays;
+            var regionalOutlaws = false;
+            var regionalVillagers = false;
+            var regionalPatrols = false;
+            var regionalDeserters = false;
             var seen = new HashSet<string>(StringComparer.Ordinal);
             for (var index = 1; index < lines.Count; index++)
             {
@@ -4051,7 +5154,7 @@ namespace BCS.CoopBridge
                         caravanLimit = ParseLimit(fields[1], MaximumAutomaticCaravansKey);
                         break;
                     case AutomaticNpcCaravansPerTownKey:
-                        if (!isV2 ||
+                        if ((!isV2 && !isV3) ||
                             !int.TryParse(
                                 fields[1],
                                 NumberStyles.None,
@@ -4063,6 +5166,46 @@ namespace BCS.CoopBridge
                             throw new InvalidDataException(
                                 "Invalid " + AutomaticNpcCaravansPerTownKey + ".");
                         }
+                        break;
+                    case PlayerActiveSpawnRadiusBanditTravelDaysKey:
+                        if (!isV3)
+                        {
+                            throw new InvalidDataException(
+                                "Invalid " + PlayerActiveSpawnRadiusBanditTravelDaysKey + ".");
+                        }
+                        regionalRadius = ParseFiniteDouble(
+                            fields[1],
+                            PlayerActiveSpawnRadiusBanditTravelDaysKey,
+                            MinimumPlayerActiveSpawnRadiusBanditTravelDays,
+                            MaximumPlayerActiveSpawnRadiusBanditTravelDays);
+                        break;
+                    case RegionalAmbientOutlawSpawnsEnabledKey:
+                        if (!isV3)
+                            throw new InvalidDataException(
+                                "Invalid " + RegionalAmbientOutlawSpawnsEnabledKey + ".");
+                        regionalOutlaws = ParseStrictBoolean(
+                            fields[1], RegionalAmbientOutlawSpawnsEnabledKey);
+                        break;
+                    case RegionalVillagerTradeEnabledKey:
+                        if (!isV3)
+                            throw new InvalidDataException(
+                                "Invalid " + RegionalVillagerTradeEnabledKey + ".");
+                        regionalVillagers = ParseStrictBoolean(
+                            fields[1], RegionalVillagerTradeEnabledKey);
+                        break;
+                    case RegionalSettlementPatrolSpawnsEnabledKey:
+                        if (!isV3)
+                            throw new InvalidDataException(
+                                "Invalid " + RegionalSettlementPatrolSpawnsEnabledKey + ".");
+                        regionalPatrols = ParseStrictBoolean(
+                            fields[1], RegionalSettlementPatrolSpawnsEnabledKey);
+                        break;
+                    case RegionalBattleDeserterSpawnsEnabledKey:
+                        if (!isV3)
+                            throw new InvalidDataException(
+                                "Invalid " + RegionalBattleDeserterSpawnsEnabledKey + ".");
+                        regionalDeserters = ParseStrictBoolean(
+                            fields[1], RegionalBattleDeserterSpawnsEnabledKey);
                         break;
                     case MaximumActiveVillagerPartiesKey:
                         villagerLimit = ParseLimit(fields[1], MaximumActiveVillagerPartiesKey);
@@ -4089,9 +5232,15 @@ namespace BCS.CoopBridge
             }
 
             if (!seen.Contains(MaximumAutomaticCaravansKey) ||
-                (isV2 && !seen.Contains(AutomaticNpcCaravansPerTownKey)) ||
+                ((isV2 || isV3) && !seen.Contains(AutomaticNpcCaravansPerTownKey)) ||
                 !seen.Contains(MaximumActiveVillagerPartiesKey) ||
-                !seen.Contains(BanditPartiesAroundHideoutMultiplierKey))
+                !seen.Contains(BanditPartiesAroundHideoutMultiplierKey) ||
+                (isV3 &&
+                 (!seen.Contains(PlayerActiveSpawnRadiusBanditTravelDaysKey) ||
+                  !seen.Contains(RegionalAmbientOutlawSpawnsEnabledKey) ||
+                  !seen.Contains(RegionalVillagerTradeEnabledKey) ||
+                  !seen.Contains(RegionalSettlementPatrolSpawnsEnabledKey) ||
+                  !seen.Contains(RegionalBattleDeserterSpawnsEnabledKey))))
             {
                 throw new InvalidDataException("Bridge population settings file is incomplete.");
             }
@@ -4099,7 +5248,146 @@ namespace BCS.CoopBridge
                 caravanLimit,
                 caravansPerTown,
                 villagerLimit,
-                banditMultiplier);
+                banditMultiplier,
+                regionalRadius,
+                regionalOutlaws,
+                regionalVillagers,
+                regionalPatrols,
+                regionalDeserters);
+        }
+
+        private static EconomySettings LoadEconomy(string path)
+        {
+            if (!File.Exists(path))
+                return EconomySettings.Defaults;
+
+            var info = new FileInfo(path);
+            if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Bridge economy settings file is linked: " + path);
+            if (info.Length <= 0 || info.Length > MaximumSettingsBytes)
+                throw new InvalidDataException(
+                    "Bridge economy settings file is empty or too large: " + path);
+
+            var text = StrictUtf8.GetString(File.ReadAllBytes(path));
+            var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
+            if (lines.Count > 0 && lines[lines.Count - 1].Length == 0)
+                lines.RemoveAt(lines.Count - 1);
+            if (lines.Count != 10 ||
+                !string.Equals(lines[0], EconomyHeaderV1, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "Unsupported bridge economy settings schema.");
+            }
+
+            var caravanCapacity = double.NaN;
+            var caravanTradeBudget = double.NaN;
+            var caravanAgeBonus = double.NaN;
+            var caravanAgeHorizonDays = 0;
+            var villagerCapacity = double.NaN;
+            var virtualVillagersEnabled = false;
+            var virtualVillagerCargo = double.NaN;
+            var virtualVillagerCooldownDays = 0;
+            var virtualVillagerTravelTime = double.NaN;
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (var index = 1; index < lines.Count; index++)
+            {
+                var fields = lines[index].Split('|');
+                if (fields.Length != 2 || string.IsNullOrEmpty(fields[0]) ||
+                    !seen.Add(fields[0]))
+                {
+                    throw new InvalidDataException(
+                        "Malformed or duplicate bridge economy setting.");
+                }
+
+                switch (fields[0])
+                {
+                    case CaravanCapacityMultiplierKey:
+                        caravanCapacity = ParseFiniteDouble(
+                            fields[1],
+                            CaravanCapacityMultiplierKey,
+                            MinimumEconomyMultiplier,
+                            MaximumEconomyMultiplier);
+                        break;
+                    case CaravanTradeBudgetMultiplierKey:
+                        caravanTradeBudget = ParseFiniteDouble(
+                            fields[1],
+                            CaravanTradeBudgetMultiplierKey,
+                            MinimumEconomyMultiplier,
+                            MaximumEconomyMultiplier);
+                        break;
+                    case CaravanDestinationAgeMaxBonusKey:
+                        caravanAgeBonus = ParseFiniteDouble(
+                            fields[1],
+                            CaravanDestinationAgeMaxBonusKey,
+                            0d,
+                            MaximumCaravanDestinationAgeBonus);
+                        break;
+                    case CaravanDestinationAgeHorizonDaysKey:
+                        caravanAgeHorizonDays = ParseDayCount(
+                            fields[1],
+                            CaravanDestinationAgeHorizonDaysKey);
+                        break;
+                    case VillagerPartyCapacityMultiplierKey:
+                        villagerCapacity = ParseFiniteDouble(
+                            fields[1],
+                            VillagerPartyCapacityMultiplierKey,
+                            MinimumEconomyMultiplier,
+                            MaximumEconomyMultiplier);
+                        break;
+                    case VirtualVillagerShipmentsEnabledKey:
+                        virtualVillagersEnabled = ParseStrictBoolean(
+                            fields[1],
+                            VirtualVillagerShipmentsEnabledKey);
+                        break;
+                    case VirtualVillagerCargoMultiplierKey:
+                        virtualVillagerCargo = ParseFiniteDouble(
+                            fields[1],
+                            VirtualVillagerCargoMultiplierKey,
+                            MinimumEconomyMultiplier,
+                            MaximumEconomyMultiplier);
+                        break;
+                    case VirtualVillagerCooldownDaysKey:
+                        virtualVillagerCooldownDays = ParseDayCount(
+                            fields[1],
+                            VirtualVillagerCooldownDaysKey);
+                        break;
+                    case VirtualVillagerTravelTimeMultiplierKey:
+                        virtualVillagerTravelTime = ParseFiniteDouble(
+                            fields[1],
+                            VirtualVillagerTravelTimeMultiplierKey,
+                            MinimumEconomyMultiplier,
+                            MaximumEconomyMultiplier);
+                        break;
+                    default:
+                        throw new InvalidDataException(
+                            "Unknown bridge economy setting: " + fields[0]);
+                }
+            }
+
+            if (!seen.Contains(CaravanCapacityMultiplierKey) ||
+                !seen.Contains(CaravanTradeBudgetMultiplierKey) ||
+                !seen.Contains(CaravanDestinationAgeMaxBonusKey) ||
+                !seen.Contains(CaravanDestinationAgeHorizonDaysKey) ||
+                !seen.Contains(VillagerPartyCapacityMultiplierKey) ||
+                !seen.Contains(VirtualVillagerShipmentsEnabledKey) ||
+                !seen.Contains(VirtualVillagerCargoMultiplierKey) ||
+                !seen.Contains(VirtualVillagerCooldownDaysKey) ||
+                !seen.Contains(VirtualVillagerTravelTimeMultiplierKey))
+            {
+                throw new InvalidDataException(
+                    "Bridge economy settings file is incomplete.");
+            }
+
+            return new EconomySettings(
+                caravanCapacity,
+                caravanTradeBudget,
+                caravanAgeBonus,
+                caravanAgeHorizonDays,
+                villagerCapacity,
+                virtualVillagersEnabled,
+                virtualVillagerCargo,
+                virtualVillagerCooldownDays,
+                virtualVillagerTravelTime);
         }
 
         private static int? ParseLimit(string value, string key)
@@ -4113,6 +5401,53 @@ namespace BCS.CoopBridge
                 throw new InvalidDataException("Invalid " + key + ".");
             }
             return parsed;
+        }
+
+        private static double ParseFiniteDouble(
+            string value,
+            string key,
+            double minimum,
+            double maximum)
+        {
+            double parsed;
+            if (!double.TryParse(
+                    value,
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out parsed) ||
+                double.IsNaN(parsed) ||
+                double.IsInfinity(parsed) ||
+                parsed < minimum ||
+                parsed > maximum)
+            {
+                throw new InvalidDataException("Invalid " + key + ".");
+            }
+            return parsed;
+        }
+
+        private static int ParseDayCount(string value, string key)
+        {
+            int parsed;
+            if (!int.TryParse(
+                    value,
+                    NumberStyles.None,
+                    CultureInfo.InvariantCulture,
+                    out parsed) ||
+                parsed < 1 ||
+                parsed > MaximumEconomyDays)
+            {
+                throw new InvalidDataException("Invalid " + key + ".");
+            }
+            return parsed;
+        }
+
+        private static bool ParseStrictBoolean(string value, string key)
+        {
+            if (string.Equals(value, "TRUE", StringComparison.Ordinal))
+                return true;
+            if (string.Equals(value, "FALSE", StringComparison.Ordinal))
+                return false;
+            throw new InvalidDataException("Invalid " + key + ".");
         }
 
         private static string FormatLimit(int? value)
@@ -4129,24 +5464,97 @@ namespace BCS.CoopBridge
                     null,
                     DefaultAutomaticNpcCaravansPerTown,
                     null,
-                    1d);
+                    1d,
+                    DefaultPlayerActiveSpawnRadiusBanditTravelDays,
+                    false,
+                    false,
+                    false,
+                    false);
 
             internal PopulationSettings(
                 int? maximumAutomaticCaravans,
                 int automaticNpcCaravansPerTown,
                 int? maximumActiveVillagerParties,
-                double banditPartiesAroundHideoutMultiplier)
+                double banditPartiesAroundHideoutMultiplier,
+                double playerActiveSpawnRadiusBanditTravelDays,
+                bool regionalAmbientOutlawSpawnsEnabled,
+                bool regionalVillagerTradeEnabled,
+                bool regionalSettlementPatrolSpawnsEnabled,
+                bool regionalBattleDeserterSpawnsEnabled)
             {
                 MaximumAutomaticCaravans = maximumAutomaticCaravans;
                 AutomaticNpcCaravansPerTown = automaticNpcCaravansPerTown;
                 MaximumActiveVillagerParties = maximumActiveVillagerParties;
                 BanditPartiesAroundHideoutMultiplier = banditPartiesAroundHideoutMultiplier;
+                PlayerActiveSpawnRadiusBanditTravelDays =
+                    playerActiveSpawnRadiusBanditTravelDays;
+                RegionalAmbientOutlawSpawnsEnabled =
+                    regionalAmbientOutlawSpawnsEnabled;
+                RegionalVillagerTradeEnabled = regionalVillagerTradeEnabled;
+                RegionalSettlementPatrolSpawnsEnabled =
+                    regionalSettlementPatrolSpawnsEnabled;
+                RegionalBattleDeserterSpawnsEnabled =
+                    regionalBattleDeserterSpawnsEnabled;
             }
 
             internal int? MaximumAutomaticCaravans { get; private set; }
             internal int AutomaticNpcCaravansPerTown { get; private set; }
             internal int? MaximumActiveVillagerParties { get; private set; }
             internal double BanditPartiesAroundHideoutMultiplier { get; private set; }
+            internal double PlayerActiveSpawnRadiusBanditTravelDays { get; private set; }
+            internal bool RegionalAmbientOutlawSpawnsEnabled { get; private set; }
+            internal bool RegionalVillagerTradeEnabled { get; private set; }
+            internal bool RegionalSettlementPatrolSpawnsEnabled { get; private set; }
+            internal bool RegionalBattleDeserterSpawnsEnabled { get; private set; }
+        }
+
+        private sealed class EconomySettings
+        {
+            internal static readonly EconomySettings Defaults =
+                new EconomySettings(
+                    1d,
+                    1d,
+                    0d,
+                    DefaultCaravanDestinationAgeHorizonDays,
+                    1d,
+                    false,
+                    1d,
+                    DefaultVirtualVillagerCooldownDays,
+                    1d);
+
+            internal EconomySettings(
+                double caravanCapacityMultiplier,
+                double caravanTradeBudgetMultiplier,
+                double caravanDestinationAgeMaxBonus,
+                int caravanDestinationAgeHorizonDays,
+                double villagerPartyCapacityMultiplier,
+                bool virtualVillagerShipmentsEnabled,
+                double virtualVillagerCargoMultiplier,
+                int virtualVillagerCooldownDays,
+                double virtualVillagerTravelTimeMultiplier)
+            {
+                CaravanCapacityMultiplier = caravanCapacityMultiplier;
+                CaravanTradeBudgetMultiplier = caravanTradeBudgetMultiplier;
+                CaravanDestinationAgeMaxBonus = caravanDestinationAgeMaxBonus;
+                CaravanDestinationAgeHorizonDays =
+                    caravanDestinationAgeHorizonDays;
+                VillagerPartyCapacityMultiplier = villagerPartyCapacityMultiplier;
+                VirtualVillagerShipmentsEnabled = virtualVillagerShipmentsEnabled;
+                VirtualVillagerCargoMultiplier = virtualVillagerCargoMultiplier;
+                VirtualVillagerCooldownDays = virtualVillagerCooldownDays;
+                VirtualVillagerTravelTimeMultiplier =
+                    virtualVillagerTravelTimeMultiplier;
+            }
+
+            internal double CaravanCapacityMultiplier { get; private set; }
+            internal double CaravanTradeBudgetMultiplier { get; private set; }
+            internal double CaravanDestinationAgeMaxBonus { get; private set; }
+            internal int CaravanDestinationAgeHorizonDays { get; private set; }
+            internal double VillagerPartyCapacityMultiplier { get; private set; }
+            internal bool VirtualVillagerShipmentsEnabled { get; private set; }
+            internal double VirtualVillagerCargoMultiplier { get; private set; }
+            internal int VirtualVillagerCooldownDays { get; private set; }
+            internal double VirtualVillagerTravelTimeMultiplier { get; private set; }
         }
     }
 
@@ -4171,6 +5579,15 @@ namespace BCS.CoopBridge
             new HashSet<string>(StringComparer.Ordinal);
         private static readonly HashSet<string> WorkshopCategoryNotices =
             new HashSet<string>(StringComparer.Ordinal);
+        private static readonly HashSet<string> Europe1700ShieldOutputCategoryIds =
+            new HashSet<string>(StringComparer.Ordinal)
+            {
+                "shield",
+                "shield_2",
+                "shield_3",
+                "shield_4",
+                "shield_5"
+            };
         private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<
             object,
             Dictionary<string, int>> WorkshopUnresolvedCategoryCounts =
@@ -4194,6 +5611,7 @@ namespace BCS.CoopBridge
         private static MethodInfo skippedVisualRemoveMethod;
         private static MethodInfo objectManagerContainsObjectMethod;
         private static FieldInfo workshopItemsInCategoryField;
+        private static FieldInfo workshopTypeProductionsField;
 
         private static Type mapEventVisualInterface;
         private static Type headlessMapEventVisualType;
@@ -5002,6 +6420,87 @@ namespace BCS.CoopBridge
             }
         }
 
+        internal static void InstallEurope1700InheritedShieldProductionSuppression()
+        {
+            var disabled = TryInstall(
+                "EOE inherited shield production suppression",
+                DisableLoadedEurope1700InheritedShieldProductions);
+            Console.WriteLine(
+                "[BCS Coop Bridge] EOE inherited shield production suppression: " +
+                (disabled ? "installed" : "unavailable") + ".");
+        }
+
+        private static void DisableLoadedEurope1700InheritedShieldProductions()
+        {
+            workshopTypeProductionsField = RequireField(
+                typeof(WorkshopType),
+                "_productions",
+                false);
+            if (!typeof(IList).IsAssignableFrom(
+                    workshopTypeProductionsField.FieldType))
+            {
+                throw new InvalidDataException(
+                    "Workshop production collection has an unexpected runtime type.");
+            }
+
+            var workshopTypes = WorkshopType.All;
+            if (workshopTypes == null || workshopTypes.Count == 0)
+            {
+                throw new InvalidDataException(
+                    "No workshop types were loaded before EOE shield suppression.");
+            }
+            var removed = DisableEurope1700InheritedShieldProductions(workshopTypes);
+            Console.WriteLine(
+                "[BCS Coop Bridge] EOE inherited shield production disabled: removed " +
+                removed.ToString(CultureInfo.InvariantCulture) +
+                " production definition(s).");
+        }
+
+        private static int DisableEurope1700InheritedShieldProductions(
+            IEnumerable<WorkshopType> workshopTypes)
+        {
+            if (workshopTypes == null)
+                throw new ArgumentNullException("workshopTypes");
+            var productionsField = workshopTypeProductionsField ?? RequireField(
+                typeof(WorkshopType),
+                "_productions",
+                false);
+            var removed = 0;
+            foreach (var workshopType in workshopTypes)
+            {
+                if (workshopType == null)
+                    continue;
+                var productions = productionsField.GetValue(workshopType) as IList;
+                if (productions == null)
+                {
+                    throw new InvalidDataException(
+                        "Workshop type '" + workshopType.StringId +
+                        "' has an unexpected production collection.");
+                }
+                for (var index = productions.Count - 1; index >= 0; index--)
+                {
+                    var productionEntry = productions[index];
+                    if (!(productionEntry is WorkshopType.Production))
+                    {
+                        throw new InvalidDataException(
+                            "Workshop type '" + workshopType.StringId +
+                            "' contains an unexpected production entry.");
+                    }
+                    var production = (WorkshopType.Production)productionEntry;
+                    if (!production.Outputs.Any(output =>
+                            output.Item1 != null &&
+                            Europe1700ShieldOutputCategoryIds.Contains(
+                                output.Item1.StringId)))
+                    {
+                        continue;
+                    }
+                    productions.RemoveAt(index);
+                    removed++;
+                }
+            }
+            return removed;
+        }
+
         private static void InstallWorkshopOutputCategoryRepair()
         {
             var behaviorType = typeof(WorkshopsCampaignBehavior);
@@ -5573,6 +7072,727 @@ namespace BCS.CoopBridge
         }
 
     }
+
+#endif
+#if !BCS_SERVER
+    internal static class ClientDeterministicBattleSceneProjection
+    {
+        private const string TargetTypeName =
+            "GameInterface.Services.MapEvents.FieldBattleMissionInitializer";
+        private const int MaxParityWarningAttempts = 5;
+        private static readonly object Sync = new object();
+        private static MethodInfo mainThreadAssert;
+        private static PropertyInfo gameRandomProperty;
+        private static SelectionScope activeScope;
+        private static bool installed;
+        private static bool parityWarningShown;
+        private static bool parityWarningAbandoned;
+        private static bool parityWarningFailureLogged;
+        private static int parityWarningAttempts;
+        private static DateTime parityWarningRetryNotBeforeUtc;
+        private static BattleSceneCatalogValidationResult configuredValidation;
+
+        internal static void Install(string coopModuleRoot, string bridgeId)
+        {
+            lock (Sync)
+            {
+                if (installed)
+                    return;
+
+                var validation = BridgeRuntime.GetBattleSceneCatalogValidation();
+                if (!string.Equals(
+                        validation.Rule.TargetModuleId,
+                        "Europe1700",
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException(
+                        "Deterministic battle-scene projection was activated outside Europe1700.");
+                }
+                var gameInterfacePath = BridgeRuntime.FindAssemblyForRegistration(
+                    coopModuleRoot,
+                    "GameInterface.dll");
+                if (gameInterfacePath == null)
+                {
+                    throw new FileNotFoundException(
+                        "Released Coop GameInterface.dll is missing for battle-scene projection.",
+                        Path.Combine(
+                            coopModuleRoot,
+                            "bin",
+                            "Win64_Shipping_Client",
+                            "GameInterface.dll"));
+                }
+                var gameInterface = ClientCoopHandlerRegistration.LoadExactCoopAssembly(
+                    gameInterfacePath,
+                    "GameInterface");
+                var targetType = gameInterface.GetType(TargetTypeName, true, false);
+                var targets = targetType.GetMethods(
+                        BindingFlags.Instance | BindingFlags.Public |
+                        BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                    .Where(method =>
+                        string.Equals(method.Name, "Create", StringComparison.Ordinal) &&
+                        !method.IsStatic &&
+                        !method.IsGenericMethodDefinition &&
+                        method.IsPublic &&
+                        method.ReturnType == typeof(MissionInitializerRecord) &&
+                        method.GetParameters().Select(parameter => parameter.ParameterType)
+                            .SequenceEqual(new[]
+                            {
+                                typeof(MapEvent),
+                                typeof(int),
+                                typeof(AtmosphereInfo)
+                            }))
+                    .ToArray();
+                if (targets.Length != 1)
+                {
+                    throw new MissingMethodException(
+                        TargetTypeName,
+                        "public instance Create(MapEvent, int, AtmosphereInfo): MissionInitializerRecord");
+                }
+                var target = targets[0];
+                ValidateTargetLifecycle(target);
+                mainThreadAssert = ResolveMainThreadAssert();
+                gameRandomProperty = ResolveGameRandomProperty();
+
+                var owner = bridgeId + ".client-deterministic-battle-scene-projection";
+                var existing = Harmony.GetPatchInfo(target);
+                if (existing != null && existing.Owners.Count != 0)
+                {
+                    throw new InvalidOperationException(
+                        "Released Coop field-battle initializer already has Harmony owners: " +
+                        string.Join(", ", existing.Owners) + ".");
+                }
+
+                var prefix = typeof(ClientDeterministicBattleSceneProjection).GetMethod(
+                    nameof(BeforeCreate),
+                    BindingFlags.Static | BindingFlags.Public);
+                var postfix = typeof(ClientDeterministicBattleSceneProjection).GetMethod(
+                    nameof(AfterCreate),
+                    BindingFlags.Static | BindingFlags.Public);
+                var finalizer = typeof(ClientDeterministicBattleSceneProjection).GetMethod(
+                    nameof(FinalizeCreate),
+                    BindingFlags.Static | BindingFlags.Public);
+                if (prefix == null || postfix == null || finalizer == null)
+                {
+                    throw new MissingMethodException(
+                        typeof(ClientDeterministicBattleSceneProjection).FullName,
+                        "battle-scene Harmony scope methods");
+                }
+
+                var harmony = new Harmony(owner);
+                harmony.Patch(
+                    target,
+                    prefix: new HarmonyMethod(prefix) { priority = Priority.First },
+                    postfix: new HarmonyMethod(postfix) { priority = Priority.Last },
+                    finalizer: new HarmonyMethod(finalizer) { priority = Priority.Last });
+                var applied = Harmony.GetPatchInfo(target);
+                if (applied == null || applied.Owners.Count != 1 ||
+                    !string.Equals(applied.Owners[0], owner, StringComparison.Ordinal) ||
+                    applied.Prefixes.Count(patch => string.Equals(
+                        patch.owner,
+                        owner,
+                        StringComparison.Ordinal)) != 1 ||
+                    applied.Postfixes.Count(patch => string.Equals(
+                        patch.owner,
+                        owner,
+                        StringComparison.Ordinal)) != 1 ||
+                    applied.Finalizers.Count(patch => string.Equals(
+                        patch.owner,
+                        owner,
+                        StringComparison.Ordinal)) != 1 ||
+                    applied.Transpilers.Any(patch => string.Equals(
+                        patch.owner,
+                        owner,
+                        StringComparison.Ordinal)))
+                {
+                    harmony.Unpatch(target, HarmonyPatchType.All, owner);
+                    throw new InvalidOperationException(
+                        "Battle-scene projection Harmony scope was not installed exactly once.");
+                }
+
+                installed = true;
+                configuredValidation = validation;
+                var activationRecord =
+                    "{\"schema\":1" +
+                    ",\"bridgeId\":" + Json(bridgeId) +
+                    ",\"target\":" + Json(TargetTypeName + ".Create") +
+                    ",\"catalogContractSha256\":" + Json(validation.ContractSha256) +
+                    ",\"parity\":" + Json(validation.HasContentDrift ? "warning" : "ok") +
+                    ",\"contentMismatchCount\":" +
+                    validation.ContentMismatchCount.ToString(CultureInfo.InvariantCulture) + "}";
+                BridgeRuntime.RecordStartupProgress(
+                    "BATTLE_SCENE_PROJECTION_ACTIVATED " + activationRecord);
+                Console.WriteLine(
+                    "[BCS Coop Bridge] Installed fail-closed deterministic EOE battle-scene projection.");
+            }
+        }
+
+        public static void BeforeCreate(
+            MapEvent __0,
+            int __1,
+            AtmosphereInfo __2,
+            out SelectionScope __state)
+        {
+            __state = null;
+            AssertMainThread();
+            if (__0 == null)
+                throw new InvalidOperationException("Coop field-battle initializer received no MapEvent.");
+            if (__1 < 0 || __1 > 9999)
+            {
+                throw new InvalidDataException(
+                    "Coop field-battle terrain seed is outside the proven 0..9999 range: " +
+                    __1.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+            BridgeRuntime.GetBattleSceneCatalogValidation();
+            __state = (SelectionScope)BeginRandomScopeForSmoke(
+                __1,
+                GetCurrentGame,
+                GetGameRandom,
+                SetGameRandom,
+                CreateGameRandom);
+        }
+
+        public static void AfterCreate(
+            MapEvent __0,
+            int __1,
+            AtmosphereInfo __2,
+            MissionInitializerRecord __result,
+            SelectionScope __state)
+        {
+            AssertMainThread();
+            if (__state == null)
+                throw new InvalidOperationException("Battle-scene RNG scope state was not created.");
+            __state.Dispose();
+            var validation = BridgeRuntime.GetBattleSceneCatalogValidation();
+            WriteResolutionRecord(__0, __1, __2, __result, validation);
+        }
+
+        internal static void OnApplicationTick()
+        {
+            BattleSceneCatalogValidationResult validation;
+            var now = DateTime.UtcNow;
+            lock (Sync)
+            {
+                validation = configuredValidation;
+                if (validation == null || !validation.HasContentDrift || parityWarningShown ||
+                    parityWarningAbandoned || now < parityWarningRetryNotBeforeUtc)
+                    return;
+            }
+            try
+            {
+                if (TaleWorlds.Core.Game.Current == null || InformationManager.IsAnyInquiryActive())
+                    return;
+                var details = string.IsNullOrWhiteSpace(validation.FirstContentMismatch)
+                    ? string.Empty
+                    : "\n\nFirst mismatch: " + validation.FirstContentMismatch;
+                var inquiry = new InquiryData(
+                    "BCS Coop Bridge: battle-scene parity warning",
+                    "Local battle-scene files differ from the pinned EOE catalog contract. " +
+                    "This preview session will continue as requested, but tactical maps can " +
+                    "desynchronize between players. Full details are in the client log (" +
+                    validation.ContentMismatchCount.ToString(CultureInfo.InvariantCulture) +
+                    " mismatch(es))." + details,
+                    true,
+                    false,
+                    "Continue",
+                    string.Empty,
+                    delegate { },
+                    null,
+                    string.Empty,
+                    0f,
+                    null,
+                    null,
+                    null);
+                InformationManager.ShowInquiry(inquiry, false, false);
+                lock (Sync)
+                    parityWarningShown = true;
+            }
+            catch (Exception exception)
+            {
+                bool firstFailure;
+                bool finalFailure;
+                lock (Sync)
+                {
+                    parityWarningAttempts++;
+                    firstFailure = !parityWarningFailureLogged;
+                    parityWarningFailureLogged = true;
+                    finalFailure = parityWarningAttempts >= MaxParityWarningAttempts;
+                    parityWarningAbandoned = finalFailure;
+                    if (!finalFailure)
+                    {
+                        parityWarningRetryNotBeforeUtc = now.AddSeconds(
+                            Math.Min(30, parityWarningAttempts * 5));
+                    }
+                }
+                if (!firstFailure && !finalFailure)
+                    return;
+                var line = finalFailure
+                    ? "[BCS Coop Bridge] WARNING: Scene Catalog Parity inquiry could not be " +
+                      "shown after " + MaxParityWarningAttempts.ToString(CultureInfo.InvariantCulture) +
+                      " bounded attempts; continuing without the modal warning. Last failure: " +
+                      exception.GetType().Name + ": " + exception.Message
+                    : "[BCS Coop Bridge] WARNING: Queued Scene Catalog Parity inquiry could not " +
+                      "be shown yet; bounded retries remain. " + exception.GetType().Name + ": " +
+                      exception.Message;
+                Console.WriteLine(line);
+                Trace.WriteLine(line);
+            }
+        }
+
+        public static Exception FinalizeCreate(Exception __exception, SelectionScope __state)
+        {
+            Exception restorationFailure = null;
+            try
+            {
+                if (__state != null)
+                    __state.Dispose();
+            }
+            catch (Exception exception)
+            {
+                restorationFailure = exception;
+            }
+            if (restorationFailure == null)
+                return __exception;
+
+            var combined = __exception == null
+                ? restorationFailure
+                : (Exception)new AggregateException(__exception, restorationFailure);
+            return new InvalidOperationException(
+                "BCS Coop bridge could not restore Bannerlord's random generator after " +
+                "field-scene selection; the affected mission start was aborted.",
+                combined);
+        }
+
+        internal static IDisposable BeginRandomScopeForSmoke(
+            int seed,
+            Func<object> getCurrentGame,
+            Func<object, object> getRandom,
+            Action<object, object> setRandom,
+            Func<int, object> createRandom)
+        {
+            if (getCurrentGame == null)
+                throw new ArgumentNullException("getCurrentGame");
+            if (getRandom == null)
+                throw new ArgumentNullException("getRandom");
+            if (setRandom == null)
+                throw new ArgumentNullException("setRandom");
+            if (createRandom == null)
+                throw new ArgumentNullException("createRandom");
+
+            lock (Sync)
+            {
+                if (activeScope != null)
+                {
+                    throw new InvalidOperationException(
+                        "Nested battle-scene random-generator scopes are not allowed.");
+                }
+                var scope = SelectionScope.Begin(
+                    seed,
+                    getCurrentGame,
+                    getRandom,
+                    setRandom,
+                    createRandom,
+                    OnScopeDisposed);
+                activeScope = scope;
+                return scope;
+            }
+        }
+
+        private static void OnScopeDisposed(SelectionScope scope)
+        {
+            lock (Sync)
+            {
+                if (!ReferenceEquals(activeScope, scope))
+                {
+                    throw new InvalidOperationException(
+                        "Battle-scene random-generator scope ownership changed before restoration.");
+                }
+                activeScope = null;
+            }
+        }
+
+        private static object GetCurrentGame()
+        {
+            return TaleWorlds.Core.Game.Current;
+        }
+
+        private static object GetGameRandom(object game)
+        {
+            return gameRandomProperty.GetValue((TaleWorlds.Core.Game)game, null);
+        }
+
+        private static void SetGameRandom(object game, object random)
+        {
+            gameRandomProperty.SetValue(
+                (TaleWorlds.Core.Game)game,
+                (MBFastRandom)random,
+                null);
+        }
+
+        private static object CreateGameRandom(int seed)
+        {
+            return new MBFastRandom(unchecked((uint)seed));
+        }
+
+        private static void AssertMainThread()
+        {
+            var method = mainThreadAssert;
+            if (method == null)
+            {
+                throw new InvalidOperationException(
+                    "Bannerlord main-thread assertion was not configured for battle-scene projection.");
+            }
+            try
+            {
+                method.Invoke(null, null);
+            }
+            catch (TargetInvocationException exception)
+            {
+                throw new InvalidOperationException(
+                    "Deterministic battle-scene projection must execute on Bannerlord's main thread.",
+                    exception.InnerException ?? exception);
+            }
+        }
+
+        private static MethodInfo ResolveMainThreadAssert()
+        {
+            var twParallel = typeof(Vec2).Assembly.GetType(
+                "TaleWorlds.Library.TWParallel",
+                true,
+                false);
+            var methods = twParallel.GetMethods(
+                    BindingFlags.Static | BindingFlags.Public |
+                    BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                .Where(method =>
+                    string.Equals(method.Name, "AssertIsMainThread", StringComparison.Ordinal) &&
+                    !method.IsGenericMethodDefinition &&
+                    method.ReturnType == typeof(void) &&
+                    method.GetParameters().Length == 0)
+                .ToArray();
+            if (methods.Length != 1)
+            {
+                throw new MissingMethodException(
+                    twParallel.FullName,
+                    "AssertIsMainThread(): void");
+            }
+            return methods[0];
+        }
+
+        private static PropertyInfo ResolveGameRandomProperty()
+        {
+            var properties = typeof(TaleWorlds.Core.Game).GetProperties(
+                    BindingFlags.Instance | BindingFlags.Public |
+                    BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                .Where(property =>
+                    string.Equals(property.Name, "RandomGenerator", StringComparison.Ordinal) &&
+                    property.PropertyType == typeof(MBFastRandom) &&
+                    property.GetIndexParameters().Length == 0 &&
+                    property.GetGetMethod(true) != null &&
+                    property.GetSetMethod(true) != null)
+                .ToArray();
+            if (properties.Length != 1)
+            {
+                throw new MissingMemberException(
+                    typeof(TaleWorlds.Core.Game).FullName,
+                    "RandomGenerator: MBFastRandom with getter and setter");
+            }
+            return properties[0];
+        }
+
+        private static void ValidateTargetLifecycle(MethodInfo target)
+        {
+            var instructions = PatchProcessor.GetOriginalInstructions(target).ToArray();
+            var sceneLookupIndices = instructions
+                .Select((instruction, index) => new { instruction, index })
+                .Where(item => IsSceneLookupCall(item.instruction.operand as MethodInfo))
+                .Select(item => item.index)
+                .ToArray();
+            var seedAssignmentIndices = instructions
+                .Select((instruction, index) => new { instruction, index })
+                .Where(item => IsRandomTerrainSeedAssignment(item.instruction))
+                .Select(item => item.index)
+                .ToArray();
+            if (sceneLookupIndices.Length != 1 || seedAssignmentIndices.Length != 1 ||
+                sceneLookupIndices[0] >= seedAssignmentIndices[0])
+            {
+                throw new InvalidDataException(
+                    "Released Coop field-battle initializer lifecycle changed: expected one native " +
+                    "scene lookup before one RandomTerrainSeed assignment.");
+            }
+        }
+
+        private static bool IsSceneLookupCall(MethodInfo method)
+        {
+            return method != null &&
+                   string.Equals(
+                       method.DeclaringType == null ? null : method.DeclaringType.FullName,
+                       "TaleWorlds.CampaignSystem.ComponentInterfaces.SceneModel",
+                       StringComparison.Ordinal) &&
+                   string.Equals(
+                       method.Name,
+                       "GetBattleSceneForMapPatch",
+                       StringComparison.Ordinal) &&
+                   method.ReturnType == typeof(string) &&
+                   method.GetParameters().Select(parameter => parameter.ParameterType)
+                       .SequenceEqual(new[] { typeof(MapPatchData), typeof(bool) });
+        }
+
+        private static bool IsRandomTerrainSeedAssignment(CodeInstruction instruction)
+        {
+            var field = instruction.operand as FieldInfo;
+            if (instruction.opcode == OpCodes.Stfld && field != null)
+            {
+                return field.DeclaringType == typeof(MissionInitializerRecord) &&
+                       field.FieldType == typeof(int) &&
+                       string.Equals(field.Name, "RandomTerrainSeed", StringComparison.Ordinal);
+            }
+            var setter = instruction.operand as MethodInfo;
+            return setter != null &&
+                   setter.DeclaringType == typeof(MissionInitializerRecord) &&
+                   setter.ReturnType == typeof(void) &&
+                   string.Equals(setter.Name, "set_RandomTerrainSeed", StringComparison.Ordinal) &&
+                   setter.GetParameters().Select(parameter => parameter.ParameterType)
+                       .SequenceEqual(new[] { typeof(int) });
+        }
+
+        private static void WriteResolutionRecord(
+            MapEvent battle,
+            int seed,
+            AtmosphereInfo atmosphere,
+            MissionInitializerRecord result,
+            BattleSceneCatalogValidationResult validation)
+        {
+            try
+            {
+                var campaign = Campaign.Current;
+                if (campaign == null || campaign.MapSceneWrapper == null ||
+                    campaign.Models == null || campaign.Models.SceneModel == null)
+                {
+                    throw new InvalidOperationException(
+                        "Campaign scene-model inputs are unavailable after field-scene selection.");
+                }
+                var position = battle.Position;
+                var position2D = position.ToVec2();
+                var mapPatch = campaign.MapSceneWrapper.GetMapPatchAtPosition(position);
+                var naval = PlayerEncounter.IsNavalEncounter();
+                var contractCandidates = validation.GetContractCandidates(mapPatch.sceneIndex);
+                var candidateJson = string.Join(",", contractCandidates.Select(candidate =>
+                    Json(candidate.SceneId)));
+                var record =
+                    "{\"schema\":1" +
+                    ",\"mapEvent\":" + Json(ReadMapEventId(battle)) +
+                    ",\"seed\":" + seed.ToString(CultureInfo.InvariantCulture) +
+                    ",\"mapPosition\":{\"x\":" + Float(position2D.X) +
+                    ",\"y\":" + Float(position2D.Y) +
+                    ",\"face\":" + Json(position.Face.ToString()) + "}" +
+                    ",\"mapPatch\":{\"sceneIndex\":" +
+                    mapPatch.sceneIndex.ToString(CultureInfo.InvariantCulture) +
+                    ",\"normalizedX\":" + Float(mapPatch.normalizedCoordinates.X) +
+                    ",\"normalizedY\":" + Float(mapPatch.normalizedCoordinates.Y) + "}" +
+                    ",\"naval\":" + (naval ? "true" : "false") +
+                    ",\"sceneModel\":" + Json(campaign.Models.SceneModel.GetType().FullName) +
+                    ",\"contractCandidateCount\":" +
+                    contractCandidates.Length.ToString(CultureInfo.InvariantCulture) +
+                    ",\"contractCandidates\":[" + candidateJson + "]" +
+                    ",\"selectedScene\":" + Json(result.SceneName) +
+                    ",\"atmosphere\":" + Json(atmosphere.ToString()) +
+                    ",\"catalogContractSha256\":" + Json(validation.ContractSha256) +
+                    ",\"parity\":" + Json(validation.HasContentDrift ? "warning" : "ok") +
+                    ",\"contentMismatchCount\":" +
+                    validation.ContentMismatchCount.ToString(CultureInfo.InvariantCulture) + "}";
+                BridgeRuntime.RecordStartupProgress("BATTLE_SCENE_RESOLUTION " + record);
+                var line = "[BCS Coop Bridge] BATTLE_SCENE_RESOLUTION " + record;
+                Console.WriteLine(line);
+                Trace.WriteLine(line);
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine(
+                    "[BCS Coop Bridge] WARNING: Battle Scene Resolution Record could not be completed: " +
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+        }
+
+        private static string ReadMapEventId(MapEvent battle)
+        {
+            foreach (var name in new[] { "StringId", "Id", "MapEventId" })
+            {
+                var property = battle.GetType().GetProperty(
+                    name,
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (property != null && property.GetIndexParameters().Length == 0)
+                {
+                    var value = property.GetValue(battle, null);
+                    if (value != null)
+                        return value.ToString();
+                }
+                var field = battle.GetType().GetField(
+                    name,
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (field != null)
+                {
+                    var value = field.GetValue(battle);
+                    if (value != null)
+                        return value.ToString();
+                }
+            }
+            return "<unavailable>";
+        }
+
+        private static string Float(float value)
+        {
+            return value.ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        private static string Json(string value)
+        {
+            if (value == null)
+                return "null";
+            var builder = new StringBuilder(value.Length + 2);
+            builder.Append('"');
+            foreach (var character in value)
+            {
+                switch (character)
+                {
+                    case '"':
+                        builder.Append("\\\"");
+                        break;
+                    case '\\':
+                        builder.Append("\\\\");
+                        break;
+                    case '\b':
+                        builder.Append("\\b");
+                        break;
+                    case '\f':
+                        builder.Append("\\f");
+                        break;
+                    case '\n':
+                        builder.Append("\\n");
+                        break;
+                    case '\r':
+                        builder.Append("\\r");
+                        break;
+                    case '\t':
+                        builder.Append("\\t");
+                        break;
+                    default:
+                        if (character < ' ')
+                        {
+                            builder.Append("\\u");
+                            builder.Append(((int)character).ToString("X4", CultureInfo.InvariantCulture));
+                        }
+                        else
+                        {
+                            builder.Append(character);
+                        }
+                        break;
+                }
+            }
+            builder.Append('"');
+            return builder.ToString();
+        }
+
+        internal sealed class SelectionScope : IDisposable
+        {
+            private readonly object game;
+            private readonly object previousRandom;
+            private readonly Func<object> getCurrentGame;
+            private readonly Func<object, object> getRandom;
+            private readonly Action<object, object> setRandom;
+            private readonly Action<SelectionScope> onDisposed;
+            private bool disposed;
+
+            private SelectionScope(
+                object game,
+                object previousRandom,
+                Func<object> getCurrentGame,
+                Func<object, object> getRandom,
+                Action<object, object> setRandom,
+                Action<SelectionScope> onDisposed)
+            {
+                this.game = game;
+                this.previousRandom = previousRandom;
+                this.getCurrentGame = getCurrentGame;
+                this.getRandom = getRandom;
+                this.setRandom = setRandom;
+                this.onDisposed = onDisposed;
+            }
+
+            internal static SelectionScope Begin(
+                int seed,
+                Func<object> getCurrentGame,
+                Func<object, object> getRandom,
+                Action<object, object> setRandom,
+                Func<int, object> createRandom,
+                Action<SelectionScope> onDisposed)
+            {
+                var game = getCurrentGame();
+                if (game == null)
+                    throw new InvalidOperationException("Bannerlord Game.Current is unavailable.");
+                var previousRandom = getRandom(game);
+                if (previousRandom == null)
+                    throw new InvalidOperationException("Bannerlord Game.RandomGenerator is unavailable.");
+                var replacement = createRandom(seed);
+                if (replacement == null)
+                    throw new InvalidOperationException("Seeded battle-scene random generator was not created.");
+
+                var replacementInstalled = false;
+                try
+                {
+                    setRandom(game, replacement);
+                    replacementInstalled = true;
+                    if (!ReferenceEquals(getRandom(game), replacement))
+                    {
+                        throw new InvalidOperationException(
+                            "Seeded battle-scene random generator was not installed identically.");
+                    }
+                    return new SelectionScope(
+                        game,
+                        previousRandom,
+                        getCurrentGame,
+                        getRandom,
+                        setRandom,
+                        onDisposed);
+                }
+                catch
+                {
+                    if (replacementInstalled)
+                        setRandom(game, previousRandom);
+                    throw;
+                }
+            }
+
+            public void Dispose()
+            {
+                if (disposed)
+                    return;
+
+                Exception failure = null;
+                try
+                {
+                    setRandom(game, previousRandom);
+                    if (!ReferenceEquals(getRandom(game), previousRandom))
+                    {
+                        throw new InvalidOperationException(
+                            "Bannerlord's original random generator was not restored identically.");
+                    }
+                    if (!ReferenceEquals(getCurrentGame(), game))
+                    {
+                        throw new InvalidOperationException(
+                            "Bannerlord Game.Current changed during field-scene selection.");
+                    }
+                }
+                catch (Exception exception)
+                {
+                    failure = exception;
+                }
+
+                if (failure != null)
+                    throw failure;
+                onDisposed(this);
+                disposed = true;
+            }
+        }
+    }
 #endif
 
     internal static class BridgeRuntime
@@ -5593,11 +7813,15 @@ namespace BCS.CoopBridge
             "ClientTroopRosterSequenceDiagnostic";
         internal const string ClientCharacterCreationLifecycleCompatibilityFeature =
             "ClientCharacterCreationLifecycleCompatibility";
+        internal const string ClientDeterministicBattleSceneProjectionFeature =
+            "ClientDeterministicBattleSceneProjection";
         internal const string ServerRegistryLifecycleCompatibilityFeature =
             "ServerRegistryLifecycleCompatibility";
         internal const string ServerPopulationControlFeature = "ServerPopulationControl";
         internal const string ServerFailedIdCompatibilityFeature = "ServerFailedIdCompatibility";
-        private static readonly HashSet<string> SupportedRuntimeFeatures =
+        internal const string ServerEurope1700ShieldProductionSuppressionFeature =
+            "ServerEurope1700ShieldProductionSuppression";
+        private static readonly HashSet<string> HistoricalRuntimeFeatures =
             new HashSet<string>(StringComparer.Ordinal)
             {
                 ClientMapEventCompatibilityFeature,
@@ -5611,9 +7835,20 @@ namespace BCS.CoopBridge
                 ServerPopulationControlFeature,
                 ServerFailedIdCompatibilityFeature
             };
+        private static readonly HashSet<string> SupportedRuntimeFeatures =
+            new HashSet<string>(HistoricalRuntimeFeatures, StringComparer.Ordinal)
+            {
+                ClientDeterministicBattleSceneProjectionFeature,
+                ServerEurope1700ShieldProductionSuppressionFeature
+            };
+        private const string DiagnosticMutexName =
+            @"Local\BCS.CoopBridge.StartupProgress.v1";
+        private const int DiagnosticMutexTimeoutMilliseconds = 100;
         private static readonly object Sync = new object();
+        private static readonly object DiagnosticSync = new object();
         private static HashSet<string> activeRuntimeFeatures =
             new HashSet<string>(StringComparer.Ordinal);
+        private static BattleSceneCatalogValidationResult battleSceneCatalogValidation;
         private static bool validated;
         internal static void ValidateInstalledPackage()
         {
@@ -5634,6 +7869,66 @@ namespace BCS.CoopBridge
                     throw new FileNotFoundException("BCS Coop bridge configuration is missing.", configurationPath);
 
                 var configurationBytes = File.ReadAllBytes(configurationPath);
+                var lines = Encoding.UTF8.GetString(configurationBytes)
+                    .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+                var configurationSchema = lines.Length == 0
+                    ? 0
+                    : string.Equals(lines[0], "BCS-COOP-BRIDGE|1", StringComparison.Ordinal)
+                        ? 1
+                        : string.Equals(lines[0], "BCS-COOP-BRIDGE|2", StringComparison.Ordinal)
+                            ? 2
+                            : string.Equals(lines[0], "BCS-COOP-BRIDGE|3", StringComparison.Ordinal)
+                                ? 3
+                                : 0;
+                if (configurationSchema == 0)
+                    throw new InvalidDataException("Unsupported BCS Coop bridge configuration schema.");
+
+                var contractIdentityBytes = new byte[0];
+                if (configurationSchema == 3)
+                {
+                    var contractRecords = lines.Skip(1)
+                        .Select(line => line.Split('|'))
+                        .Where(fields => fields.Length > 0 && string.Equals(
+                            fields[0],
+                            "BATTLE_SCENE_CATALOG_CONTRACT",
+                            StringComparison.Ordinal))
+                        .ToArray();
+                    if (contractRecords.Length != 1 || contractRecords[0].Length != 8)
+                    {
+                        throw new InvalidDataException(
+                            "Schema 3 requires exactly one battle-scene catalog contract record.");
+                    }
+                    var identityContractRelativePath = Decode(contractRecords[0][5]).Replace('\\', '/');
+                    if (!IsBattleSceneContractPath(identityContractRelativePath))
+                    {
+                        throw new InvalidDataException(
+                            "Schema-3 battle-scene contract must be BattleSceneCatalog/*.bcs.");
+                    }
+                    var identityContractPath = ResolveSafeRelativePath(
+                        moduleRoot.FullName,
+                        identityContractRelativePath);
+                    ValidateRequiredModuleRegularFile(
+                        moduleRoot.FullName,
+                        identityContractPath,
+                        "Battle-scene catalog contract");
+                    contractIdentityBytes = File.ReadAllBytes(identityContractPath);
+                    var identityContractHash = Hash(contractIdentityBytes);
+                    if (!IsUppercaseSha256(contractRecords[0][6]) ||
+                        !string.Equals(
+                            identityContractHash,
+                            contractRecords[0][6],
+                            StringComparison.Ordinal))
+                    {
+                        throw new InvalidDataException(
+                            "Battle-scene catalog contract does not match its schema-3 hash.");
+                    }
+                    if (!string.Equals(contractRecords[0][7], "WARN_ONLY", StringComparison.Ordinal))
+                    {
+                        throw new InvalidDataException(
+                            "Unsupported battle-scene catalog mismatch policy: " +
+                            contractRecords[0][7] + ".");
+                    }
+                }
                 var serverAssemblyPath = Path.Combine(
                     moduleRoot.FullName,
                     "bin",
@@ -5668,6 +7963,7 @@ namespace BCS.CoopBridge
                 }
                 var expectedId = BridgeIdPrefix + BuildBridgeIdentity(
                     configurationBytes,
+                    contractIdentityBytes,
                     File.ReadAllBytes(serverAssemblyPath),
                     File.ReadAllBytes(clientAssemblyPath));
                 var manifestPath = Path.Combine(moduleRoot.FullName, "SubModule.xml");
@@ -5684,17 +7980,6 @@ namespace BCS.CoopBridge
                     throw new InvalidOperationException("Bannerlord Modules directory could not be resolved.");
 
                 var installed = ReadInstalledModules(modulesRoot.FullName);
-                var lines = Encoding.UTF8.GetString(configurationBytes)
-                    .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
-                var configurationSchema = lines.Length == 0
-                    ? 0
-                    : string.Equals(lines[0], "BCS-COOP-BRIDGE|1", StringComparison.Ordinal)
-                        ? 1
-                        : string.Equals(lines[0], "BCS-COOP-BRIDGE|2", StringComparison.Ordinal)
-                            ? 2
-                            : 0;
-                if (configurationSchema == 0)
-                    throw new InvalidDataException("Unsupported BCS Coop bridge configuration schema.");
 
                 var authorityRules = new List<AuthorityRule>();
                 var serverFileRedirects = new List<ServerFileRedirect>();
@@ -5704,6 +7989,7 @@ namespace BCS.CoopBridge
                 var clientAssemblyResolveNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 ServerMapTerrainSizeRule serverMapTerrainSize = null;
                 GameVersionCompatibilityRule gameVersionCompatibility = null;
+                BattleSceneCatalogContractRule battleSceneCatalogContract = null;
                 var ignoredContent = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
                 var runtimeFeatures = new HashSet<string>(StringComparer.Ordinal);
                 var enabledSubModules = new Dictionary<string, SubModuleRule>(StringComparer.OrdinalIgnoreCase);
@@ -5716,7 +8002,7 @@ namespace BCS.CoopBridge
                     if (fields.Length > 0 &&
                         string.Equals(fields[0], "DISABLED_SUBMODULE", StringComparison.Ordinal))
                     {
-                        if (configurationSchema != 2)
+                        if (configurationSchema < 2)
                         {
                             throw new InvalidDataException(
                                 "Disabled-submodule records require bridge configuration schema 2.");
@@ -5749,7 +8035,7 @@ namespace BCS.CoopBridge
                     if (fields.Length == 2 &&
                         string.Equals(fields[0], "RUNTIME_FEATURE", StringComparison.Ordinal))
                     {
-                        if (configurationSchema != 2)
+                        if (configurationSchema < 2)
                         {
                             throw new InvalidDataException(
                                 "Runtime feature records require bridge configuration schema 2.");
@@ -5759,6 +8045,72 @@ namespace BCS.CoopBridge
                             throw new InvalidDataException("Unsupported bridge runtime feature: " + feature + ".");
                         if (!runtimeFeatures.Add(feature))
                             throw new InvalidDataException("Duplicate bridge runtime feature: " + feature + ".");
+                        continue;
+                    }
+                    if (fields.Length > 0 && string.Equals(
+                            fields[0],
+                            "BATTLE_SCENE_CATALOG_CONTRACT",
+                            StringComparison.Ordinal))
+                    {
+                        if (configurationSchema != 3 || fields.Length != 8)
+                        {
+                            throw new InvalidDataException(
+                                "Battle-scene catalog contract records require schema 3.");
+                        }
+                        if (battleSceneCatalogContract != null)
+                            throw new InvalidDataException("Duplicate battle-scene catalog contract record.");
+                        var targetModuleId = Decode(fields[1]);
+                        var targetVersion = Decode(fields[2]);
+                        var baseModuleId = Decode(fields[3]);
+                        var baseVersion = Decode(fields[4]);
+                        var contractRelativePath = Decode(fields[5]).Replace('\\', '/');
+                        if (string.IsNullOrWhiteSpace(targetModuleId) ||
+                            string.IsNullOrWhiteSpace(targetVersion) ||
+                            string.IsNullOrWhiteSpace(baseModuleId) ||
+                            string.IsNullOrWhiteSpace(baseVersion) ||
+                            string.Equals(targetModuleId, baseModuleId, StringComparison.OrdinalIgnoreCase) ||
+                            !IsBattleSceneContractPath(contractRelativePath) ||
+                            !IsUppercaseSha256(fields[6]) ||
+                            !string.Equals(fields[7], "WARN_ONLY", StringComparison.Ordinal))
+                        {
+                            throw new InvalidDataException(
+                                "Invalid battle-scene catalog contract identity or mismatch policy.");
+                        }
+                        ModuleIdentity targetModule;
+                        ModuleIdentity baseModule;
+                        if (!installed.TryGetValue(targetModuleId, out targetModule) ||
+                            !installed.TryGetValue(baseModuleId, out baseModule))
+                        {
+                            throw new InvalidDataException(
+                                "Battle-scene catalog target or base module is not installed.");
+                        }
+                        if (!string.Equals(
+                                targetModule.Version,
+                                targetVersion,
+                                StringComparison.OrdinalIgnoreCase) ||
+                            !string.Equals(
+                                baseModule.Version,
+                                baseVersion,
+                                StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new InvalidDataException(
+                                "Battle-scene catalog target or base module version changed.");
+                        }
+                        var contractPath = ResolveSafeRelativePath(
+                            moduleRoot.FullName,
+                            contractRelativePath);
+                        ValidateRequiredModuleRegularFile(
+                            moduleRoot.FullName,
+                            contractPath,
+                            "Battle-scene catalog contract");
+                        battleSceneCatalogContract = new BattleSceneCatalogContractRule(
+                            targetModuleId,
+                            targetVersion,
+                            baseModuleId,
+                            baseVersion,
+                            contractRelativePath,
+                            contractPath,
+                            fields[6]);
                         continue;
                     }
                     if (fields.Length == 5 &&
@@ -6060,9 +8412,9 @@ namespace BCS.CoopBridge
                     var moduleId = Decode(fields[1]);
                     var version = Decode(fields[2]);
                     var dllName = Decode(fields[3]);
-                    var clientOnly = configurationSchema == 2 &&
+                    var clientOnly = configurationSchema >= 2 &&
                                      string.Equals(fields[4], "CLIENT_ONLY", StringComparison.Ordinal);
-                    if (configurationSchema == 2 &&
+                    if (configurationSchema >= 2 &&
                         fields[4].Length != 0 &&
                         !clientOnly)
                     {
@@ -6091,7 +8443,7 @@ namespace BCS.CoopBridge
                         throw new InvalidDataException("Unsafe DLL name in BCS Coop bridge configuration: " + dllName);
                     }
 
-                    if (configurationSchema == 2)
+                    if (configurationSchema >= 2)
                     {
                         var enabledKey = BuildSubModuleKey(moduleId, dllName);
                         if (enabledSubModules.ContainsKey(enabledKey) ||
@@ -6174,7 +8526,7 @@ namespace BCS.CoopBridge
                             clientOnly.Value.Module.Id + "/" + clientOnly.Value.DllName);
                     }
                 }
-                if (configurationSchema == 2)
+                if (configurationSchema >= 2)
                 {
                     ValidateSubModuleInventories(
                         installed,
@@ -6184,9 +8536,63 @@ namespace BCS.CoopBridge
                         clientOnlySubModules);
                 }
 
+                var projectionEnabled = runtimeFeatures.Contains(
+                    ClientDeterministicBattleSceneProjectionFeature);
+                if (configurationSchema == 3)
+                {
+                    if (battleSceneCatalogContract == null || !projectionEnabled)
+                    {
+                        throw new InvalidDataException(
+                            "Schema 3 requires deterministic battle-scene projection and its catalog contract.");
+                    }
+                    if (!string.Equals(
+                            battleSceneCatalogContract.TargetModuleId,
+                            "Europe1700",
+                            StringComparison.Ordinal))
+                    {
+                        throw new InvalidDataException(
+                            "Deterministic battle-scene projection is currently scoped to Europe1700.");
+                    }
+                }
+                else if (battleSceneCatalogContract != null || projectionEnabled)
+                {
+                    throw new InvalidDataException(
+                        "Deterministic battle-scene projection requires bridge configuration schema 3.");
+                }
+
                 if (configurationSchema == 1)
-                    runtimeFeatures.UnionWith(SupportedRuntimeFeatures);
+                    runtimeFeatures.UnionWith(HistoricalRuntimeFeatures);
                 activeRuntimeFeatures = runtimeFeatures;
+
+                battleSceneCatalogValidation = null;
+                if (battleSceneCatalogContract != null)
+                {
+                    RecordStartupProgress("Battle-scene catalog validation started");
+                    var moduleRoots = installed.ToDictionary(
+                        pair => pair.Key,
+                        pair => pair.Value.RootPath,
+                        StringComparer.OrdinalIgnoreCase);
+                    battleSceneCatalogValidation = BattleSceneCatalogContractLoader.LoadAndValidate(
+                        battleSceneCatalogContract,
+                        moduleRoots,
+                        !IsServerProcess(),
+                        RecordStartupProgress,
+                        message =>
+                        {
+                            var line =
+                                "[BCS Coop Bridge] WARNING: Scene Catalog Parity: " + message;
+                            Console.WriteLine(line);
+                            Trace.WriteLine(line);
+                        });
+                    RecordStartupProgress(
+                        "Battle-scene catalog validation completed; mismatches=" +
+                        battleSceneCatalogValidation.ContentMismatchCount);
+                    Console.WriteLine(
+                        "[BCS Coop Bridge] Battle-scene catalog contract " +
+                        battleSceneCatalogValidation.ContractSha256 +
+                        " validated; content mismatches=" +
+                        battleSceneCatalogValidation.ContentMismatchCount + ".");
+                }
 
                 ApplyClientAssemblyResolves(clientAssemblyResolves);
                 ApplyGameVersionCompatibility(installed, gameVersionCompatibility, actualId);
@@ -6234,14 +8640,52 @@ namespace BCS.CoopBridge
                 var path = Path.Combine(
                     Path.GetTempPath(),
                     "bcs-coop-bridge-startup-progress.log");
-                File.AppendAllText(
-                    path,
-                    DateTimeOffset.UtcNow.ToString("O") +
-                    " [BCS Coop Bridge] " + message + Environment.NewLine);
+                var line = DateTimeOffset.UtcNow.ToString("O") +
+                    " [BCS Coop Bridge] " + message + Environment.NewLine;
+                lock (DiagnosticSync)
+                {
+                    using (var diagnosticMutex = new System.Threading.Mutex(
+                               false,
+                               DiagnosticMutexName))
+                    {
+                        var mutexAcquired = false;
+                        try
+                        {
+                            try
+                            {
+                                mutexAcquired = diagnosticMutex.WaitOne(
+                                    DiagnosticMutexTimeoutMilliseconds);
+                            }
+                            catch (System.Threading.AbandonedMutexException)
+                            {
+                                mutexAcquired = true;
+                            }
+
+                            if (!mutexAcquired)
+                            {
+                                var fallbackPath = Path.Combine(
+                                    Path.GetTempPath(),
+                                    "bcs-coop-bridge-startup-progress-" +
+                                    Process.GetCurrentProcess().Id.ToString(
+                                        CultureInfo.InvariantCulture) +
+                                    ".fallback.log");
+                                File.AppendAllText(fallbackPath, line);
+                                return;
+                            }
+
+                            File.AppendAllText(path, line);
+                        }
+                        finally
+                        {
+                            if (mutexAcquired)
+                                diagnosticMutex.ReleaseMutex();
+                        }
+                    }
+                }
             }
             catch
             {
-                // Diagnostic tracing must not alter bridge startup behavior.
+                // Diagnostic tracing must not alter bridge startup or battle behavior.
             }
         }
 
@@ -6259,6 +8703,22 @@ namespace BCS.CoopBridge
             ValidateInstalledPackage();
             lock (Sync)
                 return activeRuntimeFeatures.Contains(feature);
+        }
+
+        internal static BattleSceneCatalogValidationResult GetBattleSceneCatalogValidation()
+        {
+            ValidateInstalledPackage();
+            lock (Sync)
+            {
+                if (!activeRuntimeFeatures.Contains(
+                        ClientDeterministicBattleSceneProjectionFeature) ||
+                    battleSceneCatalogValidation == null)
+                {
+                    throw new InvalidOperationException(
+                        "Deterministic battle-scene projection has no validated catalog contract.");
+                }
+                return battleSceneCatalogValidation;
+            }
         }
 
         internal static bool IsServerProcess()
@@ -7546,14 +10006,38 @@ namespace BCS.CoopBridge
                 return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", string.Empty);
         }
 
+        private static bool IsUppercaseSha256(string value)
+        {
+            return value != null && value.Length == 64 && value.All(character =>
+                (character >= '0' && character <= '9') ||
+                (character >= 'A' && character <= 'F'));
+        }
+
+        private static bool IsBattleSceneContractPath(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || Path.IsPathRooted(value))
+                return false;
+            var parts = value.Split('/');
+            return parts.Length == 2 &&
+                   string.Equals(parts[0], "BattleSceneCatalog", StringComparison.Ordinal) &&
+                   !string.IsNullOrWhiteSpace(parts[1]) &&
+                   string.Equals(Path.GetExtension(parts[1]), ".bcs", StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(Path.GetFileName(parts[1]), parts[1], StringComparison.Ordinal);
+        }
+
         private static string BuildBridgeIdentity(
             byte[] configuration,
+            byte[] battleSceneCatalogContract,
             byte[] serverAssembly,
             byte[] clientAssembly)
         {
             using (var payload = new MemoryStream())
             {
                 payload.Write(configuration, 0, configuration.Length);
+                payload.Write(
+                    battleSceneCatalogContract,
+                    0,
+                    battleSceneCatalogContract.Length);
                 payload.Write(serverAssembly, 0, serverAssembly.Length);
                 payload.Write(clientAssembly, 0, clientAssembly.Length);
                 return Hash(payload.ToArray()).Substring(0, 24).ToLowerInvariant();
@@ -8476,6 +10960,13 @@ namespace BCS.CoopBridge
                     BridgeRuntime.ClientTroopRosterSequenceDiagnosticFeature))
                 ClientTroopRosterSequenceDiagnostic.Install(coopModuleRoot, bridgeId);
             if (BridgeRuntime.IsRuntimeFeatureEnabled(
+                    BridgeRuntime.ClientDeterministicBattleSceneProjectionFeature))
+            {
+                ClientDeterministicBattleSceneProjection.Install(
+                    coopModuleRoot,
+                    bridgeId);
+            }
+            if (BridgeRuntime.IsRuntimeFeatureEnabled(
                     BridgeRuntime.ClientCharacterCreationLifecycleCompatibilityFeature))
             {
                 ClientCharacterCreationLifecycleCompatibility.Install(
@@ -9109,20 +11600,31 @@ namespace GameInterface.BCSCoopBridge.Registration
 {
     public sealed class DiscoveredBridgeHandler : IHandler
     {
-        public DiscoveredBridgeHandler(IMessageBroker messageBroker)
+        public DiscoveredBridgeHandler(
+            IMessageBroker messageBroker,
+            IConnectionCollection connectionCollection,
+            IPlayerManager playerManager,
+            IObjectManager objectManager)
         {
             if (messageBroker == null)
                 throw new ArgumentNullException("messageBroker");
             if (BCS.CoopBridge.BridgeRuntime.IsRuntimeFeatureEnabled(
                     BCS.CoopBridge.BridgeRuntime.ServerRegistryLifecycleCompatibilityFeature))
                 BCS.CoopBridge.CoopRegistryLifecycleCompatibility.Install(true);
-            if (BCS.CoopBridge.BridgeRuntime.IsRuntimeFeatureEnabled(
-                    BCS.CoopBridge.BridgeRuntime.ServerPopulationControlFeature))
-                BCS.CoopBridge.ServerPopulationControl.Install();
+            BCS.CoopBridge.ServerPopulationControl.Install(
+                connectionCollection,
+                playerManager,
+                objectManager);
             BCS.CoopBridge.BridgeRuntime.MarkCoopContainerReady();
             if (BCS.CoopBridge.BridgeRuntime.IsRuntimeFeatureEnabled(
                     BCS.CoopBridge.BridgeRuntime.ServerFailedIdCompatibilityFeature))
                 BCS.CoopBridge.ServerFailedIdCompatibility.Install();
+            if (BCS.CoopBridge.BridgeRuntime.IsRuntimeFeatureEnabled(
+                    BCS.CoopBridge.BridgeRuntime.ServerEurope1700ShieldProductionSuppressionFeature))
+            {
+                BCS.CoopBridge.ServerFailedIdCompatibility
+                    .InstallEurope1700InheritedShieldProductionSuppression();
+            }
         }
 
         public void Dispose()

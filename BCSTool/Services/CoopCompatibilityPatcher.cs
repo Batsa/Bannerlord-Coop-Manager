@@ -26,6 +26,17 @@ public sealed class CoopCompatibilityPatcher
     private const long MaximumManifestCharacters = 4 * 1024 * 1024;
 
     private static readonly UTF8Encoding Utf8NoBom = new(false, true);
+    private readonly Action<string>? _beforeManifestPublication;
+
+    public CoopCompatibilityPatcher()
+        : this(beforeManifestPublication: null)
+    {
+    }
+
+    internal CoopCompatibilityPatcher(Action<string>? beforeManifestPublication)
+    {
+        _beforeManifestPublication = beforeManifestPublication;
+    }
 
     private static readonly HashSet<string> SupportedReleasedCoopVersions =
         new(StringComparer.OrdinalIgnoreCase)
@@ -381,7 +392,8 @@ public sealed class CoopCompatibilityPatcher
                     recipe.RuntimeFeatures,
                     recipe.CampaignSaveDescription,
                     options.DisabledSubModules,
-                    options.ClientOnlySubModules);
+                    options.ClientOnlySubModules,
+                    options.BattleSceneCatalogContract);
             }
         }
         else
@@ -463,6 +475,11 @@ public sealed class CoopCompatibilityPatcher
     /// </summary>
     public int UnblockPreparedModuleAssemblies(
         string serverRoot,
+        IReadOnlyCollection<string> enabledModuleIds) =>
+        UnblockPreparedModuleAssembliesWithSnapshots(serverRoot, enabledModuleIds).Count;
+
+    private IReadOnlyList<BlockedAssemblyMarker> UnblockPreparedModuleAssembliesWithSnapshots(
+        string serverRoot,
         IReadOnlyCollection<string> enabledModuleIds)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(serverRoot);
@@ -526,6 +543,30 @@ public sealed class CoopCompatibilityPatcher
                         $"Blocked-file marker changed during validation: {blockedAssembly.AssemblyPath}");
                 }
 
+                ValidateUnlinkedWriteTarget(
+                    blockedAssembly.AssemblyPath,
+                    canonicalServerRoot);
+                if (!HashFile(blockedAssembly.AssemblyPath).Equals(
+                        blockedAssembly.AssemblySha256,
+                        StringComparison.Ordinal))
+                {
+                    throw new IOException(
+                        $"Assembly bytes changed during blocked-file validation: " +
+                        blockedAssembly.AssemblyPath);
+                }
+                ValidateUnlinkedWriteTarget(
+                    blockedAssembly.ZoneIdentifierPath,
+                    canonicalServerRoot);
+                if (!File.ReadAllBytes(blockedAssembly.ZoneIdentifierPath)
+                        .SequenceEqual(blockedAssembly.ZoneIdentifierBytes))
+                {
+                    throw new IOException(
+                        $"Blocked-file marker bytes changed during validation: " +
+                        blockedAssembly.AssemblyPath);
+                }
+                ValidateUnlinkedWriteTarget(
+                    blockedAssembly.ZoneIdentifierPath,
+                    canonicalServerRoot);
                 File.Delete(blockedAssembly.ZoneIdentifierPath);
                 if (File.Exists(blockedAssembly.ZoneIdentifierPath))
                 {
@@ -542,31 +583,13 @@ public sealed class CoopCompatibilityPatcher
                 }
             }
 
-            return removedMarkers.Count;
+            return removedMarkers.ToArray();
         }
         catch (Exception unblockException)
         {
-            var restoreErrors = new List<Exception>();
-            foreach (var removedMarker in removedMarkers.AsEnumerable().Reverse())
-            {
-                try
-                {
-                    File.WriteAllBytes(
-                        removedMarker.ZoneIdentifierPath,
-                        removedMarker.ZoneIdentifierBytes);
-                    if (!File.Exists(removedMarker.ZoneIdentifierPath) ||
-                        !File.ReadAllBytes(removedMarker.ZoneIdentifierPath)
-                            .SequenceEqual(removedMarker.ZoneIdentifierBytes))
-                    {
-                        throw new IOException(
-                            $"Blocked-file marker bytes were not restored: {removedMarker.AssemblyPath}");
-                    }
-                }
-                catch (Exception restoreException)
-                {
-                    restoreErrors.Add(restoreException);
-                }
-            }
+            var restoreErrors = RestoreBlockedAssemblyMarkers(
+                canonicalServerRoot,
+                removedMarkers);
 
             if (restoreErrors.Count > 0)
             {
@@ -577,6 +600,57 @@ public sealed class CoopCompatibilityPatcher
 
             throw;
         }
+    }
+
+    private static IReadOnlyList<Exception> RestoreBlockedAssemblyMarkers(
+        string serverRoot,
+        IEnumerable<BlockedAssemblyMarker> removedMarkers)
+    {
+        var restoreErrors = new List<Exception>();
+        foreach (var removedMarker in removedMarkers.Reverse())
+        {
+            try
+            {
+                ValidateUnlinkedWriteTarget(removedMarker.AssemblyPath, serverRoot);
+                if (!File.Exists(removedMarker.AssemblyPath))
+                {
+                    throw new IOException(
+                        $"Assembly disappeared before its blocked-file marker could be restored: " +
+                        removedMarker.AssemblyPath);
+                }
+
+                ValidateUnlinkedWriteTarget(removedMarker.ZoneIdentifierPath, serverRoot);
+                if (File.Exists(removedMarker.ZoneIdentifierPath))
+                {
+                    ValidateUnlinkedWriteTarget(removedMarker.ZoneIdentifierPath, serverRoot);
+                    if (!File.ReadAllBytes(removedMarker.ZoneIdentifierPath)
+                            .SequenceEqual(removedMarker.ZoneIdentifierBytes))
+                    {
+                        throw new IOException(
+                            $"Blocked-file marker changed before rollback: {removedMarker.AssemblyPath}");
+                    }
+                    continue;
+                }
+
+                File.WriteAllBytes(
+                    removedMarker.ZoneIdentifierPath,
+                    removedMarker.ZoneIdentifierBytes);
+                ValidateUnlinkedWriteTarget(removedMarker.ZoneIdentifierPath, serverRoot);
+                if (!File.Exists(removedMarker.ZoneIdentifierPath) ||
+                    !File.ReadAllBytes(removedMarker.ZoneIdentifierPath)
+                        .SequenceEqual(removedMarker.ZoneIdentifierBytes))
+                {
+                    throw new IOException(
+                        $"Blocked-file marker bytes were not restored: {removedMarker.AssemblyPath}");
+                }
+            }
+            catch (Exception restoreException)
+            {
+                restoreErrors.Add(restoreException);
+            }
+        }
+
+        return restoreErrors;
     }
 
     public CoopPreparationResult Apply(CoopPreparationPlan plan)
@@ -598,27 +672,47 @@ public sealed class CoopCompatibilityPatcher
             plan.PlanId);
         if (Directory.Exists(backupDirectory))
             throw new IOException($"Compatibility backup already exists: {backupDirectory}");
+        ValidateUnlinkedWriteTarget(backupDirectory, plan.ServerRoot);
 
         foreach (var change in pending.Changes)
+        {
+            ValidateUnlinkedWriteTarget(change.TargetPath, plan.ServerRoot);
             VerifyUnchanged(change);
+        }
 
         Directory.CreateDirectory(backupDirectory);
         var applied = new List<PendingChange>();
+        IReadOnlyList<BlockedAssemblyMarker> removedBlockedMarkers = [];
         var manifestPath = Path.Combine(backupDirectory, "bcs-compatibility-backup.json");
         try
         {
             foreach (var change in pending.Changes)
             {
+                ValidateUnlinkedWriteTarget(change.TargetPath, plan.ServerRoot);
+                VerifyUnchanged(change);
                 var relative = Path.GetRelativePath(plan.ServerRoot, change.TargetPath);
                 EnsureSafeRelativePath(relative);
                 if (change.OriginalExists)
                 {
                     var backupPath = Path.Combine(backupDirectory, "files", relative);
+                    ValidateUnlinkedWriteTarget(backupPath, plan.ServerRoot);
                     Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
+                    ValidateUnlinkedWriteTarget(backupPath, plan.ServerRoot);
+                    ValidateUnlinkedWriteTarget(change.TargetPath, plan.ServerRoot);
                     File.Copy(change.TargetPath, backupPath, overwrite: false);
+                    ValidateUnlinkedWriteTarget(backupPath, plan.ServerRoot);
+                    if (!HashFile(backupPath).Equals(
+                            change.PublicChange.OriginalSha256,
+                            StringComparison.Ordinal))
+                    {
+                        throw new IOException(
+                            $"Compatibility backup does not match the analyzed file: {backupPath}");
+                    }
                 }
 
-                ReplaceFileSafely(change.TargetPath, change.ProposedBytes);
+                ValidateUnlinkedWriteTarget(change.TargetPath, plan.ServerRoot);
+                VerifyUnchanged(change);
+                ReplaceFileSafely(change.TargetPath, change.ProposedBytes, plan.ServerRoot);
                 applied.Add(change);
             }
 
@@ -641,8 +735,11 @@ public sealed class CoopCompatibilityPatcher
             var manifestBytes = Utf8NoBom.GetBytes(
                 JsonSerializer.Serialize(manifest, JsonOptions()) + Environment.NewLine);
 
-            UnblockPreparedModuleAssemblies(plan.ServerRoot, ReadEnabledModuleIds(plan.ServerRoot));
-            ReplaceFileSafely(manifestPath, manifestBytes);
+            removedBlockedMarkers = UnblockPreparedModuleAssembliesWithSnapshots(
+                plan.ServerRoot,
+                ReadEnabledModuleIds(plan.ServerRoot));
+            _beforeManifestPublication?.Invoke(manifestPath);
+            ReplaceFileSafely(manifestPath, manifestBytes, plan.ServerRoot);
 
             _pendingPlans.Remove(plan.PlanId);
             return new CoopPreparationResult(
@@ -654,9 +751,17 @@ public sealed class CoopCompatibilityPatcher
         catch (Exception applyException)
         {
             var rollbackErrors = RollBackApplied(plan.ServerRoot, backupDirectory, applied).ToList();
+            rollbackErrors.AddRange(RestoreBlockedAssemblyMarkers(
+                plan.ServerRoot,
+                removedBlockedMarkers));
             try
             {
-                File.Delete(manifestPath);
+                ValidateUnlinkedWriteTarget(manifestPath, plan.ServerRoot);
+                if (File.Exists(manifestPath))
+                {
+                    ValidateUnlinkedWriteTarget(manifestPath, plan.ServerRoot);
+                    File.Delete(manifestPath);
+                }
             }
             catch (Exception cleanupException)
             {
@@ -680,7 +785,8 @@ public sealed class CoopCompatibilityPatcher
         if (!File.Exists(canonicalManifest))
             throw new FileNotFoundException("Compatibility backup manifest was not found.", canonicalManifest);
 
-        var backupDirectory = Path.GetDirectoryName(canonicalManifest)!;
+        var backupDirectory = Path.TrimEndingDirectorySeparator(
+            Path.GetDirectoryName(canonicalManifest)!);
         var manifest = JsonSerializer.Deserialize<BackupManifest>(
                            File.ReadAllText(canonicalManifest, Utf8NoBom),
                            JsonOptions())
@@ -688,24 +794,54 @@ public sealed class CoopCompatibilityPatcher
         if (manifest.SchemaVersion != 1 || string.IsNullOrWhiteSpace(manifest.PlanId))
             throw new InvalidDataException("Unsupported compatibility backup manifest.");
 
+        if (string.IsNullOrWhiteSpace(manifest.ServerRoot))
+            throw new InvalidDataException("Compatibility backup manifest has no dedicated-server root.");
         var serverRoot = Path.GetFullPath(manifest.ServerRoot);
+        var backupsRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(
+            serverRoot,
+            "bcs-compatibility-backups")));
+        var backupParent = Directory.GetParent(backupDirectory)?.FullName;
+        if (!Path.GetFileName(canonicalManifest).Equals(
+                "bcs-compatibility-backup.json",
+                StringComparison.OrdinalIgnoreCase) ||
+            backupParent is null ||
+            !Path.TrimEndingDirectorySeparator(Path.GetFullPath(backupParent)).Equals(
+                backupsRoot,
+                StringComparison.OrdinalIgnoreCase) ||
+            !Path.GetFileName(backupDirectory).Equals(
+                manifest.PlanId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Compatibility backup manifest is outside its declared dedicated-server backup directory.");
+        }
+        ValidateUnlinkedWriteTarget(canonicalManifest, serverRoot);
+
+        var appliedBytes = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in manifest.Files)
         {
             EnsureSafeRelativePath(entry.RelativePath);
             var target = Path.GetFullPath(Path.Combine(serverRoot, entry.RelativePath));
             EnsureWithin(target, serverRoot, "Backup target");
-            if (!File.Exists(target) || !HashFile(target).Equals(entry.AppliedSha256, StringComparison.Ordinal))
+            ValidateUnlinkedWriteTarget(target, serverRoot);
+            if (!File.Exists(target))
             {
                 throw new IOException(
                     $"Cannot revert because the prepared file changed after apply: {target}");
             }
+            ValidateUnlinkedWriteTarget(target, serverRoot);
+            var currentBytes = File.ReadAllBytes(target);
+            if (!Hash(currentBytes).Equals(entry.AppliedSha256, StringComparison.Ordinal))
+            {
+                throw new IOException(
+                    $"Cannot revert because the prepared file changed after apply: {target}");
+            }
+            if (!appliedBytes.TryAdd(entry.RelativePath, currentBytes))
+            {
+                throw new InvalidDataException(
+                    $"Compatibility backup manifest repeats a target: {entry.RelativePath}");
+            }
         }
-
-        var appliedBytes = manifest.Files.ToDictionary(
-            entry => entry.RelativePath,
-            entry => File.ReadAllBytes(
-                Path.GetFullPath(Path.Combine(serverRoot, entry.RelativePath))),
-            StringComparer.OrdinalIgnoreCase);
         var reverted = new List<BackupFileEntry>();
         try
         {
@@ -714,22 +850,60 @@ public sealed class CoopCompatibilityPatcher
                 var target = Path.GetFullPath(Path.Combine(serverRoot, entry.RelativePath));
                 if (entry.OriginalExisted)
                 {
-                    var backup = Path.Combine(backupDirectory, "files", entry.RelativePath);
-                    if (!File.Exists(backup) ||
-                        !HashFile(backup).Equals(entry.OriginalSha256, StringComparison.Ordinal))
+                    var backup = Path.GetFullPath(Path.Combine(
+                        backupDirectory,
+                        "files",
+                        entry.RelativePath));
+                    EnsureWithin(
+                        backup,
+                        Path.Combine(backupDirectory, "files"),
+                        "Original backup");
+                    ValidateUnlinkedWriteTarget(backup, serverRoot);
+                    if (!File.Exists(backup))
+                    {
+                        throw new IOException($"Original backup is missing or damaged: {backup}");
+                    }
+                    ValidateUnlinkedWriteTarget(backup, serverRoot);
+                    var originalBytes = File.ReadAllBytes(backup);
+                    if (!Hash(originalBytes).Equals(
+                            entry.OriginalSha256,
+                            StringComparison.Ordinal))
                     {
                         throw new IOException($"Original backup is missing or damaged: {backup}");
                     }
 
-                    ReplaceFileSafely(target, File.ReadAllBytes(backup));
+                    ValidateUnlinkedWriteTarget(target, serverRoot);
+                    if (!File.Exists(target) ||
+                        !HashFile(target).Equals(entry.AppliedSha256, StringComparison.Ordinal))
+                    {
+                        throw new IOException(
+                            $"Cannot revert because the prepared file changed during revert: {target}");
+                    }
+                    ReplaceFileSafely(target, originalBytes, serverRoot);
                 }
                 else
                 {
+                    ValidateUnlinkedWriteTarget(target, serverRoot);
+                    if (!File.Exists(target) ||
+                        !HashFile(target).Equals(entry.AppliedSha256, StringComparison.Ordinal))
+                    {
+                        throw new IOException(
+                            $"Cannot revert because the prepared file changed during revert: {target}");
+                    }
+                    ValidateUnlinkedWriteTarget(target, serverRoot);
                     File.Delete(target);
                 }
 
                 reverted.Add(entry);
             }
+
+            var revertedMarker = Path.Combine(backupDirectory, "REVERTED.txt");
+            ValidateUnlinkedWriteTarget(revertedMarker, serverRoot);
+            ReplaceFileSafely(
+                revertedMarker,
+                Utf8NoBom.GetBytes(
+                    $"Reverted by Bannerlord Coop Manager at {DateTimeOffset.UtcNow:O}{Environment.NewLine}"),
+                serverRoot);
         }
         catch (Exception revertException)
         {
@@ -739,7 +913,22 @@ public sealed class CoopCompatibilityPatcher
                 try
                 {
                     var target = Path.GetFullPath(Path.Combine(serverRoot, entry.RelativePath));
-                    ReplaceFileSafely(target, appliedBytes[entry.RelativePath]);
+                    ValidateUnlinkedWriteTarget(target, serverRoot);
+                    if (entry.OriginalExisted)
+                    {
+                        if (!File.Exists(target) ||
+                            !HashFile(target).Equals(entry.OriginalSha256, StringComparison.Ordinal))
+                        {
+                            throw new IOException(
+                                $"Cannot recover because the reverted file changed during recovery: {target}");
+                        }
+                    }
+                    else if (File.Exists(target))
+                    {
+                        throw new IOException(
+                            $"Cannot recover because a deleted compatibility target was recreated: {target}");
+                    }
+                    ReplaceFileSafely(target, appliedBytes[entry.RelativePath], serverRoot);
                 }
                 catch (Exception recoveryException)
                 {
@@ -756,11 +945,6 @@ public sealed class CoopCompatibilityPatcher
 
             throw;
         }
-
-        File.WriteAllText(
-            Path.Combine(backupDirectory, "REVERTED.txt"),
-            $"Reverted by Bannerlord Coop Manager at {DateTimeOffset.UtcNow:O}{Environment.NewLine}",
-            Utf8NoBom);
 
         return new CoopPreparationResult(
             manifest.PlanId,
@@ -2263,8 +2447,27 @@ public sealed class CoopCompatibilityPatcher
         IReadOnlyList<BridgeRuntimeFeature>? runtimeFeatures = null,
         string campaignSaveDescription = "campaign",
         IReadOnlyList<BridgeDisabledSubModule>? disabledSubModules = null,
-        IReadOnlyList<BridgeClientOnlySubModule>? clientOnlySubModules = null)
+        IReadOnlyList<BridgeClientOnlySubModule>? clientOnlySubModules = null,
+        BridgeBattleSceneCatalogContract? battleSceneCatalogContract = null)
     {
+        if (battleSceneCatalogContract is { } sceneContract)
+        {
+            var installedBaseModules = installedModules
+                .Where(module => module.IsInstalled && module.Id.Equals(
+                    sceneContract.BaseModuleId,
+                    StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (installedBaseModules.Length != 1 ||
+                !installedBaseModules[0].Version.Equals(
+                    sceneContract.BaseVersion,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    "Pinned battle-scene catalog contract base module/version is not installed: " +
+                    $"{sceneContract.BaseModuleId} {sceneContract.BaseVersion}.");
+            }
+        }
+
         var compatibleModules = installedModules
             .Where(module => module.IsInstalled &&
                              (preparedIds.Contains(module.Id, StringComparer.OrdinalIgnoreCase) ||
@@ -2291,7 +2494,8 @@ public sealed class CoopCompatibilityPatcher
             serverMapTerrainSizes: serverMapTerrainSizes,
             runtimeFeatures: runtimeFeatures,
             disabledSubModules: disabledSubModules,
-            clientOnlySubModules: clientOnlySubModules);
+            clientOnlySubModules: clientOnlySubModules,
+            battleSceneCatalogContract: battleSceneCatalogContract);
         var bridgeRoot = Path.Combine(
             serverRoot,
             "engine",
@@ -2307,6 +2511,16 @@ public sealed class CoopCompatibilityPatcher
             Path.Combine(bridgeRoot, "bcs-coop-bridge.config"),
             package.Configuration,
             "Create module/version bridge configuration");
+        if (package.BattleSceneCatalogContract is { } battleSceneContract)
+        {
+            AddPendingChange(
+                proposed,
+                Path.Combine(
+                    bridgeRoot,
+                    battleSceneContract.RelativePath.Replace('/', Path.DirectorySeparatorChar)),
+                battleSceneContract.Content,
+                "Install pinned battle-scene catalog contract");
+        }
         AddPendingChange(
             proposed,
             Path.Combine(bridgeRoot, "bin", "Win64_Shipping_Server", "BCS.CoopBridge.dll"),
@@ -3036,15 +3250,24 @@ public sealed class CoopCompatibilityPatcher
         }
     }
 
-    private static void ReplaceFileSafely(string path, byte[] bytes)
+    private static void ReplaceFileSafely(
+        string path,
+        byte[] bytes,
+        string? trustedRoot = null)
     {
+        if (trustedRoot is not null)
+            ValidateUnlinkedWriteTarget(path, trustedRoot);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        if (trustedRoot is not null)
+            ValidateUnlinkedWriteTarget(path, trustedRoot);
         var temporary = Path.Combine(
             Path.GetDirectoryName(path)!,
             $".{Path.GetFileName(path)}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
         File.WriteAllBytes(temporary, bytes);
         try
         {
+            if (trustedRoot is not null)
+                ValidateUnlinkedWriteTarget(path, trustedRoot);
             if (File.Exists(path))
                 File.Replace(temporary, path, null, ignoreMetadataErrors: true);
             else
@@ -3054,6 +3277,72 @@ public sealed class CoopCompatibilityPatcher
         {
             if (File.Exists(temporary))
                 File.Delete(temporary);
+        }
+    }
+
+    internal static void ValidateUnlinkedWriteTarget(string path, string trustedRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentException.ThrowIfNullOrWhiteSpace(trustedRoot);
+
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(trustedRoot));
+        var target = Path.GetFullPath(path);
+        var relative = Path.GetRelativePath(root, target);
+        EnsureSafeRelativePath(relative);
+
+        if (!TryGetPathAttributes(root, out var rootAttributes) ||
+            (rootAttributes & FileAttributes.Directory) == 0 ||
+            (rootAttributes & FileAttributes.ReparsePoint) != 0)
+        {
+            throw new InvalidDataException(
+                "Compatibility write root is missing, not a directory, or linked: " + root);
+        }
+
+        if (TryGetPathAttributes(target, out var targetAttributes) &&
+            (targetAttributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+        {
+            throw new InvalidDataException(
+                "Compatibility write target is a directory or linked: " + target);
+        }
+
+        for (var parent = Directory.GetParent(target); parent is not null; parent = parent.Parent)
+        {
+            var parentPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent.FullName));
+            if (TryGetPathAttributes(parentPath, out var parentAttributes) &&
+                ((parentAttributes & FileAttributes.Directory) == 0 ||
+                 (parentAttributes & FileAttributes.ReparsePoint) != 0))
+            {
+                throw new InvalidDataException(
+                    "Compatibility write target uses a non-directory or linked parent: " +
+                    parentPath);
+            }
+
+            if (parentPath.Equals(root, StringComparison.OrdinalIgnoreCase))
+                return;
+        }
+
+        throw new InvalidDataException(
+            "Compatibility write target escaped its trusted root: " + target);
+    }
+
+    private static bool TryGetPathAttributes(
+        string path,
+        out FileAttributes attributes)
+    {
+        try
+        {
+            attributes = File.GetAttributes(path);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            attributes = default;
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            attributes = default;
+            return false;
         }
     }
 
@@ -3070,12 +3359,48 @@ public sealed class CoopCompatibilityPatcher
                 if (change.OriginalExists)
                 {
                     var relative = Path.GetRelativePath(serverRoot, change.TargetPath);
+                    EnsureSafeRelativePath(relative);
                     var backup = Path.Combine(backupDirectory, "files", relative);
-                    if (File.Exists(backup))
-                        ReplaceFileSafely(change.TargetPath, File.ReadAllBytes(backup));
+                    ValidateUnlinkedWriteTarget(backup, serverRoot);
+                    if (!File.Exists(backup))
+                    {
+                        throw new IOException(
+                            $"Compatibility rollback backup is missing: {backup}");
+                    }
+
+                    ValidateUnlinkedWriteTarget(backup, serverRoot);
+                    var backupBytes = File.ReadAllBytes(backup);
+                    if (!Hash(backupBytes).Equals(
+                            change.PublicChange.OriginalSha256,
+                            StringComparison.Ordinal))
+                    {
+                        throw new IOException(
+                            $"Compatibility rollback backup is damaged: {backup}");
+                    }
+
+                    ValidateUnlinkedWriteTarget(change.TargetPath, serverRoot);
+                    if (!File.Exists(change.TargetPath) ||
+                        !HashFile(change.TargetPath).Equals(
+                            change.PublicChange.ProposedSha256,
+                            StringComparison.Ordinal))
+                    {
+                        throw new IOException(
+                            $"Compatibility rollback target changed after apply: {change.TargetPath}");
+                    }
+                    ReplaceFileSafely(change.TargetPath, backupBytes, serverRoot);
                 }
-                else if (File.Exists(change.TargetPath))
+                else
                 {
+                    ValidateUnlinkedWriteTarget(change.TargetPath, serverRoot);
+                    if (!File.Exists(change.TargetPath) ||
+                        !HashFile(change.TargetPath).Equals(
+                            change.PublicChange.ProposedSha256,
+                            StringComparison.Ordinal))
+                    {
+                        throw new IOException(
+                            $"Compatibility rollback target changed after apply: {change.TargetPath}");
+                    }
+                    ValidateUnlinkedWriteTarget(change.TargetPath, serverRoot);
                     File.Delete(change.TargetPath);
                 }
             }
@@ -3408,9 +3733,11 @@ public sealed class CoopCompatibilityPatcher
 
     private static void EnsureSafeRelativePath(string relative)
     {
+        var segments = relative.Split(
+            new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
         if (string.IsNullOrWhiteSpace(relative) ||
-            relative.Equals("..", StringComparison.Ordinal) ||
-            relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+            segments.Any(segment => segment.Equals("..", StringComparison.Ordinal)) ||
             Path.IsPathRooted(relative))
         {
             throw new InvalidDataException($"Unsafe backup path: {relative}");

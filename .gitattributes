@@ -3,6 +3,9 @@
 ###############################################################################
 * text=auto
 
+# Battle-scene catalog contracts are byte-hashed release inputs.
+*.bcs text eol=lf
+
 ###############################################################################
 # Set default behavior for command prompt diff.
 #

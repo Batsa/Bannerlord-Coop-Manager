@@ -33,6 +33,10 @@
       <HintPath>$(BannerlordBin)\TaleWorlds.CampaignSystem.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="TaleWorlds.SaveSystem">
+      <HintPath>$(BannerlordBin)\TaleWorlds.SaveSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="TaleWorlds.ObjectSystem">
       <HintPath>$(BannerlordBin)\TaleWorlds.ObjectSystem.dll</HintPath>
       <Private>false</Private>
@@ -53,6 +57,14 @@
       <HintPath>$(CoopBin)\GameInterface.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Coop.Core" Condition="'$(BridgeTarget)' == 'Server'">
+      <HintPath>$(CoopBin)\Coop.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="LiteNetLib" Condition="'$(BridgeTarget)' == 'Server'">
+      <HintPath>$(CoopBin)\LiteNetLib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="0Harmony">
       <HintPath>$(CoopBin)\0Harmony.dll</HintPath>
       <Private>false</Private>
@@ -66,6 +78,8 @@
            Text="TaleWorlds.Core.dll was not found in $(BannerlordBin)." />
     <Error Condition="!Exists('$(BannerlordBin)\TaleWorlds.CampaignSystem.dll')"
            Text="TaleWorlds.CampaignSystem.dll was not found in $(BannerlordBin)." />
+    <Error Condition="!Exists('$(BannerlordBin)\TaleWorlds.SaveSystem.dll')"
+           Text="TaleWorlds.SaveSystem.dll was not found in $(BannerlordBin)." />
     <Error Condition="!Exists('$(BannerlordBin)\TaleWorlds.ObjectSystem.dll')"
            Text="TaleWorlds.ObjectSystem.dll was not found in $(BannerlordBin)." />
     <Error Condition="!Exists('$(BannerlordBin)\TaleWorlds.Localization.dll')"
@@ -76,6 +90,10 @@
            Text="Pass /p:CoopBin=&lt;released Coop Win64_Shipping_Client bin&gt;." />
     <Error Condition="'$(BridgeTarget)' == 'Server' and !Exists('$(CoopBin)\GameInterface.dll')"
            Text="Released Coop GameInterface.dll was not found in $(CoopBin)." />
+    <Error Condition="'$(BridgeTarget)' == 'Server' and !Exists('$(CoopBin)\Coop.Core.dll')"
+           Text="Released Coop Coop.Core.dll was not found in $(CoopBin)." />
+    <Error Condition="'$(BridgeTarget)' == 'Server' and !Exists('$(CoopBin)\LiteNetLib.dll')"
+           Text="Released Coop LiteNetLib.dll was not found in $(CoopBin)." />
     <Error Condition="!Exists('$(CoopBin)\0Harmony.dll')"
            Text="Released Coop 0Harmony.dll was not found in $(CoopBin)." />
   </Target>

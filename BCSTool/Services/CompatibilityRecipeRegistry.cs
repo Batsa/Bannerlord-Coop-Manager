@@ -16,11 +16,12 @@ internal static class CompatibilityRecipeRegistry
             DisplayName: "Empires of Europe 1700",
             RootModuleId: "Europe1700",
             PreparedModuleIds: ["Europe1700"],
-            CurrentRuleId: "europe-1700-1.4.7.1-server-v57",
+            CurrentRuleId: "europe-1700-1.4.7.1-server-v58",
             RecognizedRuleIds:
             [
                 "europe-1700-1.4.7.1-server-v55",
-                "europe-1700-1.4.7.1-server-v57"
+                "europe-1700-1.4.7.1-server-v57",
+                "europe-1700-1.4.7.1-server-v58"
             ],
             BuildPlan: static context => CoopCompatibilityPatcher.BuildEurope1700Plan(
                 context.Selected,
@@ -64,7 +65,8 @@ internal static class CompatibilityRecipeRegistry
                         dllName,
                         StringComparer.OrdinalIgnoreCase))
                     .Select(dllName => new BridgeClientOnlySubModule(module.Id, dllName))
-                    .ToArray()),
+                    .ToArray(),
+                BattleSceneCatalogContractRegistry.CreateEurope1700()),
             RuntimeFeatures: BridgeRuntimeFeatureSets.Europe1700,
             CampaignSaveDescription: "EOE",
             SupportsPopulationGuide: true)
@@ -117,7 +119,8 @@ internal sealed record CompatibilityRecipeBridgeOptions(
     IReadOnlyList<BridgeClientAssemblyResolve> ClientAssemblyResolves,
     IReadOnlyList<BridgeServerMapTerrainSize> ServerMapTerrainSizes,
     IReadOnlyList<BridgeDisabledSubModule> DisabledSubModules,
-    IReadOnlyList<BridgeClientOnlySubModule> ClientOnlySubModules);
+    IReadOnlyList<BridgeClientOnlySubModule> ClientOnlySubModules,
+    BridgeBattleSceneCatalogContract? BattleSceneCatalogContract);
 
 internal static class BridgeRuntimeFeatureSets
 {
@@ -132,6 +135,8 @@ internal static class BridgeRuntimeFeatureSets
         BridgeRuntimeFeature.ClientCharacterCreationLifecycleCompatibility,
         BridgeRuntimeFeature.ServerRegistryLifecycleCompatibility,
         BridgeRuntimeFeature.ServerPopulationControl,
-        BridgeRuntimeFeature.ServerFailedIdCompatibility
+        BridgeRuntimeFeature.ServerFailedIdCompatibility,
+        BridgeRuntimeFeature.ClientDeterministicBattleSceneProjection,
+        BridgeRuntimeFeature.ServerEurope1700ShieldProductionSuppression
     ];
 }
