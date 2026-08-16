@@ -11,9 +11,9 @@ client bridge packaging, client-save import, persistent server
 logging, and a version-scoped compatibility path for **Empires of Europe 1700
 (EOE)**.
 
-> Latest downloadable application: `0.3.0-beta.7` (generated bridge `0.6.67`)
+> Latest downloadable application: `0.3.0-beta.7` (generated bridge `0.6.73`)
 >
-> Current source-generated bridge runtime: `0.6.73` (not included in the beta.7 download)
+> Current source-generated bridge runtime: `0.6.73` (included in this download)
 >
 > Upstream base: [`AppleDeath318/BCSTool@f7bc05c`](https://github.com/AppleDeath318/BCSTool/commit/f7bc05c672dad169663f9c8b245e5b01b5422742)
 
@@ -103,9 +103,7 @@ running it. `START-HERE.txt` inside the ZIP repeats these instructions.
 
 The ZIP contains only Bannerlord Coop Manager. Bannerlord, Bannerlord Coop,
 EOE, and the dedicated-server package must already be installed separately.
-The current `0.3.0-beta.7` download generates bridge `0.6.67`; bridge `0.6.73`
-is present in source and requires a source build until a subsequent application
-release is published.
+The current `0.3.0-beta.8` download generates bridge `0.6.73`.
 
 ## Initial server setup
 
