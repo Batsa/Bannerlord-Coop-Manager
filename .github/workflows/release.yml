@@ -4,9 +4,15 @@ on:
   push:
     tags:
       - 'v*.*.*'
+    branches:
+      - 'release/v*.*.*'
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -14,17 +20,102 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout tagged source
+      - name: Checkout release source
         uses: actions/checkout@v7
-
-      - name: Set up .NET SDKs
-        uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: |
-            6.0.x
-            10.0.x
+          fetch-depth: 0
 
-      - name: Verify tag matches BCSTool.csproj version
+      - name: Resolve release version
+        shell: pwsh
+        run: |
+          $refType = "${{ github.ref_type }}"
+          $refName = "${{ github.ref_name }}"
+
+          if ($refType -eq "tag") {
+              $releaseMode = "tag"
+              $tag = $refName
+          }
+          elseif ($refType -eq "branch" -and $refName.StartsWith("release/")) {
+              $releaseMode = "branch"
+              $tag = $refName.Substring("release/".Length)
+          }
+          else {
+              throw "Unsupported release ref: $refType/$refName"
+          }
+
+          if ($tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$') {
+              throw "Invalid release tag derived from ref: $tag"
+          }
+
+          $projectVersion = $tag.Substring(1)
+          "RELEASE_MODE=$releaseMode" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PROJECT_VERSION=$projectVersion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "Release mode:    $releaseMode"
+          Write-Host "Release tag:     $tag"
+          Write-Host "Project version: $projectVersion"
+
+      - name: Prepare release metadata
+        if: env.RELEASE_MODE == 'branch'
+        shell: pwsh
+        run: |
+          $projectPath = ".\BCSTool\BCSTool.csproj"
+          $projectText = [IO.File]::ReadAllText($projectPath)
+          $versionRegex = [regex]::new('<Version>[^<]+</Version>')
+          $versionMatches = $versionRegex.Matches($projectText)
+          if ($versionMatches.Count -ne 1) {
+              throw "Expected exactly one <Version> element in $projectPath; found $($versionMatches.Count)."
+          }
+
+          $previousVersion = $versionMatches[0].Value.Substring(
+              '<Version>'.Length,
+              $versionMatches[0].Value.Length - '<Version>'.Length - '</Version>'.Length)
+          $projectText = $versionRegex.Replace(
+              $projectText,
+              "<Version>$env:PROJECT_VERSION</Version>",
+              1)
+          [IO.File]::WriteAllText(
+              $projectPath,
+              $projectText,
+              [Text.UTF8Encoding]::new($true))
+
+          $readmePath = ".\README.md"
+          $readme = [IO.File]::ReadAllText($readmePath)
+          $readme = $readme.Replace($previousVersion, $env:PROJECT_VERSION)
+          $readme = $readme.Replace('0.6.67', '0.6.73')
+
+          $sourceRuntimeRegex = [regex]::new(
+              '(?m)^> Current source-generated bridge runtime: .*$')
+          if ($sourceRuntimeRegex.Matches($readme).Count -ne 1) {
+              throw "Expected exactly one source-runtime summary line in README.md."
+          }
+          $readme = $sourceRuntimeRegex.Replace(
+              $readme,
+              '> Current source-generated bridge runtime: `0.6.73` (included in this download)',
+              1)
+
+          $downloadParagraphRegex = [regex]::new(
+              'The current `[^`]+` download generates bridge `[^`]+`(?:; bridge `[^`]+`\s+is present in source and requires a source build until a subsequent application\s+release is published)?\.')
+          if ($downloadParagraphRegex.Matches($readme).Count -ne 1) {
+              throw "Expected exactly one current-download bridge paragraph in README.md."
+          }
+          $downloadParagraph = 'The current `{0}` download generates bridge `0.6.73`.' -f $env:PROJECT_VERSION
+          $readme = $downloadParagraphRegex.Replace(
+              $readme,
+              $downloadParagraph,
+              1)
+
+          [IO.File]::WriteAllText(
+              $readmePath,
+              $readme,
+              [Text.UTF8Encoding]::new($false))
+
+          Write-Host "Prepared release metadata:"
+          Write-Host "  Project: $previousVersion -> $env:PROJECT_VERSION"
+          Write-Host "  Bridge:  0.6.73"
+
+      - name: Verify release metadata
         shell: pwsh
         run: |
           $versionNode = Select-Xml `
@@ -37,15 +128,29 @@ jobs:
 
           $projectVersion = $versionNode.Node.InnerText.Trim()
           $expectedTag = "v$projectVersion"
-          $actualTag = "${{ github.ref_name }}"
 
           Write-Host "Project version: $projectVersion"
           Write-Host "Expected tag:    $expectedTag"
-          Write-Host "Actual tag:      $actualTag"
+          Write-Host "Release tag:     $env:RELEASE_TAG"
 
-          if ($actualTag -ne $expectedTag) {
-              throw "Release tag '$actualTag' does not match project version '$projectVersion'. Expected '$expectedTag'."
+          if ($env:RELEASE_TAG -ne $expectedTag) {
+              throw "Release tag '$env:RELEASE_TAG' does not match project version '$projectVersion'. Expected '$expectedTag'."
           }
+
+          if ($env:RELEASE_MODE -eq "branch") {
+              git ls-remote --exit-code --tags origin "refs/tags/$env:RELEASE_TAG" *> $null
+              if ($LASTEXITCODE -eq 0) {
+                  throw "Tag already exists: $env:RELEASE_TAG"
+              }
+              $global:LASTEXITCODE = 0
+          }
+
+      - name: Set up .NET SDKs
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            6.0.x
+            10.0.x
 
       - name: Publish Bannerlord Coop Manager
         shell: pwsh
@@ -73,15 +178,15 @@ jobs:
           )
 
           if (-not (Test-Path $exe)) {
-            throw "Expected release executable was not produced: $exe"
+              throw "Expected release executable was not produced: $exe"
           }
           if (-not (Test-Path $bootstrap)) {
-            throw "Expected runtime bootstrap was not produced: $bootstrap"
+              throw "Expected runtime bootstrap was not produced: $bootstrap"
           }
           foreach ($companion in $companions) {
-            if (-not (Test-Path $companion)) {
-              throw "Expected release companion file was not produced: $companion"
-            }
+              if (-not (Test-Path $companion)) {
+                  throw "Expected release companion file was not produced: $companion"
+              }
           }
 
           Write-Host "Release files:"
@@ -91,18 +196,19 @@ jobs:
       - name: Package complete application
         shell: pwsh
         run: |
-          $archive = ".\BCSTool\publish\Bannerlord-Coop-Manager-${{ github.ref_name }}-win-x64.zip"
+          $archive = ".\BCSTool\publish\Bannerlord-Coop-Manager-$env:RELEASE_TAG-win-x64.zip"
           Compress-Archive `
             -LiteralPath ".\BCSTool\publish\Bannerlord Coop Manager.exe", ".\BCSTool\publish\BCSTool.RuntimeBootstrap.dll", ".\BCSTool\publish\START-HERE.txt", ".\BCSTool\publish\README.md", ".\BCSTool\publish\LICENSE", ".\BCSTool\publish\NOTICE.md" `
             -DestinationPath $archive `
             -CompressionLevel Optimal
 
+          "RELEASE_ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Get-Item $archive | Format-List Name, Length, LastWriteTime
 
       - name: Generate SHA-256 checksum
         shell: pwsh
         run: |
-          $archive = ".\BCSTool\publish\Bannerlord-Coop-Manager-${{ github.ref_name }}-win-x64.zip"
+          $archive = $env:RELEASE_ARCHIVE
           $checksumFile = "$archive.sha256"
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
 
@@ -112,13 +218,56 @@ jobs:
           Write-Host "SHA-256:"
           Get-Content $checksumFile
 
+      - name: Commit validated release metadata
+        if: env.RELEASE_MODE == 'branch'
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -- ".\BCSTool\BCSTool.csproj" ".\README.md"
+          git diff --cached --check
+          if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+          }
+
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+              throw "Release metadata produced no changes."
+          }
+          $global:LASTEXITCODE = 0
+
+          git commit -m "Release $env:RELEASE_TAG from current main"
+          if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+          }
+
+          $releaseCommit = (git rev-parse HEAD).Trim()
+          git push origin "HEAD:refs/heads/${{ github.ref_name }}"
+          if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+          }
+
+          git push origin "HEAD:refs/heads/main"
+          if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+          }
+
+          "RELEASE_COMMIT=$releaseCommit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Release commit: $releaseCommit"
+
+      - name: Select release commit for existing tag
+        if: env.RELEASE_MODE == 'tag'
+        shell: pwsh
+        run: |
+          "RELEASE_COMMIT=${{ github.sha }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Create GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          $archive = ".\BCSTool\publish\Bannerlord-Coop-Manager-${{ github.ref_name }}-win-x64.zip"
+          $archive = $env:RELEASE_ARCHIVE
           $notes = @"
           ## Install
 
@@ -126,25 +275,41 @@ jobs:
           2. Extract the ZIP completely.
           3. Run **Bannerlord Coop Manager.exe** from the extracted folder.
 
-          No .NET or source build is required. Keep BCSTool.RuntimeBootstrap.dll
+          No .NET or source build is required. Keep `BCSTool.RuntimeBootstrap.dll`
           beside the executable. The ZIP contains the manager only; Bannerlord, Coop,
-          EOE, and the dedicated-server package remain separate prerequisites. This is
-          a preview EOE compatibility build; see the included README for setup, current
-          progress, and known limitations. The executable is not digitally signed, so
-          verify the adjacent SHA-256 file before running it.
+          EOE, and the dedicated-server package remain separate prerequisites.
+
+          This build includes bridge runtime **0.6.73**. See the included README for
+          supported versions, setup, current progress, and known limitations. The
+          executable is not digitally signed, so verify the adjacent SHA-256 file.
           "@
+
           $arguments = @(
-            "release", "create", $tag,
+            "release", "create", $env:RELEASE_TAG,
             $archive, "$archive.sha256",
-            "--verify-tag",
-            "--title", "Bannerlord Coop Manager $tag",
-            "--notes", $notes
+            "--target", $env:RELEASE_COMMIT,
+            "--title", "Bannerlord Coop Manager $env:RELEASE_TAG",
+            "--notes", $notes,
+            "--generate-notes",
+            "--fail-on-no-commits"
           )
-          if ($tag.Contains("-")) {
-            $arguments += "--prerelease"
-            $arguments += "--latest=false"
+
+          if ($env:RELEASE_MODE -eq "tag") {
+              $arguments += "--verify-tag"
           }
+          if ($env:RELEASE_TAG.Contains("-")) {
+              $arguments += "--prerelease"
+              $arguments += "--latest=false"
+          }
+
           & gh @arguments
           if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+              exit $LASTEXITCODE
           }
+
+      - name: Remove completed release branch
+        if: success() && env.RELEASE_MODE == 'branch'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          git push origin --delete "${{ github.ref_name }}"
