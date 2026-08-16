@@ -1,6 +1,9 @@
 using BCSTool.Models;
 using BCSTool.Services;
 using BCSTool.ViewModels;
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 internal static class BridgeInstallationRegression
@@ -22,11 +25,609 @@ internal static class BridgeInstallationRegression
             "Known recipe did not expose its user-facing name.");
         VerifyRecipeRegistryIsExplicitAndUnique();
 
+        VerifyUnlinkedCompatibilityWriteTargetIsRejected();
         VerifyNoInstalledRecipeIsNoOp(service);
         VerifyDroppedRecipeNeedsNoManualEnableOrSave(scanner, service);
+        VerifyInactiveGeneratedBridgeRemovalIsGuarded(scanner, service);
         VerifyEnabledRecipeDispatchesRepair(scanner);
         VerifyDisabledRecipeIsNoOp(scanner);
         VerifyBackupsAreScopedToEurope1700(service);
+    }
+
+    private static void VerifyUnlinkedCompatibilityWriteTargetIsRejected()
+    {
+        var root = TemporaryRoot();
+        var externalRoot = TemporaryRoot();
+        var catalogDirectory = Path.Combine(
+            root,
+            "engine",
+            "Modules",
+            "BCS.CoopBridge.test",
+            "BattleSceneCatalog");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(catalogDirectory)!);
+            Directory.CreateDirectory(externalRoot);
+            var sentinelPath = Path.Combine(externalRoot, "sentinel.txt");
+            File.WriteAllText(sentinelPath, "outside");
+            CreateDirectoryJunction(catalogDirectory, externalRoot);
+
+            var rejected = false;
+            try
+            {
+                CoopCompatibilityPatcher.ValidateUnlinkedWriteTarget(
+                    Path.Combine(catalogDirectory, "contract.bcs"),
+                    root);
+            }
+            catch (InvalidDataException exception)
+            {
+                rejected = exception.Message.Contains(
+                    "linked parent",
+                    StringComparison.OrdinalIgnoreCase);
+            }
+
+            Assert(rejected &&
+                   File.ReadAllText(sentinelPath).Equals("outside", StringComparison.Ordinal) &&
+                   !File.Exists(Path.Combine(externalRoot, "contract.bcs")),
+                "Compatibility apply accepted a catalog target through a junction.");
+
+            var contractBytes = Encoding.UTF8.GetBytes("external catalog");
+            var contractPath = Path.Combine(externalRoot, "contract.bcs");
+            File.WriteAllBytes(contractPath, contractBytes);
+            const string planId = "linked-revert";
+            var planDirectory = Path.Combine(root, "bcs-compatibility-backups", planId);
+            Directory.CreateDirectory(planDirectory);
+            var manifestPath = Path.Combine(
+                planDirectory,
+                "bcs-compatibility-backup.json");
+            File.WriteAllText(
+                manifestPath,
+                JsonSerializer.Serialize(new
+                {
+                    SchemaVersion = 1,
+                    PlanId = planId,
+                    CreatedUtc = DateTimeOffset.UtcNow,
+                    ServerRoot = root,
+                    RuleId = "linked-revert-regression",
+                    ModuleIds = Array.Empty<string>(),
+                    Files = new[]
+                    {
+                        new
+                        {
+                            RelativePath = Path.GetRelativePath(
+                                root,
+                                Path.Combine(catalogDirectory, "contract.bcs")),
+                            OriginalExisted = false,
+                            OriginalSha256 = string.Empty,
+                            AppliedSha256 = Convert.ToHexString(SHA256.HashData(contractBytes))
+                        }
+                    }
+                }));
+
+            var revertRejected = false;
+            try
+            {
+                _ = new CoopCompatibilityPatcher().Revert(manifestPath);
+            }
+            catch (InvalidDataException exception)
+            {
+                revertRejected = exception.Message.Contains(
+                    "linked parent",
+                    StringComparison.OrdinalIgnoreCase);
+            }
+
+            Assert(revertRejected &&
+                   File.ReadAllBytes(contractPath).SequenceEqual(contractBytes) &&
+                   File.ReadAllText(sentinelPath).Equals("outside", StringComparison.Ordinal) &&
+                   !File.Exists(Path.Combine(planDirectory, "REVERTED.txt")),
+                "Compatibility revert followed a catalog junction or published a revert marker.");
+        }
+        finally
+        {
+            if (Directory.Exists(catalogDirectory) &&
+                (File.GetAttributes(catalogDirectory) & FileAttributes.ReparsePoint) != 0)
+            {
+                Directory.Delete(catalogDirectory);
+            }
+            DeleteTemporaryRoot(root);
+            DeleteTemporaryRoot(externalRoot);
+        }
+    }
+
+    private static void VerifyInactiveGeneratedBridgeRemovalIsGuarded(
+        ModuleScanner scanner,
+        BridgeInstallationService service)
+    {
+        var root = TemporaryRoot();
+        try
+        {
+            var executable = Path.Combine(root, "BannerlordCoopServer.exe");
+            var modulesDirectory = Path.Combine(root, "engine", "Modules");
+            Directory.CreateDirectory(modulesDirectory);
+            File.WriteAllBytes(executable, [1]);
+
+            var standardDependencies = new (string Id, string Version)[]
+            {
+                ("Coop", "v0.1.2"),
+                ("Europe1700", "v1.4.7.1")
+            };
+            var catalogDependencies = standardDependencies
+                .Append((Id: "SandBoxCore", Version: "v1.4.8"))
+                .ToArray();
+            foreach (var dependency in catalogDependencies)
+            {
+                WriteDependencyModule(
+                    Path.Combine(modulesDirectory, dependency.Id),
+                    dependency.Id,
+                    dependency.Version);
+            }
+
+            var activeConfiguration = BridgeConfiguration("active", standardDependencies);
+            var inactiveConfiguration = BridgeConfiguration("inactive", standardDependencies);
+            var activeId = CoopBridgePackageBuilder.ComputeBridgeId(activeConfiguration);
+            var inactiveId = CoopBridgePackageBuilder.ComputeBridgeId(inactiveConfiguration);
+            var activePath = Path.Combine(modulesDirectory, activeId);
+            var inactivePath = Path.Combine(modulesDirectory, inactiveId);
+            WriteBridgeModule(
+                activePath,
+                activeId,
+                activeConfiguration,
+                standardDependencies);
+            WriteBridgeModule(
+                inactivePath,
+                inactiveId,
+                inactiveConfiguration,
+                standardDependencies);
+
+            var active = Module(activeId, activePath, enabled: true);
+            var inactive = Module(inactiveId, inactivePath);
+            var recycler = new DeletingRecycler();
+            var manager = new ModuleManager(executable, scanner);
+            manager.Save([active, inactive]);
+            var profileBeforeRemoval = File.ReadAllBytes(manager.ProfilePath);
+            var removalService = new ModuleRemovalService(manager, recycler, service);
+            var viewModel = new ModManagerViewModel(
+                manager,
+                new ModuleImporter(modulesDirectory, scanner),
+                removalService,
+                new DependencyValidator(),
+                new CoopCompatibilityAnalyzer(),
+                service);
+            viewModel.Modules.Add(active);
+            viewModel.Modules.Add(inactive);
+
+            var battleSceneCatalog = BattleSceneCatalogContractRegistry.CreateEurope1700();
+            var rollbackConfiguration = BridgeConfiguration(
+                "rollback-source",
+                catalogDependencies,
+                battleSceneCatalog);
+            var rollbackBridgeId = CoopBridgePackageBuilder.ComputeBridgeId(
+                rollbackConfiguration,
+                battleSceneCatalog.Content);
+            var rollbackBridge = Module(
+                rollbackBridgeId,
+                Path.Combine(modulesDirectory, rollbackBridgeId));
+            WriteBridgeModule(
+                rollbackBridge.Path,
+                rollbackBridgeId,
+                rollbackConfiguration,
+                catalogDependencies,
+                battleSceneCatalog);
+            var rollbackProfileBytes = JsonSerializer.SerializeToUtf8Bytes(
+                new
+                {
+                    SchemaVersion = 1,
+                    Modules = new[]
+                    {
+                        new { Id = rollbackBridgeId, Enabled = true }
+                    }
+                },
+                new JsonSerializerOptions { WriteIndented = true });
+            var rollbackManifest = CreateBackupManifest(
+                root,
+                "rollback-owned-bridge",
+                "europe-1700-1.4.7.1-server-v58",
+                ["Europe1700", activeId],
+                rollbackProfileBytes,
+                profileBeforeRemoval);
+            var rollbackProfile = Path.Combine(
+                Path.GetDirectoryName(rollbackManifest)!,
+                "files",
+                "bcs-server-modules.json");
+            viewModel.Modules.Add(rollbackBridge);
+
+            viewModel.SelectedModule = inactive;
+            Assert(viewModel.DeleteCommand.CanExecute(null) &&
+                   viewModel.DeleteModuleHelpText.Contains(
+                       "inactive historical bridge",
+                       StringComparison.Ordinal),
+                "An inactive historical bridge with one active replacement was not deletable.");
+
+            viewModel.SelectedModule = active;
+            Assert(!viewModel.DeleteCommand.CanExecute(null) &&
+                   viewModel.DeleteModuleHelpText.Contains(
+                       "active generated bridge",
+                       StringComparison.Ordinal),
+                "The active generated bridge was exposed to deletion.");
+            var directActiveRemovalRejected = false;
+            try
+            {
+                removalService.Remove(active, [active, inactive]);
+            }
+            catch (InvalidOperationException exception)
+            {
+                directActiveRemovalRejected = exception.Message.Contains(
+                    "active generated bridge",
+                    StringComparison.Ordinal);
+            }
+            Assert(directActiveRemovalRejected,
+                "The removal service allowed direct deletion of the active generated bridge.");
+
+            viewModel.SelectedModule = rollbackBridge;
+            Assert(!viewModel.DeleteCommand.CanExecute(null) &&
+                   viewModel.DeleteModuleHelpText.Contains(
+                       "latest Revert Bridge Install backup",
+                       StringComparison.Ordinal),
+                "The bridge required by the latest rollback was exposed to deletion.");
+
+            var manifestBytes = File.ReadAllBytes(rollbackManifest);
+            File.WriteAllText(rollbackManifest, "{");
+            viewModel.SelectedModule = inactive;
+            Assert(!viewModel.DeleteCommand.CanExecute(null) &&
+                   viewModel.DeleteModuleHelpText.Contains(
+                       "could not be validated",
+                       StringComparison.Ordinal),
+                "Malformed rollback JSON escaped WPF command evaluation or failed open.");
+            File.WriteAllBytes(rollbackManifest, manifestBytes);
+
+            var displacedRollbackProfile = rollbackProfile + ".missing";
+            File.Move(rollbackProfile, displacedRollbackProfile);
+            try
+            {
+                Assert(!viewModel.DeleteCommand.CanExecute(null) &&
+                       viewModel.DeleteModuleHelpText.Contains(
+                           "could not be validated",
+                           StringComparison.Ordinal),
+                    "A manifest-declared missing rollback profile failed open.");
+            }
+            finally
+            {
+                File.Move(displacedRollbackProfile, rollbackProfile);
+            }
+
+            var displacedRollbackBridge = rollbackBridge.Path + ".missing";
+            Directory.Move(rollbackBridge.Path, displacedRollbackBridge);
+            var missingRestoredBridgeRejected = false;
+            try
+            {
+                _ = service.RevertInstallation(rollbackManifest);
+            }
+            catch (InvalidDataException exception)
+            {
+                missingRestoredBridgeRejected = exception.Message.Contains(
+                    "restored active generated bridge folder",
+                    StringComparison.Ordinal);
+            }
+            finally
+            {
+                Directory.Move(displacedRollbackBridge, rollbackBridge.Path);
+            }
+            Assert(missingRestoredBridgeRejected &&
+                   profileBeforeRemoval.SequenceEqual(File.ReadAllBytes(manager.ProfilePath)) &&
+                   !File.Exists(Path.Combine(
+                       Path.GetDirectoryName(rollbackManifest)!,
+                       "REVERTED.txt")),
+                "Revert activated a missing prior bridge or touched current state before rejecting it.");
+
+            var rollbackServerAssembly = Path.Combine(
+                rollbackBridge.Path,
+                "bin",
+                "Win64_Shipping_Server",
+                "BCS.CoopBridge.dll");
+            var displacedServerAssembly = rollbackServerAssembly + ".missing";
+            File.Move(rollbackServerAssembly, displacedServerAssembly);
+            var missingRestoredRuntimeRejected = false;
+            try
+            {
+                _ = service.RevertInstallation(rollbackManifest);
+            }
+            catch (InvalidDataException exception)
+            {
+                missingRestoredRuntimeRejected = exception.Message.Contains(
+                    "bridge server assembly",
+                    StringComparison.Ordinal);
+            }
+            finally
+            {
+                File.Move(displacedServerAssembly, rollbackServerAssembly);
+            }
+            Assert(missingRestoredRuntimeRejected &&
+                   profileBeforeRemoval.SequenceEqual(File.ReadAllBytes(manager.ProfilePath)) &&
+                   !File.Exists(Path.Combine(
+                       Path.GetDirectoryName(rollbackManifest)!,
+                       "REVERTED.txt")),
+                "Revert activated a bridge without its server runtime or mutated current state.");
+
+            var rollbackServerAssemblyBytes = File.ReadAllBytes(rollbackServerAssembly);
+            File.WriteAllBytes(rollbackServerAssembly, [1]);
+            var corruptRestoredRuntimeRejected = false;
+            try
+            {
+                _ = service.RevertInstallation(rollbackManifest);
+            }
+            catch (InvalidDataException exception)
+            {
+                corruptRestoredRuntimeRejected = exception.Message.Contains(
+                    "not a valid managed BCS.CoopBridge assembly",
+                    StringComparison.Ordinal);
+            }
+            finally
+            {
+                File.WriteAllBytes(rollbackServerAssembly, rollbackServerAssemblyBytes);
+            }
+            Assert(corruptRestoredRuntimeRejected &&
+                   profileBeforeRemoval.SequenceEqual(File.ReadAllBytes(manager.ProfilePath)) &&
+                   !File.Exists(Path.Combine(
+                       Path.GetDirectoryName(rollbackManifest)!,
+                       "REVERTED.txt")),
+                "Revert accepted a corrupt prior bridge runtime or mutated current state.");
+
+            var rollbackSubModule = Path.Combine(rollbackBridge.Path, "SubModule.xml");
+            var rollbackSubModuleBytes = File.ReadAllBytes(rollbackSubModule);
+            File.WriteAllText(
+                rollbackSubModule,
+                File.ReadAllText(rollbackSubModule).Replace(
+                    rollbackBridgeId,
+                    "BCS.CoopBridge.wrong-identity",
+                    StringComparison.Ordinal));
+            var mismatchedRestoredManifestRejected = false;
+            try
+            {
+                _ = service.RevertInstallation(rollbackManifest);
+            }
+            catch (InvalidDataException exception)
+            {
+                mismatchedRestoredManifestRejected = exception.Message.Contains(
+                    "exact generated bridge identity",
+                    StringComparison.Ordinal);
+            }
+            finally
+            {
+                File.WriteAllBytes(rollbackSubModule, rollbackSubModuleBytes);
+            }
+            Assert(mismatchedRestoredManifestRejected &&
+                   profileBeforeRemoval.SequenceEqual(File.ReadAllBytes(manager.ProfilePath)) &&
+                   !File.Exists(Path.Combine(
+                       Path.GetDirectoryName(rollbackManifest)!,
+                       "REVERTED.txt")),
+                "Revert accepted a mismatched generated bridge manifest or mutated current state.");
+
+            File.WriteAllText(
+                rollbackSubModule,
+                File.ReadAllText(rollbackSubModule).Replace(
+                    CoopBridgePackageBuilder.BridgeVersion,
+                    "v0.0.1",
+                    StringComparison.Ordinal));
+            var mismatchedManifestVersionRejected = false;
+            try
+            {
+                _ = service.RevertInstallation(rollbackManifest);
+            }
+            catch (InvalidDataException exception)
+            {
+                mismatchedManifestVersionRejected = exception.Message.Contains(
+                    "manifest version",
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                File.WriteAllBytes(rollbackSubModule, rollbackSubModuleBytes);
+            }
+            Assert(mismatchedManifestVersionRejected &&
+                   profileBeforeRemoval.SequenceEqual(File.ReadAllBytes(manager.ProfilePath)) &&
+                   !File.Exists(Path.Combine(
+                       Path.GetDirectoryName(rollbackManifest)!,
+                       "REVERTED.txt")),
+                "Revert accepted a bridge manifest version that disagreed with its runtimes.");
+
+            File.WriteAllText(
+                rollbackSubModule,
+                File.ReadAllText(rollbackSubModule).Replace(
+                    "DependentVersion=\"v0.1.2\"",
+                    "DependentVersion=\"v9.9.9\"",
+                    StringComparison.Ordinal));
+            var mismatchedManifestDependencyRejected = false;
+            try
+            {
+                _ = service.RevertInstallation(rollbackManifest);
+            }
+            catch (InvalidDataException exception)
+            {
+                mismatchedManifestDependencyRejected = exception.Message.Contains(
+                    "manifest dependencies",
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                File.WriteAllBytes(rollbackSubModule, rollbackSubModuleBytes);
+            }
+            Assert(mismatchedManifestDependencyRejected &&
+                   profileBeforeRemoval.SequenceEqual(File.ReadAllBytes(manager.ProfilePath)) &&
+                   !File.Exists(Path.Combine(
+                       Path.GetDirectoryName(rollbackManifest)!,
+                       "REVERTED.txt")),
+                "Revert accepted bridge manifest dependencies that disagreed with configuration.");
+
+            File.WriteAllText(
+                rollbackSubModule,
+                File.ReadAllText(rollbackSubModule)
+                    .Replace(
+                        "<SingleplayerModule value=\"true\" />",
+                        "<SingleplayerModule value=\"false\" />",
+                        StringComparison.Ordinal)
+                    .Replace(
+                        "<MultiplayerModule value=\"false\" />",
+                        "<MultiplayerModule value=\"true\" />",
+                        StringComparison.Ordinal));
+            var mismatchedManifestRoleRejected = false;
+            try
+            {
+                _ = service.RevertInstallation(rollbackManifest);
+            }
+            catch (InvalidDataException exception)
+            {
+                mismatchedManifestRoleRejected = exception.Message.Contains(
+                    "load-role flags",
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                File.WriteAllBytes(rollbackSubModule, rollbackSubModuleBytes);
+            }
+            Assert(mismatchedManifestRoleRejected &&
+                   profileBeforeRemoval.SequenceEqual(File.ReadAllBytes(manager.ProfilePath)) &&
+                   !File.Exists(Path.Combine(
+                       Path.GetDirectoryName(rollbackManifest)!,
+                       "REVERTED.txt")),
+                "Revert accepted a bridge manifest with client/server load roles reversed.");
+
+            var catalogDirectory = Path.GetDirectoryName(Path.Combine(
+                rollbackBridge.Path,
+                battleSceneCatalog.RelativePath.Replace('/', Path.DirectorySeparatorChar)))!;
+            var originalCatalogDirectory = catalogDirectory + ".original";
+            var externalCatalogDirectory = Path.Combine(root, "external-battle-scene-catalog");
+            Directory.Move(catalogDirectory, originalCatalogDirectory);
+            Directory.CreateDirectory(externalCatalogDirectory);
+            File.WriteAllBytes(
+                Path.Combine(externalCatalogDirectory, Path.GetFileName(battleSceneCatalog.RelativePath)),
+                battleSceneCatalog.Content);
+            CreateDirectoryJunction(catalogDirectory, externalCatalogDirectory);
+            var linkedCatalogRejected = false;
+            try
+            {
+                _ = service.RevertInstallation(rollbackManifest);
+            }
+            catch (InvalidDataException exception)
+            {
+                linkedCatalogRejected = exception.Message.Contains(
+                    "linked directory",
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                if (Directory.Exists(catalogDirectory))
+                    Directory.Delete(catalogDirectory);
+                Directory.Move(originalCatalogDirectory, catalogDirectory);
+            }
+            Assert(linkedCatalogRejected &&
+                   profileBeforeRemoval.SequenceEqual(File.ReadAllBytes(manager.ProfilePath)) &&
+                   !File.Exists(Path.Combine(
+                       Path.GetDirectoryName(rollbackManifest)!,
+                       "REVERTED.txt")),
+                "Revert accepted a catalog contract reached through a junction.");
+
+            var lastInactive = Module(
+                "BCS.CoopBridge.last",
+                Path.Combine(modulesDirectory, "BCS.CoopBridge.last"));
+            viewModel.Modules.Clear();
+            viewModel.Modules.Add(lastInactive);
+            viewModel.SelectedModule = lastInactive;
+            Assert(!viewModel.DeleteCommand.CanExecute(null) &&
+                   viewModel.DeleteModuleHelpText.Contains(
+                       "exactly one other generated bridge is active",
+                       StringComparison.Ordinal),
+                "The last inactive generated bridge lost its policy-recovery guard.");
+
+            var dependent = Module(
+                "EnabledDependent",
+                Path.Combine(modulesDirectory, "EnabledDependent"),
+                enabled: true,
+                dependencies: [inactiveId]);
+            viewModel.Modules.Clear();
+            viewModel.Modules.Add(active);
+            viewModel.Modules.Add(inactive);
+            viewModel.Modules.Add(dependent);
+            viewModel.SelectedModule = inactive;
+            Assert(!viewModel.DeleteCommand.CanExecute(null) &&
+                   viewModel.DeleteModuleHelpText.Contains(
+                       dependent.Id,
+                       StringComparison.Ordinal),
+                "An enabled dependent did not block historical bridge deletion.");
+
+            var secondActive = Module(
+                "BCS.CoopBridge.second-active",
+                Path.Combine(modulesDirectory, "BCS.CoopBridge.second-active"),
+                enabled: true);
+            viewModel.Modules.Remove(dependent);
+            viewModel.Modules.Add(secondActive);
+            viewModel.SelectedModule = inactive;
+            Assert(!viewModel.DeleteCommand.CanExecute(null),
+                "Ambiguous multiple active bridges allowed historical bridge deletion.");
+
+            var generic = Module(
+                "GenericMod",
+                Path.Combine(modulesDirectory, "GenericMod"));
+            viewModel.Modules.Add(generic);
+            viewModel.SelectedModule = generic;
+            Assert(viewModel.DeleteCommand.CanExecute(null),
+                "Generated-bridge safety rules blocked ordinary non-core module deletion.");
+
+            var displacedActivePath = activePath + ".missing";
+            Directory.Move(activePath, displacedActivePath);
+            var staleReplacementRejected = false;
+            try
+            {
+                removalService.Remove(inactive, [active, inactive]);
+            }
+            catch (InvalidOperationException exception)
+            {
+                staleReplacementRejected = exception.Message.Contains(
+                    "active replacement bridge folder",
+                    StringComparison.Ordinal);
+            }
+            finally
+            {
+                Directory.Move(displacedActivePath, activePath);
+            }
+            Assert(staleReplacementRejected &&
+                   Directory.Exists(inactivePath) &&
+                   recycler.Count == 0,
+                "A stale active replacement folder did not fail closed before removal.");
+
+            removalService.Remove(inactive, [active, inactive]);
+            Assert(recycler.Count == 1 &&
+                   !Directory.Exists(inactivePath) &&
+                   Directory.Exists(activePath),
+                "Historical bridge removal did not recycle only the inactive folder.");
+            var profileAfterRemoval = File.ReadAllBytes(manager.ProfilePath);
+            Assert(profileBeforeRemoval.SequenceEqual(profileAfterRemoval),
+                "Historical bridge removal changed the rollback-owned module profile bytes.");
+            using var profileDocument = JsonDocument.Parse(profileAfterRemoval);
+            var profileEntries = profileDocument.RootElement
+                .GetProperty("Modules")
+                .EnumerateArray()
+                .Select(entry => (
+                    Id: entry.GetProperty("Id").GetString(),
+                    Enabled: entry.GetProperty("Enabled").GetBoolean()))
+                .ToArray();
+            Assert(profileEntries.Length == 2 &&
+                   profileEntries[0] == (activeId, true) &&
+                   profileEntries[1] == (inactiveId, false),
+                "Historical bridge removal did not preserve exact active/inactive profile state.");
+            var reloaded = manager.Load();
+            Assert(reloaded.Any(module =>
+                       module.Id.Equals(activeId, StringComparison.OrdinalIgnoreCase) &&
+                       module.IsInstalled &&
+                       module.Enabled) &&
+                   reloaded.All(module =>
+                       !module.Id.Equals(inactiveId, StringComparison.OrdinalIgnoreCase)) &&
+                   profileBeforeRemoval.SequenceEqual(File.ReadAllBytes(manager.ProfilePath)),
+                "A deleted historical bridge returned as a missing row or changed profile bytes after rescan.");
+        }
+        finally
+        {
+            DeleteTemporaryRoot(root);
+        }
     }
 
     private static void VerifyRecipeRegistryIsExplicitAndUnique()
@@ -73,7 +674,7 @@ internal static class BridgeInstallationRegression
             var viewModel = new ModManagerViewModel(
                 manager,
                 importer,
-                new ModuleRemovalService(manager, new RejectingRecycler()),
+                new ModuleRemovalService(manager, new RejectingRecycler(), service),
                 new DependencyValidator(),
                 new CoopCompatibilityAnalyzer(),
                 service);
@@ -128,7 +729,7 @@ internal static class BridgeInstallationRegression
             var reopened = new ModManagerViewModel(
                 manager,
                 importer,
-                new ModuleRemovalService(manager, new RejectingRecycler()),
+                new ModuleRemovalService(manager, new RejectingRecycler(), service),
                 new DependencyValidator(),
                 new CoopCompatibilityAnalyzer(),
                 service);
@@ -243,7 +844,7 @@ internal static class BridgeInstallationRegression
             var eoeManifest = CreateBackupManifest(
                 root,
                 "eoe-plan",
-                "europe-1700-1.4.7.1-server-v57",
+                "europe-1700-1.4.7.1-server-v58",
                 ["Europe1700", "BCS.CoopBridge.eoe"]);
             var legacyEoeManifest = CreateBackupManifest(
                 root,
@@ -299,13 +900,39 @@ internal static class BridgeInstallationRegression
         string serverRoot,
         string planId,
         string ruleId,
-        string[] moduleIds)
+        string[] moduleIds,
+        byte[]? originalProfileBytes = null,
+        byte[]? appliedProfileBytes = null)
     {
+        if ((originalProfileBytes is null) != (appliedProfileBytes is null))
+            throw new ArgumentException("Both rollback profile byte arrays are required together.");
+
         var planDirectory = Path.Combine(
             serverRoot,
             "bcs-compatibility-backups",
             planId);
         Directory.CreateDirectory(planDirectory);
+        object[] files = [];
+        if (originalProfileBytes is not null && appliedProfileBytes is not null)
+        {
+            var originalProfilePath = Path.Combine(
+                planDirectory,
+                "files",
+                "bcs-server-modules.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(originalProfilePath)!);
+            File.WriteAllBytes(originalProfilePath, originalProfileBytes);
+            files =
+            [
+                new
+                {
+                    RelativePath = "bcs-server-modules.json",
+                    OriginalExisted = true,
+                    OriginalSha256 = Convert.ToHexString(SHA256.HashData(originalProfileBytes)),
+                    AppliedSha256 = Convert.ToHexString(SHA256.HashData(appliedProfileBytes))
+                }
+            ];
+        }
+
         var manifest = Path.Combine(planDirectory, "bcs-compatibility-backup.json");
         File.WriteAllText(
             manifest,
@@ -317,9 +944,129 @@ internal static class BridgeInstallationRegression
                 ServerRoot = serverRoot,
                 RuleId = ruleId,
                 ModuleIds = moduleIds,
-                Files = Array.Empty<object>()
+                Files = files
             }));
         return manifest;
+    }
+
+    private static byte[] BridgeConfiguration(
+        string identitySeed,
+        IReadOnlyList<(string Id, string Version)> dependencies,
+        BridgeBattleSceneCatalogContract? battleSceneCatalog = null)
+    {
+        var builder = new StringBuilder();
+        builder.Append(battleSceneCatalog is null
+            ? "BCS-COOP-BRIDGE|2\n"
+            : "BCS-COOP-BRIDGE|3\n");
+        builder.Append("RUNTIME_FEATURE|").Append(Encode(identitySeed)).Append('\n');
+        if (battleSceneCatalog is not null)
+        {
+            builder.Append("BATTLE_SCENE_CATALOG_CONTRACT|")
+                .Append(Encode(battleSceneCatalog.TargetModuleId)).Append('|')
+                .Append(Encode(battleSceneCatalog.TargetVersion)).Append('|')
+                .Append(Encode(battleSceneCatalog.BaseModuleId)).Append('|')
+                .Append(Encode(battleSceneCatalog.BaseVersion)).Append('|')
+                .Append(Encode(battleSceneCatalog.RelativePath)).Append('|')
+                .Append(battleSceneCatalog.Sha256).Append("|WARN_ONLY\n");
+        }
+        foreach (var dependency in dependencies)
+        {
+            builder.Append("MODULE|")
+                .Append(Encode(dependency.Id)).Append('|')
+                .Append(Encode(dependency.Version)).Append("||\n");
+        }
+
+        return Encoding.UTF8.GetBytes(builder.ToString());
+    }
+
+    private static void WriteBridgeModule(
+        string moduleRoot,
+        string id,
+        byte[] configuration,
+        IReadOnlyList<(string Id, string Version)> dependencies,
+        BridgeBattleSceneCatalogContract? battleSceneCatalog = null)
+    {
+        var dependencyXml = string.Concat(dependencies.Select(dependency =>
+            $"<DependedModule Id=\"{dependency.Id}\" " +
+            $"DependentVersion=\"{dependency.Version}\" Optional=\"false\" />"));
+        Directory.CreateDirectory(moduleRoot);
+        File.WriteAllText(
+            Path.Combine(moduleRoot, "SubModule.xml"),
+            "<Module>" +
+            $"<Name value=\"{id}\" />" +
+            $"<Id value=\"{id}\" />" +
+            $"<Version value=\"{CoopBridgePackageBuilder.BridgeVersion}\" />" +
+            "<SingleplayerModule value=\"true\" />" +
+            "<MultiplayerModule value=\"false\" />" +
+            "<DependedModules>" + dependencyXml + "</DependedModules>" +
+            "<ModuleType value=\"Community\" />" +
+            "<SubModules><SubModule>" +
+            "<Name value=\"BCS Coop Bridge\" />" +
+            "<DLLName value=\"BCS.CoopBridge.dll\" />" +
+            "<SubModuleClassType value=\"BCS.CoopBridge.BridgeSubModule\" />" +
+            "</SubModule></SubModules>" +
+            "</Module>");
+        File.WriteAllBytes(
+            Path.Combine(moduleRoot, "bcs-coop-bridge.config"),
+            configuration);
+        if (battleSceneCatalog is not null)
+        {
+            var catalogPath = Path.Combine(
+                moduleRoot,
+                battleSceneCatalog.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(catalogPath)!);
+            File.WriteAllBytes(catalogPath, battleSceneCatalog.Content);
+        }
+        var serverBin = Path.Combine(
+            moduleRoot,
+            "bin",
+            "Win64_Shipping_Server");
+        var clientBin = Path.Combine(
+            moduleRoot,
+            "bin",
+            "Win64_Shipping_Client");
+        Directory.CreateDirectory(serverBin);
+        Directory.CreateDirectory(clientBin);
+        WriteEmbeddedBridgeAssembly(
+            Path.Combine(serverBin, "BCS.CoopBridge.dll"),
+            "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Server.dll");
+        WriteEmbeddedBridgeAssembly(
+            Path.Combine(clientBin, "BCS.CoopBridge.dll"),
+            "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Client.dll");
+    }
+
+    private static void WriteEmbeddedBridgeAssembly(string path, string resourceName)
+    {
+        using var source = typeof(CoopBridgePackageBuilder).Assembly
+            .GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException(
+                "Embedded bridge regression runtime is missing: " + resourceName);
+        using var destination = new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.None);
+        source.CopyTo(destination);
+    }
+
+    private static string Encode(string value) =>
+        Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
+
+    private static void WriteDependencyModule(
+        string moduleRoot,
+        string id,
+        string version)
+    {
+        Directory.CreateDirectory(moduleRoot);
+        File.WriteAllText(
+            Path.Combine(moduleRoot, "SubModule.xml"),
+            "<Module>" +
+            $"<Name value=\"{id}\" />" +
+            $"<Id value=\"{id}\" />" +
+            $"<Version value=\"{version}\" />" +
+            "<DependedModules />" +
+            "<SubModules />" +
+            "</Module>");
     }
 
     private static string CreateServerWithEurope1700(string root, bool enabled)
@@ -366,26 +1113,63 @@ internal static class BridgeInstallationRegression
         Path.GetTempPath(),
         "bcs-bridge-lifecycle-regression-" + Guid.NewGuid().ToString("N"));
 
+    private static void CreateDirectoryJunction(string path, string target)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        startInfo.ArgumentList.Add("/d");
+        startInfo.ArgumentList.Add("/c");
+        startInfo.ArgumentList.Add("mklink");
+        startInfo.ArgumentList.Add("/J");
+        startInfo.ArgumentList.Add(path);
+        startInfo.ArgumentList.Add(target);
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException(
+            "Could not start mklink for bridge installation regression.");
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                "Could not create bridge installation regression junction: " + output + error);
+        }
+    }
+
     private static void DeleteTemporaryRoot(string root)
     {
         if (Directory.Exists(root))
             Directory.Delete(root, recursive: true);
     }
 
-    private static BannerlordModule Module(string id) => new()
+    private static BannerlordModule Module(
+        string id,
+        string? path = null,
+        bool enabled = false,
+        IReadOnlyList<string>? dependencies = null)
     {
-        Name = id,
-        Id = id,
-        Version = "v1.0.0",
-        Path = Path.Combine(Path.GetTempPath(), id),
-        IsInstalled = true,
-        IsRequired = false,
-        IsServerCompatible = true,
-        Dependencies = Array.Empty<string>(),
-        MustLoadAfter = Array.Empty<string>(),
-        MustLoadBefore = Array.Empty<string>(),
-        IncompatibleModules = Array.Empty<string>()
-    };
+        var module = new BannerlordModule
+        {
+            Name = id,
+            Id = id,
+            Version = "v1.0.0",
+            Path = path ?? Path.Combine(Path.GetTempPath(), id),
+            IsInstalled = true,
+            IsRequired = false,
+            IsServerCompatible = true,
+            Dependencies = dependencies ?? Array.Empty<string>(),
+            MustLoadAfter = Array.Empty<string>(),
+            MustLoadBefore = Array.Empty<string>(),
+            IncompatibleModules = Array.Empty<string>()
+        };
+        module.SetInitialEnabled(enabled);
+        return module;
+    }
 
     private static void Assert(bool condition, string message)
     {
@@ -397,5 +1181,16 @@ internal static class BridgeInstallationRegression
     {
         public void Recycle(string directoryPath) =>
             throw new InvalidOperationException("Recycler must not run in bridge-flow regression.");
+    }
+
+    private sealed class DeletingRecycler : IModuleDirectoryRecycler
+    {
+        public int Count { get; private set; }
+
+        public void Recycle(string directoryPath)
+        {
+            Count++;
+            Directory.Delete(directoryPath, recursive: true);
+        }
     }
 }

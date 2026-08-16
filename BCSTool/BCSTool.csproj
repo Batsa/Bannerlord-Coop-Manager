@@ -59,6 +59,8 @@
                       LogicalName="BCSTool.Assets.CoopBridge.BCS.CoopBridge.Server.dll" />
     <EmbeddedResource Include="Assets\CoopBridge\BCS.CoopBridge.Client.dll"
                       LogicalName="BCSTool.Assets.CoopBridge.BCS.CoopBridge.Client.dll" />
+    <EmbeddedResource Include="Assets\BattleSceneCatalog\europe-1700-1.4.7.1-sandboxcore-1.4.8.bcs"
+                      LogicalName="BCSTool.Assets.BattleSceneCatalog.europe-1700-1.4.7.1-sandboxcore-1.4.8.bcs" />
     <EmbeddedResource Include="..\LICENSE"
                       LogicalName="BCSTool.LICENSE" />
     <EmbeddedResource Include="..\NOTICE.md"

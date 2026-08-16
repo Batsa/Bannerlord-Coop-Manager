@@ -1,9 +1,9 @@
 <Window x:Class="BCSTool.BridgePopulationSettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Bridge Population Settings"
-        Width="760"
-        Height="680"
+        Title="Bridge Population &amp; Trade Settings"
+        Width="800"
+        Height="760"
         MinWidth="680"
         MinHeight="580"
         WindowStartupLocation="CenterOwner"
@@ -19,6 +19,15 @@
             <Setter Property="HorizontalAlignment" Value="Left"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="Padding" Value="5,3"/>
+        </Style>
+        <Style x:Key="VirtualShipmentNumericTextBox"
+               TargetType="TextBox"
+               BasedOn="{StaticResource NumericTextBox}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding VirtualVillagerShipmentsEnabled}" Value="False">
+                    <Setter Property="IsEnabled" Value="False"/>
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
     </Window.Resources>
 
@@ -47,7 +56,7 @@
 
         <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel>
-                <TextBlock Text="Bridge Population Settings"
+                <TextBlock Text="Bridge Population &amp; Trade Settings"
                            FontSize="22" FontWeight="SemiBold"/>
                 <TextBlock x:Name="BridgeNameText" Margin="0,4,0,0"
                            FontWeight="SemiBold"/>
@@ -61,7 +70,7 @@
                     <StackPanel>
                         <TextBlock FontWeight="SemiBold" Text="Existing parties are never deleted."/>
                         <TextBlock Margin="0,4,0,0" TextWrapping="Wrap"
-                    Text="Caravan and villager values are soft ceilings for future automatic spawns. A ceiling of 0 stops future automatic spawns in that category. Existing global or per-town caravan counts above a ceiling are not trimmed; they fall only through normal campaign attrition. Changes are loaded on the next server start."/>
+                    Text="Caravan and villager limits are soft ceilings for future automatic spawns. A ceiling of 0 stops future automatic spawns in that category. Capacity changes affect eligible parties after restart; caravan budget scaling applies only when a new automatic NPC caravan is created. Existing counts and caravan gold are not rewritten. All changes are loaded on the next server start."/>
                     </StackPanel>
                 </Border>
 
@@ -78,6 +87,70 @@
                                    FontSize="11" TextWrapping="Wrap"/>
                     </StackPanel>
                 </Border>
+
+                <GroupBox Header="Player-regional future party spawning" Margin="0,0,0,10">
+                    <StackPanel Margin="10">
+                        <TextBlock Foreground="DarkGoldenrod" FontWeight="SemiBold"
+                                   TextWrapping="Wrap"
+                                   Text="All four families are independent and default off. Changes take effect only after a server restart. Existing parties are never removed or confined."/>
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="280"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0"
+                                       Text="Shared player-active radius"
+                                       VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Style="{StaticResource NumericTextBox}"
+                                     Text="{Binding PlayerActiveSpawnRadiusBanditTravelDays, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"/>
+                            <TextBlock Grid.Column="2" Margin="10,0,0,0"
+                                       Foreground="Gray" VerticalAlignment="Center"
+                                       Text="0.1 to 30 average bandit travel-days; default 0.5"
+                                       TextWrapping="Wrap"/>
+                        </Grid>
+                        <TextBlock Margin="0,7,0,0" Foreground="Gray"
+                                   TextWrapping="Wrap"
+                                   Text="The active area is the union of this straight-line radius around every connected player's resolved authoritative party. Missing player or origin data rejects only that spawn attempt."/>
+                        <Separator Margin="0,12,0,10"/>
+                        <CheckBox Content="Regional ambient outlaw spawns (bandits and looters)"
+                                  IsChecked="{Binding RegionalAmbientOutlawSpawnsEnabled, Mode=TwoWay}"
+                                  Margin="0,0,0,7"/>
+                        <CheckBox IsChecked="{Binding RegionalVillagerTradeEnabled, Mode=TwoWay}"
+                                  Margin="0,0,0,7">
+                            <CheckBox.Style>
+                                <Style TargetType="CheckBox">
+                                    <Setter Property="Content"
+                                            Value="Regional villager trade departures (requires virtual shipments)"/>
+                                    <Style.Triggers>
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding VirtualVillagerShipmentsEnabled}"
+                                                           Value="False"/>
+                                                <Condition Binding="{Binding RegionalVillagerTradeEnabled}"
+                                                           Value="False"/>
+                                            </MultiDataTrigger.Conditions>
+                                            <Setter Property="IsEnabled" Value="False"/>
+                                        </MultiDataTrigger>
+                                        <DataTrigger Binding="{Binding VirtualVillagerShipmentsEnabled}"
+                                                     Value="False">
+                                            <Setter Property="ToolTip"
+                                                    Value="Enable virtual villager shipments below before enabling regional villager trade."/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </CheckBox.Style>
+                        </CheckBox>
+                        <CheckBox Content="Regional settlement patrol spawns"
+                                  IsChecked="{Binding RegionalSettlementPatrolSpawnsEnabled, Mode=TwoWay}"
+                                  Margin="0,0,0,7"/>
+                        <CheckBox Content="Regional battle deserter spawns"
+                                  IsChecked="{Binding RegionalBattleDeserterSpawnsEnabled, Mode=TwoWay}"/>
+                        <TextBlock Margin="0,8,0,0" Foreground="Gray"
+                                   TextWrapping="Wrap"
+                                   Text="Enabled families retain Bannerlord's native timing, chance, caps, eligible origins, and creation flow. Distant villager departures use virtual shipments; patrol timers outside the active area are discarded; deserters never fall back to a distant village."/>
+                    </StackPanel>
+                </GroupBox>
 
                 <GroupBox Header="Automatic caravan parties" Margin="0,0,0,10">
                     <StackPanel Margin="10">
@@ -131,6 +204,68 @@
                         <TextBlock x:Name="CaravanPerTownGuideText" Margin="0,4,0,0"
                                    Foreground="#315D85" FontWeight="SemiBold"
                                    TextWrapping="Wrap"/>
+                        <Separator Margin="0,12,0,10"/>
+                        <TextBlock FontWeight="SemiBold" Text="Trade-capacity compensation"/>
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="280"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Caravan carrying-capacity multiplier"
+                                       VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Style="{StaticResource NumericTextBox}"
+                                     Text="{Binding CaravanCapacityMultiplier, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"/>
+                            <TextBlock Grid.Column="2" Margin="10,0,0,0"
+                                       Foreground="Gray" VerticalAlignment="Center"
+                                       Text="0.1 to 10; 1 is native"/>
+                        </Grid>
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="280"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="New-caravan trade-budget multiplier"
+                                       VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Style="{StaticResource NumericTextBox}"
+                                     Text="{Binding CaravanTradeBudgetMultiplier, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"/>
+                            <TextBlock Grid.Column="2" Margin="10,0,0,0"
+                                       Foreground="Gray" VerticalAlignment="Center"
+                                       Text="0.1 to 10; future NPC caravans only"/>
+                        </Grid>
+                        <TextBlock Margin="0,6,0,0" Foreground="Gray" TextWrapping="Wrap"
+                                   Text="These multipliers apply to automatic NPC caravans, not player-clan caravans. A value of 2 is a reasonable starting point when reducing two native caravans per town to one."/>
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="280"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Destination-age maximum score bonus"
+                                       VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Style="{StaticResource NumericTextBox}"
+                                     Text="{Binding CaravanDestinationAgeMaxBonus, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"/>
+                            <TextBlock Grid.Column="2" Margin="10,0,0,0"
+                                       Foreground="Gray" VerticalAlignment="Center"
+                                       Text="0 to 4; 1 permits up to 2x"/>
+                        </Grid>
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="280"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Destination-age horizon (campaign days)"
+                                       VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Style="{StaticResource NumericTextBox}"
+                                     Text="{Binding CaravanDestinationAgeHorizonDays, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"/>
+                            <TextBlock Grid.Column="2" Margin="10,0,0,0"
+                                       Foreground="Gray" VerticalAlignment="Center"
+                                       Text="1 to 3650; ignored when bonus is 0"/>
+                        </Grid>
+                        <TextBlock Margin="0,6,0,0" Foreground="DarkGoldenrod" TextWrapping="Wrap"
+                                   Text="Age weighting adds a bounded preference after native destination eligibility and trade scoring. It cannot make an invalid, hostile, or otherwise rejected town eligible."/>
                     </StackPanel>
                 </GroupBox>
 
@@ -166,9 +301,69 @@
                         </Grid>
                         <TextBlock x:Name="VillagerGuideText" Margin="0,8,0,0"
                                    Foreground="#315D85" TextWrapping="Wrap"/>
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="280"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Physical-party capacity multiplier"
+                                       VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Style="{StaticResource NumericTextBox}"
+                                     Text="{Binding VillagerPartyCapacityMultiplier, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"/>
+                            <TextBlock Grid.Column="2" Margin="10,0,0,0"
+                                       Foreground="Gray" VerticalAlignment="Center"
+                                       Text="0.1 to 10; 1 is native"/>
+                        </Grid>
+                        <Separator Margin="0,12,0,10"/>
+                        <CheckBox Content="Create virtual shipments when the bridge villager cap rejects a native departure"
+                                  IsChecked="{Binding VirtualVillagerShipmentsEnabled, Mode=TwoWay}"
+                                  FontWeight="SemiBold"/>
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="280"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Virtual cargo multiplier"
+                                       VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Style="{StaticResource VirtualShipmentNumericTextBox}"
+                                     Text="{Binding VirtualVillagerCargoMultiplier, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"/>
+                            <TextBlock Grid.Column="2" Margin="10,0,0,0"
+                                       Foreground="Gray" VerticalAlignment="Center"
+                                       Text="0.1 to 10; limited by real village stock"/>
+                        </Grid>
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="280"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Virtual departure cooldown (campaign days)"
+                                       VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Style="{StaticResource VirtualShipmentNumericTextBox}"
+                                     Text="{Binding VirtualVillagerCooldownDays, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"/>
+                            <TextBlock Grid.Column="2" Margin="10,0,0,0"
+                                       Foreground="Gray" VerticalAlignment="Center"
+                                       Text="1 to 3650; default 7"/>
+                        </Grid>
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="280"/>
+                                <ColumnDefinition Width="150"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Virtual travel-time multiplier"
+                                       VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Style="{StaticResource VirtualShipmentNumericTextBox}"
+                                     Text="{Binding VirtualVillagerTravelTimeMultiplier, UpdateSourceTrigger=PropertyChanged, ValidatesOnExceptions=True}"/>
+                            <TextBlock Grid.Column="2" Margin="10,0,0,0"
+                                       Foreground="Gray" VerticalAlignment="Center"
+                                       Text="0.1 to 10; 2 takes twice as long"/>
+                        </Grid>
                         <TextBlock Margin="0,8,0,0" Foreground="DarkGoldenrod"
                                    TextWrapping="Wrap"
-                                   Text="Villager parties carry food and goods between villages and towns. Aggressive limits can damage markets, workshops, prosperity, and settlement food supplies."/>
+                                   Text="Villager parties carry food and goods between villages and towns. Virtual shipments approximate only their economic delivery to the village's actual trade-bound town; they do not create a party, battle, escort, interception, or quest. Cargo remains limited by real village stock. Aggressive limits or multipliers can damage markets, workshops, prosperity, and settlement food supplies."/>
                     </StackPanel>
                 </GroupBox>
 

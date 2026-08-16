@@ -26,7 +26,7 @@ public sealed class BridgeDllSelectionService
 
     /// <summary>
     /// Resolves current selection. With no enabled generated bridge, every DLL
-    /// declaration is selected. Current packages use schema-2 disabled records;
+    /// declaration is selected. Current packages use schema-2/3 disabled records;
     /// legacy packages preserve the server manifest's active/disabled tags.
     /// </summary>
     public BridgeDllSelection Resolve(
@@ -180,6 +180,29 @@ public sealed class BridgeDllSelectionService
             "Bridge configuration");
 
         var configurationBytes = File.ReadAllBytes(configurationPath);
+        var parsed = ParseConfiguration(configurationBytes, installedById);
+        byte[]? battleSceneCatalogContractBytes = null;
+        if (parsed.BattleSceneCatalogContract is { } battleSceneContract)
+        {
+            var contractPath = Path.Combine(
+                bridgeRoot,
+                battleSceneContract.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            ValidateRegularFile(
+                contractPath,
+                bridgeRoot,
+                4 * 1024 * 1024,
+                "Battle-scene catalog contract");
+            battleSceneCatalogContractBytes = File.ReadAllBytes(contractPath);
+            var actualContractHash = Convert.ToHexString(
+                SHA256.HashData(battleSceneCatalogContractBytes));
+            if (!actualContractHash.Equals(
+                    battleSceneContract.Sha256,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "Battle-scene catalog contract does not match its configured hash.");
+            }
+        }
         var usesExplicitDllSelection = UsesExplicitDllSelection(bridgeManifest.Version);
         string? installedIdentity = null;
         Exception? runtimeValidationFailure = null;
@@ -197,6 +220,8 @@ public sealed class BridgeDllSelectionService
                 "Client bridge assembly");
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             hash.AppendData(configurationBytes);
+            if (battleSceneCatalogContractBytes is not null)
+                hash.AppendData(battleSceneCatalogContractBytes);
             AppendFile(hash, serverAssemblyPath);
             AppendFile(hash, clientAssemblyPath);
             installedIdentity = Convert.ToHexString(hash.GetHashAndReset())[..24]
@@ -215,7 +240,11 @@ public sealed class BridgeDllSelectionService
                 bridgeManifest.Version.Equals(
                     CoopBridgePackageBuilder.BridgeVersion,
                     StringComparison.OrdinalIgnoreCase) &&
-                CoopBridgePackageBuilder.ComputeBridgeId(configurationBytes).Equals(
+                (battleSceneCatalogContractBytes is null
+                    ? CoopBridgePackageBuilder.ComputeBridgeId(configurationBytes)
+                    : CoopBridgePackageBuilder.ComputeBridgeId(
+                        configurationBytes,
+                        battleSceneCatalogContractBytes)).Equals(
                     bridge.Id,
                     StringComparison.Ordinal);
             var recoverableLegacyRuntime = !usesExplicitDllSelection;
@@ -227,7 +256,6 @@ public sealed class BridgeDllSelectionService
             }
         }
 
-        var parsed = ParseConfiguration(configurationBytes, installedById);
         if (!parsed.ModuleRecords.TryGetValue(module.Id, out var targetRecords))
         {
             throw new InvalidDataException(
@@ -251,10 +279,10 @@ public sealed class BridgeDllSelectionService
         IReadOnlyList<string> selectedDlls;
         if (usesExplicitDllSelection)
         {
-            if (parsed.Schema != 2)
+            if (parsed.Schema is not (2 or 3))
             {
                 throw new InvalidDataException(
-                    "Current generated bridge requires configuration schema 2 for DLL options.");
+                    "Current generated bridge requires configuration schema 2 or 3 for DLL options.");
             }
             selectedDlls = manifest.DeclaredDllNames
                 .Where(name => !disabledDlls.Contains(name))
@@ -509,6 +537,7 @@ public sealed class BridgeDllSelectionService
         {
             "BCS-COOP-BRIDGE|1" => 1,
             "BCS-COOP-BRIDGE|2" => 2,
+            "BCS-COOP-BRIDGE|3" => 3,
             _ => throw new InvalidDataException(
                 "Unsupported BCS Coop bridge configuration schema.")
         };
@@ -517,6 +546,7 @@ public sealed class BridgeDllSelectionService
             StringComparer.OrdinalIgnoreCase);
         var disabledDlls = new Dictionary<string, HashSet<string>>(
             StringComparer.OrdinalIgnoreCase);
+        ConfiguredBattleSceneCatalogContract? battleSceneCatalogContract = null;
         var seenLines = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var line in lines.Skip(1))
@@ -532,12 +562,24 @@ public sealed class BridgeDllSelectionService
             }
             if (fields[0].Equals("DISABLED_SUBMODULE", StringComparison.Ordinal))
             {
-                if (schema != 2)
+                if (schema is not (2 or 3))
                 {
                     throw new InvalidDataException(
-                        "DISABLED_SUBMODULE records require bridge configuration schema 2.");
+                        "DISABLED_SUBMODULE records require bridge configuration schema 2 or 3.");
                 }
                 ParseDisabledRecord(fields, installedById, disabledDlls);
+                continue;
+            }
+            if (fields[0].Equals("BATTLE_SCENE_CATALOG_CONTRACT", StringComparison.Ordinal))
+            {
+                if (schema != 3 || battleSceneCatalogContract is not null)
+                {
+                    throw new InvalidDataException(
+                        "BATTLE_SCENE_CATALOG_CONTRACT requires schema 3 and may appear once.");
+                }
+                battleSceneCatalogContract = ParseBattleSceneCatalogContract(
+                    fields,
+                    installedById);
                 continue;
             }
 
@@ -558,7 +600,35 @@ public sealed class BridgeDllSelectionService
             }
         }
 
-        return new ParsedBridgeConfiguration(schema, moduleRecords, disabledDlls);
+        if (schema == 3 && battleSceneCatalogContract is null)
+        {
+            throw new InvalidDataException(
+                "Bridge configuration schema 3 requires a battle-scene catalog contract.");
+        }
+
+        return new ParsedBridgeConfiguration(
+            schema,
+            moduleRecords,
+            disabledDlls,
+            battleSceneCatalogContract);
+    }
+
+    internal static InstalledBridgeConfiguration ValidateInstalledConfiguration(
+        byte[] bytes,
+        IReadOnlyDictionary<string, BannerlordModule> installedById)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        ArgumentNullException.ThrowIfNull(installedById);
+
+        var parsed = ParseConfiguration(bytes, installedById);
+        return new InstalledBridgeConfiguration(
+            parsed.ModuleRecords.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.Version,
+                StringComparer.OrdinalIgnoreCase),
+            parsed.BattleSceneCatalogContract is { } contract
+                ? (contract.RelativePath, contract.Sha256)
+                : null);
     }
 
     private static void ParseModuleRecord(
@@ -576,10 +646,10 @@ public sealed class BridgeDllSelectionService
         ValidateSafeModuleId(moduleId, "MODULE module ID");
         ValidateSafeText(version, "MODULE version", allowEmpty: true);
         ValidateOpaqueValue(fields[4], "MODULE hash");
-        var clientOnly = schema == 2 && fields[4].Equals(
+        var clientOnly = schema is 2 or 3 && fields[4].Equals(
             CoopBridgePackageBuilder.ClientOnlyModuleMarker,
             StringComparison.Ordinal);
-        if (schema == 2 && fields[4].Length > 0 && !clientOnly)
+        if (schema is 2 or 3 && fields[4].Length > 0 && !clientOnly)
         {
             throw new InvalidDataException(
                 $"Unsupported MODULE runtime-role marker: {fields[4]}");
@@ -651,11 +721,69 @@ public sealed class BridgeDllSelectionService
             throw new InvalidDataException($"Duplicate DISABLED_SUBMODULE record: {moduleId}/{dllName}");
     }
 
+    private static ConfiguredBattleSceneCatalogContract ParseBattleSceneCatalogContract(
+        string[] fields,
+        IReadOnlyDictionary<string, BannerlordModule> installedById)
+    {
+        if (fields.Length != 8)
+            throw new InvalidDataException("Malformed BATTLE_SCENE_CATALOG_CONTRACT record.");
+
+        var targetModuleId = DecodeModuleId(fields[1], "scene contract target module ID");
+        var targetVersion = Decode(fields[2], "scene contract target version", allowEmpty: false);
+        var baseModuleId = DecodeModuleId(fields[3], "scene contract base module ID");
+        var baseVersion = Decode(fields[4], "scene contract base version", allowEmpty: false);
+        var relativePath = Decode(fields[5], "scene contract path", allowEmpty: false);
+        ValidateSafeText(targetVersion, "scene contract target version");
+        ValidateSafeText(baseVersion, "scene contract base version");
+        ValidateRelativePath(relativePath, "scene contract path");
+        if (!relativePath.StartsWith("BattleSceneCatalog/", StringComparison.Ordinal) ||
+            !Path.GetExtension(relativePath).Equals(".bcs", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Battle-scene catalog contract must stay under BattleSceneCatalog and use .bcs.");
+        }
+        if (fields[6].Length != 64 || fields[6].Any(character => character is not (
+                >= '0' and <= '9' or >= 'A' and <= 'F')))
+        {
+            throw new InvalidDataException(
+                "Battle-scene catalog contract hash must be uppercase SHA-256.");
+        }
+        if (!fields[7].Equals("WARN_ONLY", StringComparison.Ordinal))
+            throw new InvalidDataException("Unsupported battle-scene catalog mismatch policy.");
+        if (targetModuleId.Equals(baseModuleId, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Battle-scene catalog target and base module must be different.");
+        }
+        if (!installedById.TryGetValue(targetModuleId, out var installedTarget) ||
+            !installedTarget.IsInstalled ||
+            !installedTarget.Version.Equals(targetVersion, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Battle-scene catalog target module/version is not installed.");
+        }
+        if (!installedById.TryGetValue(baseModuleId, out var installedBase) ||
+            !installedBase.IsInstalled ||
+            !installedBase.Version.Equals(baseVersion, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Battle-scene catalog base module/version is not installed.");
+        }
+
+        return new ConfiguredBattleSceneCatalogContract(
+            targetModuleId,
+            targetVersion,
+            baseModuleId,
+            baseVersion,
+            relativePath,
+            fields[6]);
+    }
+
     private static void ValidateOtherRecord(string[] fields, int schema)
     {
         switch (fields[0])
         {
-            case "RUNTIME_FEATURE" when fields.Length == 2 && schema == 2:
+            case "RUNTIME_FEATURE" when fields.Length == 2 && schema is 2 or 3:
                 Decode(fields[1], "runtime feature", allowEmpty: false);
                 return;
             case "GAME_VERSION_COMPAT" when fields.Length == 5:
@@ -1148,5 +1276,18 @@ public sealed class BridgeDllSelectionService
     private sealed record ParsedBridgeConfiguration(
         int Schema,
         IReadOnlyDictionary<string, ConfiguredModule> ModuleRecords,
-        IReadOnlyDictionary<string, HashSet<string>> DisabledDlls);
+        IReadOnlyDictionary<string, HashSet<string>> DisabledDlls,
+        ConfiguredBattleSceneCatalogContract? BattleSceneCatalogContract);
+
+    private sealed record ConfiguredBattleSceneCatalogContract(
+        string TargetModuleId,
+        string TargetVersion,
+        string BaseModuleId,
+        string BaseVersion,
+        string RelativePath,
+        string Sha256);
 }
+
+internal sealed record InstalledBridgeConfiguration(
+    IReadOnlyDictionary<string, string> ModuleVersions,
+    (string RelativePath, string Sha256)? BattleSceneCatalogContract);

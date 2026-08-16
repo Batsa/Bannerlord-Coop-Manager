@@ -404,7 +404,8 @@ public partial class MainWindow : Window
             var moduleRemovalService =
                 new ModuleRemovalService(
                     moduleManager,
-                    new WindowsModuleDirectoryRecycler());
+                    new WindowsModuleDirectoryRecycler(),
+                    _bridgeInstallationService);
             var bridgePopulationSettingsService =
                 new BridgePopulationSettingsService(moduleManager.ServerRoot);
             var viewModel =

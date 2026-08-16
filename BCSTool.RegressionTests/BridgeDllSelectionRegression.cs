@@ -46,7 +46,7 @@ internal static class BridgeDllSelectionRegression
             legacyBridge.SetInitialEnabled(false);
             var currentBridge = CreateBridge(
                 modulesRoot,
-                "v0.6.68",
+                CoopBridgePackageBuilder.BridgeVersion,
                 BuildConfiguration(["First.dll"], ["Second.dll"]));
             currentBridge.SetInitialEnabled(true);
             var current = service.Resolve(target, [target, legacyBridge, currentBridge], serverRoot);
@@ -59,7 +59,7 @@ internal static class BridgeDllSelectionRegression
                     .Replace("|\n", "|UNSUPPORTED_ROLE\n", StringComparison.Ordinal));
             var unsupportedMarkerBridge = CreateBridge(
                 modulesRoot,
-                "v0.6.68",
+                CoopBridgePackageBuilder.BridgeVersion,
                 unsupportedMarkerConfiguration);
             unsupportedMarkerBridge.SetInitialEnabled(true);
             AssertThrowsInvalidData(
@@ -103,7 +103,7 @@ internal static class BridgeDllSelectionRegression
                 "Disabling the generated bridge row discarded its DLL exclusion policy.");
             var allCurrentBridge = CreateBridge(
                 modulesRoot,
-                "v0.6.68",
+                CoopBridgePackageBuilder.BridgeVersion,
                 BuildConfiguration(["First.dll", "Second.dll"], []));
             allCurrentBridge.SetInitialEnabled(true);
             var allCurrent = service.Resolve(
@@ -160,7 +160,7 @@ internal static class BridgeDllSelectionRegression
             legacyEoeBridge.SetInitialEnabled(false);
             var globallyDisabledBannerBridge = CreateBridge(
                 modulesRoot,
-                "v0.6.68",
+                CoopBridgePackageBuilder.BridgeVersion,
                 BuildConfiguration(
                     ["First.dll"],
                     ["BannerColorPersistence.dll"],

@@ -17,7 +17,7 @@ namespace BCSTool.Services;
 public sealed class CoopBridgePackageBuilder
 {
     public const string BridgeIdPrefix = "BCS.CoopBridge.";
-    public const string BridgeVersion = "v0.6.68";
+    public const string BridgeVersion = "v0.6.73";
     internal const string ClientOnlyModuleMarker = "CLIENT_ONLY";
     private const string ProjectUrl =
         "https://github.com/Batsa/Bannerlord-Coop-Manager";
@@ -25,13 +25,13 @@ public sealed class CoopBridgePackageBuilder
     private const string ServerBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Server.dll";
     private const string ServerBridgeAssemblyHash =
-        "11ACB9A6000B00A4C985816B3B29196BB97BD6CDA9431D640618B9192D263C8D";
+        "EBF01400B85F9E13D9D86D37628035CD2B5A802C4DB174AA3ADF730B2B7CBCB2";
     private const string ClientBridgeAssemblyResource =
         "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Client.dll";
     private const string LicenseResource = "BCSTool.LICENSE";
     private const string NoticeResource = "BCSTool.NOTICE.md";
     private const string ClientBridgeAssemblyHash =
-        "2C332807DDB355A25F8295B49D0B4095CF0286DFB06D38E41044E8623BD923E6";
+        "97DF251987239E2BFB2280F925AD64602C6D5080A080AE9F02E71202EEFE2D59";
     private static readonly UTF8Encoding Utf8NoBom = new(false, true);
 
     public CoopBridgePackage Build(
@@ -47,7 +47,8 @@ public sealed class CoopBridgePackageBuilder
         IReadOnlyList<BridgeServerMapTerrainSize>? serverMapTerrainSizes = null,
         IReadOnlyList<BridgeRuntimeFeature>? runtimeFeatures = null,
         IReadOnlyList<BridgeDisabledSubModule>? disabledSubModules = null,
-        IReadOnlyList<BridgeClientOnlySubModule>? clientOnlySubModules = null)
+        IReadOnlyList<BridgeClientOnlySubModule>? clientOnlySubModules = null,
+        BridgeBattleSceneCatalogContract? battleSceneCatalogContract = null)
     {
         ArgumentNullException.ThrowIfNull(modules);
         if (modules.Count == 0)
@@ -182,6 +183,10 @@ public sealed class CoopBridgePackageBuilder
         ValidateServerMapTerrainSizes(serverMapTerrainSizes, modules);
         runtimeFeatures ??= Array.Empty<BridgeRuntimeFeature>();
         ValidateRuntimeFeatures(runtimeFeatures);
+        ValidateBattleSceneCatalogContract(
+            battleSceneCatalogContract,
+            modules,
+            runtimeFeatures);
         var configuration = BuildConfiguration(
             records,
             contentRecords,
@@ -193,14 +198,19 @@ public sealed class CoopBridgePackageBuilder
             clientAssemblyResolves,
             serverMapTerrainSizes,
             runtimeFeatures,
-            disabledSubModules);
+            disabledSubModules,
+            battleSceneCatalogContract);
         var serverAssembly = ReadBridgeAssembly(
             ServerBridgeAssemblyResource,
             ServerBridgeAssemblyHash);
         var clientAssembly = ReadBridgeAssembly(
             ClientBridgeAssemblyResource,
             ClientBridgeAssemblyHash);
-        var bridgeId = ComputeBridgeId(configuration, serverAssembly, clientAssembly);
+        var bridgeId = ComputeBridgeId(
+            configuration,
+            battleSceneCatalogContract?.Content,
+            serverAssembly,
+            clientAssembly);
         var manifest = BuildManifest(bridgeId, modules);
         var readme = Utf8NoBom.GetBytes(
             "Bannerlord Coop Manager generated Coop bridge package\r\n" +
@@ -238,7 +248,8 @@ public sealed class CoopBridgePackageBuilder
             clientAssembly,
             readme,
             license,
-            notice);
+            notice,
+            battleSceneCatalogContract);
 
         return new CoopBridgePackage(
             bridgeId,
@@ -259,7 +270,8 @@ public sealed class CoopBridgePackageBuilder
             gameVersionCompatibility,
             clientAssemblyResolves,
             serverMapTerrainSizes,
-            runtimeFeatures);
+            runtimeFeatures,
+            battleSceneCatalogContract);
     }
 
     private static byte[] BuildConfiguration(
@@ -273,13 +285,28 @@ public sealed class CoopBridgePackageBuilder
         IReadOnlyList<BridgeClientAssemblyResolve> clientAssemblyResolves,
         IReadOnlyList<BridgeServerMapTerrainSize> serverMapTerrainSizes,
         IReadOnlyList<BridgeRuntimeFeature> runtimeFeatures,
-        IReadOnlyList<BridgeDisabledSubModule> disabledSubModules)
+        IReadOnlyList<BridgeDisabledSubModule> disabledSubModules,
+        BridgeBattleSceneCatalogContract? battleSceneCatalogContract)
     {
-        var builder = new StringBuilder("BCS-COOP-BRIDGE|2\n");
+        var builder = new StringBuilder(battleSceneCatalogContract is null
+            ? "BCS-COOP-BRIDGE|2\n"
+            : "BCS-COOP-BRIDGE|3\n");
         foreach (var feature in runtimeFeatures.OrderBy(value => value.ToString(), StringComparer.Ordinal))
         {
             builder.Append("RUNTIME_FEATURE|")
                 .Append(Encode(feature.ToString()))
+                .Append('\n');
+        }
+        if (battleSceneCatalogContract is not null)
+        {
+            builder.Append("BATTLE_SCENE_CATALOG_CONTRACT|")
+                .Append(Encode(battleSceneCatalogContract.TargetModuleId)).Append('|')
+                .Append(Encode(battleSceneCatalogContract.TargetVersion)).Append('|')
+                .Append(Encode(battleSceneCatalogContract.BaseModuleId)).Append('|')
+                .Append(Encode(battleSceneCatalogContract.BaseVersion)).Append('|')
+                .Append(Encode(battleSceneCatalogContract.RelativePath)).Append('|')
+                .Append(battleSceneCatalogContract.Sha256).Append('|')
+                .Append("WARN_ONLY")
                 .Append('\n');
         }
         if (gameVersionCompatibility is not null)
@@ -532,6 +559,75 @@ public sealed class CoopBridgePackageBuilder
                 throw new InvalidDataException($"Unsupported bridge runtime feature: {(int)feature}.");
             if (!seen.Add(feature))
                 throw new InvalidDataException($"Duplicate bridge runtime feature: {feature}.");
+        }
+    }
+
+    private static void ValidateBattleSceneCatalogContract(
+        BridgeBattleSceneCatalogContract? contract,
+        IReadOnlyList<BannerlordModule> modules,
+        IReadOnlyList<BridgeRuntimeFeature> runtimeFeatures)
+    {
+        var featureEnabled = runtimeFeatures.Contains(
+            BridgeRuntimeFeature.ClientDeterministicBattleSceneProjection);
+        if (contract is null)
+        {
+            if (featureEnabled)
+            {
+                throw new InvalidDataException(
+                    "Deterministic battle-scene projection requires a pinned catalog contract.");
+            }
+            return;
+        }
+        if (!featureEnabled)
+        {
+            throw new InvalidDataException(
+                "A battle-scene catalog contract requires deterministic battle-scene projection.");
+        }
+
+        var target = modules.SingleOrDefault(module => module.Id.Equals(
+            contract.TargetModuleId,
+            StringComparison.OrdinalIgnoreCase));
+        if (target is null || !target.Version.Equals(
+                contract.TargetVersion,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Battle-scene catalog contract target identity does not match the bridge modules.");
+        }
+        if (string.IsNullOrWhiteSpace(contract.BaseModuleId) ||
+            string.IsNullOrWhiteSpace(contract.BaseVersion) ||
+            contract.BaseModuleId.Equals(contract.TargetModuleId, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Battle-scene catalog contract has an invalid base-module identity.");
+        }
+        var relativePath = ValidateSafeRelativePath(
+            contract.RelativePath,
+            "battle-scene catalog contract path");
+        if (!relativePath.Equals(contract.RelativePath, StringComparison.Ordinal) ||
+            relativePath.Split('/').Any(segment =>
+                segment.Length == 0 ||
+                segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) ||
+            !relativePath.StartsWith("BattleSceneCatalog/", StringComparison.Ordinal) ||
+            !Path.GetExtension(relativePath).Equals(".bcs", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidDataException(
+                "Battle-scene catalog contract must stay under BattleSceneCatalog and use .bcs.");
+        }
+        if (contract.Content is null || contract.Content.Length is 0 or > 4 * 1024 * 1024)
+            throw new InvalidDataException("Battle-scene catalog contract payload is invalid.");
+        if (contract.Sha256.Length != 64 ||
+            contract.Sha256.Any(character => character is not (
+                >= '0' and <= '9' or >= 'A' and <= 'F')))
+        {
+            throw new InvalidDataException(
+                "Battle-scene catalog contract hash must be uppercase SHA-256.");
+        }
+        var actualHash = Hash(contract.Content);
+        if (!actualHash.Equals(contract.Sha256, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException(
+                $"Battle-scene catalog contract hash mismatch. Expected {contract.Sha256}, found {actualHash}.");
         }
     }
 
@@ -1035,7 +1131,8 @@ public sealed class CoopBridgePackageBuilder
         byte[] clientAssembly,
         byte[] readme,
         byte[] license,
-        byte[] notice)
+        byte[] notice,
+        BridgeBattleSceneCatalogContract? battleSceneCatalogContract)
     {
         using var stream = new MemoryStream();
         using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
@@ -1046,6 +1143,13 @@ public sealed class CoopBridgePackageBuilder
             AddZipEntry(archive, root + "NOTICE.md", notice);
             AddZipEntry(archive, root + "SubModule.xml", manifest);
             AddZipEntry(archive, root + "bcs-coop-bridge.config", configuration);
+            if (battleSceneCatalogContract is not null)
+            {
+                AddZipEntry(
+                    archive,
+                    root + battleSceneCatalogContract.RelativePath,
+                    battleSceneCatalogContract.Content);
+            }
             AddZipEntry(
                 archive,
                 root + "bin/Win64_Shipping_Server/BCS.CoopBridge.dll",
@@ -1103,17 +1207,37 @@ public sealed class CoopBridgePackageBuilder
         ArgumentNullException.ThrowIfNull(configuration);
         return ComputeBridgeId(
             configuration,
+            null,
             ReadBridgeAssembly(ServerBridgeAssemblyResource, ServerBridgeAssemblyHash),
             ReadBridgeAssembly(ClientBridgeAssemblyResource, ClientBridgeAssemblyHash));
     }
 
-    private static string ComputeBridgeId(
+    internal static string ComputeBridgeId(
         byte[] configuration,
+        byte[] battleSceneCatalogContract)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(battleSceneCatalogContract);
+        return ComputeBridgeId(
+            configuration,
+            battleSceneCatalogContract,
+            ReadBridgeAssembly(ServerBridgeAssemblyResource, ServerBridgeAssemblyHash),
+            ReadBridgeAssembly(ClientBridgeAssemblyResource, ClientBridgeAssemblyHash));
+    }
+
+    internal static string ComputeBridgeId(
+        byte[] configuration,
+        byte[]? battleSceneCatalogContract,
         byte[] serverAssembly,
         byte[] clientAssembly)
     {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(serverAssembly);
+        ArgumentNullException.ThrowIfNull(clientAssembly);
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         hash.AppendData(configuration);
+        if (battleSceneCatalogContract is not null)
+            hash.AppendData(battleSceneCatalogContract);
         hash.AppendData(serverAssembly);
         hash.AppendData(clientAssembly);
         return BridgeIdPrefix + Convert.ToHexString(hash.GetHashAndReset())[..24]
@@ -1383,7 +1507,9 @@ public enum BridgeRuntimeFeature
     ClientCharacterCreationLifecycleCompatibility,
     ServerRegistryLifecycleCompatibility,
     ServerPopulationControl,
-    ServerFailedIdCompatibility
+    ServerFailedIdCompatibility,
+    ClientDeterministicBattleSceneProjection,
+    ServerEurope1700ShieldProductionSuppression
 }
 
 public sealed record BridgeContentExclusion(
@@ -1426,6 +1552,15 @@ public sealed record BridgeServerMapTerrainSize(
     string TargetAssemblyName,
     string TargetAssemblySha256);
 
+public sealed record BridgeBattleSceneCatalogContract(
+    string TargetModuleId,
+    string TargetVersion,
+    string BaseModuleId,
+    string BaseVersion,
+    string RelativePath,
+    string Sha256,
+    byte[] Content);
+
 public sealed record CoopBridgePackage(
     string ModuleId,
     string Version,
@@ -1445,4 +1580,5 @@ public sealed record CoopBridgePackage(
     BridgeGameVersionCompatibility? GameVersionCompatibility,
     IReadOnlyList<BridgeClientAssemblyResolve> ClientAssemblyResolves,
     IReadOnlyList<BridgeServerMapTerrainSize> ServerMapTerrainSizes,
-    IReadOnlyList<BridgeRuntimeFeature> RuntimeFeatures);
+    IReadOnlyList<BridgeRuntimeFeature> RuntimeFeatures,
+    BridgeBattleSceneCatalogContract? BattleSceneCatalogContract);

@@ -9,7 +9,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $smokeRoot = Join-Path $env:TEMP ('bcs-bridge-runtime-smoke-' + [guid]::NewGuid().ToString('N'))
-$modules = Join-Path $smokeRoot 'Modules'
+$modules = Join-Path $smokeRoot 'engine\Modules'
 $content = Join-Path $modules 'ContentPack'
 $contentBin = Join-Path $content 'bin\Win64_Shipping_Client'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -24,10 +24,17 @@ $serverGameInterfaceAssembly = Join-Path $serverCoopBin 'GameInterface.dll'
 function Get-BridgeModuleId(
     [byte[]] $ConfigurationBytes,
     [byte[]] $ServerAssemblyBytes,
-    [byte[]] $ClientAssemblyBytes) {
+    [byte[]] $ClientAssemblyBytes,
+    [byte[]] $BattleSceneCatalogContractBytes = $null) {
     $identityPayload = New-Object System.IO.MemoryStream
     try {
         $identityPayload.Write($ConfigurationBytes, 0, $ConfigurationBytes.Length)
+        if ($null -ne $BattleSceneCatalogContractBytes) {
+            $identityPayload.Write(
+                $BattleSceneCatalogContractBytes,
+                0,
+                $BattleSceneCatalogContractBytes.Length)
+        }
         $identityPayload.Write($ServerAssemblyBytes, 0, $ServerAssemblyBytes.Length)
         $identityPayload.Write($ClientAssemblyBytes, 0, $ClientAssemblyBytes.Length)
         $identityBytes = $identityPayload.ToArray()
@@ -83,6 +90,10 @@ try {
     $version64 = [Convert]::ToBase64String($utf8.GetBytes('v1.0.0'))
     $nativeId64 = [Convert]::ToBase64String($utf8.GetBytes('Native'))
     $nativeVersion64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.8'))
+    $europe1700Id64 = [Convert]::ToBase64String($utf8.GetBytes('Europe1700'))
+    $europe1700Version64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.7.1'))
+    $sandboxCoreId64 = [Convert]::ToBase64String($utf8.GetBytes('SandBoxCore'))
+    $sandboxCoreVersion64 = [Convert]::ToBase64String($utf8.GetBytes('v1.4.8'))
     $nativeSmokeDll64 = [Convert]::ToBase64String($utf8.GetBytes('NativeSmoke.dll'))
     $clientOnlyDll64 = [Convert]::ToBase64String($utf8.GetBytes('ClientOnly.dll'))
     $disabledDll64 = [Convert]::ToBase64String($utf8.GetBytes('Disabled.dll'))
@@ -158,23 +169,40 @@ try {
         'ClientCharacterCreationLifecycleCompatibility',
         'ServerRegistryLifecycleCompatibility',
         'ServerPopulationControl',
-        'ServerFailedIdCompatibility'
+        'ServerFailedIdCompatibility',
+        'ServerEurope1700ShieldProductionSuppression'
     )
+    $deterministicBattleSceneFeature =
+        'ClientDeterministicBattleSceneProjection'
+    $schema3RuntimeFeatures = @(
+        $runtimeFeatures + $deterministicBattleSceneFeature)
     $runtimeFeatureText = (($runtimeFeatures | Sort-Object | ForEach-Object {
         'RUNTIME_FEATURE|' + [Convert]::ToBase64String($utf8.GetBytes($_))
     }) -join [char]10) + [char]10
-    $configText = 'BCS-COOP-BRIDGE|2' + [char]10 +
-        $runtimeFeatureText +
-        'GAME_VERSION_COMPAT|' + $serverGameVersion64 + '|' + $clientGameVersion64 + '|' + $serverRuntimeVersion64 + '|' + $clientRuntimeVersion64 + [char]10 +
+    $gameVersionCompatibilityRecord =
+        'GAME_VERSION_COMPAT|' + $serverGameVersion64 + '|' +
+        $clientGameVersion64 + '|' + $serverRuntimeVersion64 + '|' +
+        $clientRuntimeVersion64 + [char]10
+    $coopModuleRecords =
         'MODULE|' + $id64 + '|' + $version64 + '|' + $dll64 + '|' + [char]10 +
-        'MODULE|' + $id64 + '|' + $version64 + '|' + $gameInterfaceDll64 + '|' + [char]10 +
-        'MODULE|' + $nativeId64 + '|' + $nativeVersion64 + '|' + $nativeSmokeDll64 + '|' + [char]10 +
-        'MODULE|' + $nativeId64 + '|' + $nativeVersion64 + '|' + $clientOnlyDll64 + '|CLIENT_ONLY' + [char]10 +
+        'MODULE|' + $id64 + '|' + $version64 + '|' + $gameInterfaceDll64 + '|' + [char]10
+    $nativeModuleRecords =
+        'MODULE|' + $nativeId64 + '|' + $nativeVersion64 + '|' +
+        $nativeSmokeDll64 + '|' + [char]10 +
+        'MODULE|' + $nativeId64 + '|' + $nativeVersion64 + '|' +
+        $clientOnlyDll64 + '|CLIENT_ONLY' + [char]10
+    $configPolicyRecords =
         'DISABLED_SUBMODULE|' + $nativeId64 + '|' + $disabledDll64 + [char]10 +
         'IGNORE_CONTENT|' + $id64 + '|' + $visualPath64 + [char]10 +
         'CONTENT|' + $id64 + '|' + $contentHash + [char]10 +
         'AUTHORITY|' + $id64 + '|' + $dll64 + '|' + $type64 + '|' + $method64 + '|0|SERVER_ONLY' + [char]10 +
         'AUTHORITY|' + $id64 + '|' + $dll64 + '|' + $type64 + '|' + $clientMethod64 + '|0|CLIENT_ONLY' + [char]10
+    $configText = 'BCS-COOP-BRIDGE|2' + [char]10 +
+        $runtimeFeatureText +
+        $gameVersionCompatibilityRecord +
+        $coopModuleRecords +
+        $nativeModuleRecords +
+        $configPolicyRecords
     $configBytes = $utf8.GetBytes($configText)
     $serverBridgeAssemblySource = Join-Path $WorkspaceRoot 'BCSTool\Assets\CoopBridge\BCS.CoopBridge.Server.dll'
     $clientBridgeAssemblySource = Join-Path $WorkspaceRoot 'BCSTool\Assets\CoopBridge\BCS.CoopBridge.Client.dll'
@@ -204,11 +232,36 @@ try {
     $clientBridgeBin = Join-Path $bridgeRoot 'bin\Win64_Shipping_Client'
     [System.IO.Directory]::CreateDirectory($serverBridgeBin) | Out-Null
     [System.IO.Directory]::CreateDirectory($clientBridgeBin) | Out-Null
-    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.68"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
+    $bridgeManifest = '<?xml version="1.0" encoding="utf-8"?><Module><Name value="BCS Coop Bridge"/><Id value="' + $bridgeId + '"/><Version value="v0.6.73"/><SingleplayerModule value="true"/><MultiplayerModule value="false"/><DependedModules><DependedModule Id="Coop" DependentVersion="v1.0.0" Optional="false"/></DependedModules><ModuleType value="Community"/><SubModules><SubModule><Name value="BCS Coop Bridge"/><DLLName value="BCS.CoopBridge.dll"/><SubModuleClassType value="BCS.CoopBridge.BridgeSubModule"/></SubModule></SubModules><Xmls/></Module>'
     [System.IO.File]::WriteAllText((Join-Path $bridgeRoot 'SubModule.xml'), $bridgeManifest, $utf8)
     [System.IO.File]::WriteAllBytes((Join-Path $bridgeRoot 'bcs-coop-bridge.config'), $configBytes)
     Copy-Item -LiteralPath $serverBridgeAssemblySource -Destination (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll')
     Copy-Item -LiteralPath $clientBridgeAssemblySource -Destination (Join-Path $clientBridgeBin 'BCS.CoopBridge.dll')
+
+    $populationSettingsPath = Join-Path $smokeRoot 'bcs-coop-bridge-population.config'
+    $economySettingsPath = Join-Path $smokeRoot 'bcs-coop-bridge-economy.config'
+    $populationSettingsText = 'BCS-BRIDGE-POPULATION|3' + [char]10 +
+        'MAXIMUM_AUTOMATIC_CARAVANS|236' + [char]10 +
+        'AUTOMATIC_NPC_CARAVANS_PER_TOWN|1' + [char]10 +
+        'MAXIMUM_ACTIVE_VILLAGER_PARTIES|400' + [char]10 +
+        'BANDIT_PARTIES_AROUND_HIDEOUT_MULTIPLIER|1' + [char]10 +
+        'PLAYER_ACTIVE_SPAWN_RADIUS_BANDIT_TRAVEL_DAYS|0.5' + [char]10 +
+        'REGIONAL_AMBIENT_OUTLAW_SPAWNS_ENABLED|TRUE' + [char]10 +
+        'REGIONAL_VILLAGER_TRADE_ENABLED|TRUE' + [char]10 +
+        'REGIONAL_SETTLEMENT_PATROL_SPAWNS_ENABLED|TRUE' + [char]10 +
+        'REGIONAL_BATTLE_DESERTER_SPAWNS_ENABLED|TRUE' + [char]10
+    $economySettingsText = 'BCS-BRIDGE-ECONOMY|1' + [char]10 +
+        'CARAVAN_CAPACITY_MULTIPLIER|2' + [char]10 +
+        'CARAVAN_TRADE_BUDGET_MULTIPLIER|2' + [char]10 +
+        'CARAVAN_DESTINATION_AGE_MAX_BONUS|1' + [char]10 +
+        'CARAVAN_DESTINATION_AGE_HORIZON_DAYS|30' + [char]10 +
+        'VILLAGER_PARTY_CAPACITY_MULTIPLIER|1' + [char]10 +
+        'VIRTUAL_VILLAGER_SHIPMENTS_ENABLED|TRUE' + [char]10 +
+        'VIRTUAL_VILLAGER_CARGO_MULTIPLIER|1' + [char]10 +
+        'VIRTUAL_VILLAGER_COOLDOWN_DAYS|7' + [char]10 +
+        'VIRTUAL_VILLAGER_TRAVEL_TIME_MULTIPLIER|1' + [char]10
+    [System.IO.File]::WriteAllText($populationSettingsPath, $populationSettingsText, $utf8)
+    [System.IO.File]::WriteAllText($economySettingsPath, $economySettingsText, $utf8)
 
     $hostPath = Join-Path $WorkspaceRoot 'artifacts\BridgeSmokeHost.exe'
     [System.IO.Directory]::CreateDirectory((Split-Path $hostPath)) | Out-Null
@@ -249,9 +302,150 @@ try {
         throw 'The temporary net6 server bridge smoke host was not produced.'
     }
 
+    # Exercise the production parser, package identity, and pinned contract
+    # loader with a real schema 3 package before the direct installed-hook ABI
+    # probe seeds any runtime state.
+    $battleSceneCatalogContractRelativePath =
+        'BattleSceneCatalog/europe-1700-1.4.7.1-sandboxcore-1.4.8.bcs'
+    $battleSceneCatalogContractSource = Join-Path $WorkspaceRoot `
+        'BCSTool\Assets\BattleSceneCatalog\europe-1700-1.4.7.1-sandboxcore-1.4.8.bcs'
+    $battleSceneCatalogContractBytes =
+        [System.IO.File]::ReadAllBytes($battleSceneCatalogContractSource)
+    $battleSceneCatalogSha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $battleSceneCatalogContractHash = ([BitConverter]::ToString(
+            $battleSceneCatalogSha.ComputeHash(
+                $battleSceneCatalogContractBytes))).Replace('-', '')
+    }
+    finally {
+        $battleSceneCatalogSha.Dispose()
+    }
+    $battleSceneCatalogRelativePath64 = [Convert]::ToBase64String(
+        $utf8.GetBytes($battleSceneCatalogContractRelativePath))
+    $schema3RuntimeFeatureText = (($schema3RuntimeFeatures |
+        Sort-Object | ForEach-Object {
+            'RUNTIME_FEATURE|' +
+                [Convert]::ToBase64String($utf8.GetBytes($_))
+        }) -join [char]10) + [char]10
+    $schema3ContractRecord =
+        'BATTLE_SCENE_CATALOG_CONTRACT|' + $europe1700Id64 + '|' +
+        $europe1700Version64 + '|' + $sandboxCoreId64 + '|' +
+        $sandboxCoreVersion64 + '|' + $battleSceneCatalogRelativePath64 + '|' +
+        $battleSceneCatalogContractHash + '|WARN_ONLY' + [char]10
+    $schema3ConfigText = 'BCS-COOP-BRIDGE|3' + [char]10 +
+        $schema3RuntimeFeatureText +
+        $schema3ContractRecord +
+        $gameVersionCompatibilityRecord +
+        $coopModuleRecords +
+        'MODULE|' + $europe1700Id64 + '|' + $europe1700Version64 + '||' + [char]10 +
+        $nativeModuleRecords +
+        'MODULE|' + $sandboxCoreId64 + '|' + $sandboxCoreVersion64 + '||' + [char]10 +
+        $configPolicyRecords
+    $schema3ConfigBytes = $utf8.GetBytes($schema3ConfigText)
+    $schema3BridgeId = Get-BridgeModuleId `
+        $schema3ConfigBytes `
+        $serverBridgeAssemblyBytes `
+        $clientBridgeAssemblyBytes `
+        $battleSceneCatalogContractBytes
+    $schema3BridgeManifest = $bridgeManifest.Replace(
+        $bridgeId,
+        $schema3BridgeId)
+
+    $europe1700Root = Join-Path $modules 'Europe1700'
+    $sandboxCoreRoot = Join-Path $modules 'SandBoxCore'
+    [System.IO.Directory]::CreateDirectory($europe1700Root) | Out-Null
+    [System.IO.Directory]::CreateDirectory($sandboxCoreRoot) | Out-Null
+    [System.IO.File]::WriteAllText(
+        (Join-Path $europe1700Root 'SubModule.xml'),
+        '<?xml version="1.0" encoding="utf-8"?><Module><Name value="Empires of Europe 1700"/><Id value="Europe1700"/><Version value="v1.4.7.1"/><DependedModules/><SubModules/></Module>',
+        $utf8)
+    [System.IO.File]::WriteAllText(
+        (Join-Path $sandboxCoreRoot 'SubModule.xml'),
+        '<?xml version="1.0" encoding="utf-8"?><Module><Name value="SandBox Core"/><Id value="SandBoxCore"/><Version value="v1.4.8"/><DependedModules/><SubModules/></Module>',
+        $utf8)
+    $installedBattleSceneCatalogPath = Join-Path `
+        $bridgeRoot `
+        $battleSceneCatalogContractRelativePath
+    [System.IO.Directory]::CreateDirectory(
+        (Split-Path $installedBattleSceneCatalogPath)) | Out-Null
+    [System.IO.File]::WriteAllBytes(
+        $installedBattleSceneCatalogPath,
+        $battleSceneCatalogContractBytes)
+
+    try {
+        [System.IO.File]::WriteAllText(
+            (Join-Path $bridgeRoot 'SubModule.xml'),
+            $schema3BridgeManifest,
+            $utf8)
+        [System.IO.File]::WriteAllBytes(
+            (Join-Path $bridgeRoot 'bcs-coop-bridge.config'),
+            $schema3ConfigBytes)
+
+        $env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY = $serverGameInterfaceAssembly
+        $env:BCS_BRIDGE_SMOKE_EXPECTED_FEATURES =
+            $schema3RuntimeFeatures -join '|'
+        try {
+            $schema3ValidationOutput = @(
+                & dotnet $serverHostPath `
+                    (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') `
+                    $serverHarmonyBin `
+                    $serverGameBin `
+                    $serverCoopBin 2>&1)
+            $schema3ValidationExitCode = $LASTEXITCODE
+            $schema3ValidationOutput | ForEach-Object { Write-Output $_ }
+            if ($schema3ValidationExitCode -ne 0) {
+                throw 'Server bridge runtime rejected the production-path schema 3 battle-scene contract.'
+            }
+            $schema3ValidationMarker =
+                '[BCS Coop Bridge] Battle-scene catalog contract ' +
+                $battleSceneCatalogContractHash + ' validated;'
+            if (($schema3ValidationOutput -join [Environment]::NewLine).IndexOf(
+                    $schema3ValidationMarker,
+                    [StringComparison]::Ordinal) -lt 0) {
+                throw 'Schema 3 smoke did not execute the pinned battle-scene contract loader.'
+            }
+            Write-Output 'PASS: production schema 3 validated its pinned battle-scene contract before the installed ABI smoke.'
+        }
+        finally {
+            Remove-Item Env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY -ErrorAction SilentlyContinue
+            Remove-Item Env:BCS_BRIDGE_SMOKE_EXPECTED_FEATURES -ErrorAction SilentlyContinue
+        }
+
+        $env:BCS_BRIDGE_SMOKE_VALIDATE_BATTLE_SCENE_INSTALLED_ABI = '1'
+        $env:BCS_BRIDGE_SMOKE_VALIDATE_ECONOMY_SAVE_SCHEMA = '1'
+        $env:BCS_BRIDGE_SMOKE_COOP_MODULE_ROOT = $CoopModuleRoot
+        try {
+            & $hostPath `
+                (Join-Path $clientBridgeBin 'BCS.CoopBridge.dll') `
+                $harmonyBin `
+                $gameBin `
+                $coopBin
+            if ($LASTEXITCODE -ne 0) {
+                throw 'Client bridge runtime failed the installed Coop battle-scene ABI smoke.'
+            }
+        }
+        finally {
+            Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_BATTLE_SCENE_INSTALLED_ABI -ErrorAction SilentlyContinue
+            Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_ECONOMY_SAVE_SCHEMA -ErrorAction SilentlyContinue
+            Remove-Item Env:BCS_BRIDGE_SMOKE_COOP_MODULE_ROOT -ErrorAction SilentlyContinue
+        }
+    }
+    finally {
+        [System.IO.File]::WriteAllText(
+            (Join-Path $bridgeRoot 'SubModule.xml'),
+            $bridgeManifest,
+            $utf8)
+        [System.IO.File]::WriteAllBytes(
+            (Join-Path $bridgeRoot 'bcs-coop-bridge.config'),
+            $configBytes)
+    }
+
     $env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY = $serverGameInterfaceAssembly
     $env:BCS_BRIDGE_SMOKE_VALIDATE_GAME_VERSION = '1'
     $env:BCS_BRIDGE_SMOKE_EXPECTED_FEATURES = $runtimeFeatures -join '|'
+    $env:BCS_BRIDGE_SMOKE_VALIDATE_ECONOMY_HOOKS = '1'
+    $env:BCS_BRIDGE_SMOKE_VALIDATE_REGIONAL_POPULATION_HOOKS = '1'
+    $env:BCS_BRIDGE_SMOKE_VALIDATE_ECONOMY_SAVE_SCHEMA = '1'
     try {
         & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
         if ($LASTEXITCODE -ne 0) {
@@ -261,6 +455,30 @@ try {
     finally {
         Remove-Item Env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY -ErrorAction SilentlyContinue
         Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_GAME_VERSION -ErrorAction SilentlyContinue
+        Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_ECONOMY_HOOKS -ErrorAction SilentlyContinue
+        Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_REGIONAL_POPULATION_HOOKS -ErrorAction SilentlyContinue
+        Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_ECONOMY_SAVE_SCHEMA -ErrorAction SilentlyContinue
+    }
+
+    [System.IO.File]::WriteAllText(
+        $economySettingsPath,
+        $economySettingsText.Replace(
+            'VIRTUAL_VILLAGER_SHIPMENTS_ENABLED|TRUE',
+            'VIRTUAL_VILLAGER_SHIPMENTS_ENABLED|true'),
+        $utf8)
+    $env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY = $serverGameInterfaceAssembly
+    $env:BCS_BRIDGE_SMOKE_VALIDATE_ECONOMY_HOOKS = '1'
+    try {
+        & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
+        if ($LASTEXITCODE -eq 0) {
+            throw 'Server bridge runtime accepted a non-canonical economy boolean.'
+        }
+        Write-Output 'PASS: server bridge runtime rejected a malformed economy sidecar.'
+    }
+    finally {
+        [System.IO.File]::WriteAllText($economySettingsPath, $economySettingsText, $utf8)
+        Remove-Item Env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY -ErrorAction SilentlyContinue
+        Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_ECONOMY_HOOKS -ErrorAction SilentlyContinue
     }
 
     [System.IO.File]::WriteAllText(
@@ -290,6 +508,7 @@ try {
     $env:BCS_BRIDGE_SMOKE_WORKING_DIRECTORY = $gameBin
     $env:BCS_BRIDGE_SMOKE_VALIDATE_GAME_VERSION = '1'
     $env:BCS_BRIDGE_SMOKE_VALIDATE_CHARACTER_CREATION_GATE = '1'
+    $env:BCS_BRIDGE_SMOKE_VALIDATE_BATTLE_SCENE_RANDOM_SCOPE = '1'
     [System.IO.File]::WriteAllText($nativeManifestPath, $clientNativeManifest, $utf8)
     $externalVisualPath = Join-Path $externalContent 'ModuleData\visual.xml'
     Remove-Item -LiteralPath $externalVisualPath
@@ -332,6 +551,7 @@ try {
         Remove-Item Env:BCS_BRIDGE_SMOKE_WORKING_DIRECTORY -ErrorAction SilentlyContinue
         Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_GAME_VERSION -ErrorAction SilentlyContinue
         Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_CHARACTER_CREATION_GATE -ErrorAction SilentlyContinue
+        Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_BATTLE_SCENE_RANDOM_SCOPE -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $clientGuiXmlPath -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $clientNestedJsonPath -ErrorAction SilentlyContinue
         [System.IO.File]::WriteAllText($externalVisualPath, $visualXml, $utf8)
@@ -363,7 +583,8 @@ try {
     $bridgeId = $genericBridgeId
     $bridgeManifest = $genericBridgeManifest
     Remove-Item Env:BCS_BRIDGE_SMOKE_EXPECTED_FEATURES -ErrorAction SilentlyContinue
-    $env:BCS_BRIDGE_SMOKE_DISABLED_FEATURES = $runtimeFeatures -join '|'
+    $env:BCS_BRIDGE_SMOKE_DISABLED_FEATURES =
+        $schema3RuntimeFeatures -join '|'
     $env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY = $serverGameInterfaceAssembly
     try {
         & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
@@ -419,6 +640,17 @@ try {
     $bridgeId = $legacyBridgeId
     $bridgeManifest = $legacyBridgeManifest
 
+    # Schema 1 predates deterministic battle-scene projection. It retains only
+    # its historical feature set; newly added features must remain disabled.
+    $env:BCS_BRIDGE_SMOKE_DISABLED_FEATURES = @(
+        $deterministicBattleSceneFeature,
+        'ServerEurope1700ShieldProductionSuppression'
+    ) -join '|'
+    $env:BCS_BRIDGE_SMOKE_EXPECTED_FEATURES = ($runtimeFeatures |
+        Where-Object {
+            $_ -ne $deterministicBattleSceneFeature -and
+            $_ -ne 'ServerEurope1700ShieldProductionSuppression'
+        }) -join '|'
     $env:BCS_BRIDGE_SMOKE_PRELOAD_ASSEMBLY = $serverGameInterfaceAssembly
     try {
         & dotnet $serverHostPath (Join-Path $serverBridgeBin 'BCS.CoopBridge.dll') $serverHarmonyBin $serverGameBin $serverCoopBin
@@ -439,6 +671,7 @@ try {
     finally {
         [System.IO.File]::WriteAllText($nativeManifestPath, $serverNativeManifest, $utf8)
     }
+    Remove-Item Env:BCS_BRIDGE_SMOKE_DISABLED_FEATURES -ErrorAction SilentlyContinue
     Write-Output 'PASS: legacy schema 1 preserved all historical runtime compatibility features.'
 
     [System.IO.File]::WriteAllText($visualXmlPath, '<Visuals particle="server_headless" />', $utf8)
@@ -474,6 +707,12 @@ try {
 finally {
     Remove-Item Env:BCS_BRIDGE_SMOKE_EXPECTED_FEATURES -ErrorAction SilentlyContinue
     Remove-Item Env:BCS_BRIDGE_SMOKE_DISABLED_FEATURES -ErrorAction SilentlyContinue
+    Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_BATTLE_SCENE_RANDOM_SCOPE -ErrorAction SilentlyContinue
+    Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_BATTLE_SCENE_INSTALLED_ABI -ErrorAction SilentlyContinue
+    Remove-Item Env:BCS_BRIDGE_SMOKE_COOP_MODULE_ROOT -ErrorAction SilentlyContinue
+    Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_ECONOMY_HOOKS -ErrorAction SilentlyContinue
+    Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_REGIONAL_POPULATION_HOOKS -ErrorAction SilentlyContinue
+    Remove-Item Env:BCS_BRIDGE_SMOKE_VALIDATE_ECONOMY_SAVE_SCHEMA -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $smokeRoot) {
         Remove-Item -LiteralPath $smokeRoot -Recurse -Force
     }

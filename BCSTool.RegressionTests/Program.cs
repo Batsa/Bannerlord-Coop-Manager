@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.IO.Compression;
 using System.Collections.Concurrent;
@@ -14,6 +15,34 @@ using System.Xml;
 using BCSTool;
 using BCSTool.Models;
 using BCSTool.Services;
+
+if (args is ["--bridge-economy-save-schema-regression"])
+{
+    VerifyEmbeddedBridgeEconomySaveSchema();
+    Console.WriteLine("PASS: bridge economy save schema is registered in both runtimes.");
+    return 0;
+}
+
+if (args is ["--battle-scene-contract-regression"])
+{
+    BattleSceneCatalogContractRegression.Run();
+    Console.WriteLine("PASS: pinned battle-scene catalog package contract.");
+    return 0;
+}
+
+if (args is ["--battle-scene-projection-regression"])
+{
+    BattleSceneProjectionRuntimeRegression.Run();
+    Console.WriteLine("PASS: deterministic EOE battle-scene runtime contract.");
+    return 0;
+}
+
+if (args is ["--bridge-population-settings-regression"])
+{
+    BridgePopulationSettingsRegression.Run();
+    Console.WriteLine("PASS: bridge population and trade settings selection.");
+    return 0;
+}
 
 if (args is ["--module-manager-change-set", var moduleManagerPath, var moduleManagerRole])
 {
@@ -480,6 +509,7 @@ Run("managed engine console logging is lossless and rotated", TestServerConsoleL
 Run("bridge installation recipe and start preflight are scoped", BridgeInstallationRegression.Run);
 Run("bridge DLL selection defaults and migration are fail-closed", BridgeDllSelectionRegression.Run);
 Run("bridge population settings are scoped, strict, and identity-neutral", BridgePopulationSettingsRegression.Run);
+Run("embedded bridge economy save schema is registered in both runtimes", VerifyEmbeddedBridgeEconomySaveSchema);
 Run("applied content-only module replans without pending state", TestAppliedContentModuleReplansAsNoOp);
 Run("content compatibility prepare and revert are lossless", TestContentCompatibilityPrepareAndRevert);
 Run("prepared module DLL unblock preserves assembly bytes", TestPreparedModuleDllUnblock);
@@ -500,6 +530,8 @@ Run("bridge server file redirects require safe existing sources", TestBridgeServ
 Run("bridge server XML overlays require safe source and payload", TestBridgeServerXmlOverlayConfiguration);
 Run("bridge server map terrain size is version-scoped and fail closed", TestBridgeServerMapTerrainSizeConfiguration);
 Run("bridge runtime features are explicit and target scoped", TestBridgeRuntimeFeatureConfiguration);
+Run("battle-scene catalog contract is pinned and package-bound", BattleSceneCatalogContractRegression.Run);
+Run("EOE battle-scene projection runtime is explicit and exact", BattleSceneProjectionRuntimeRegression.Run);
 Run("bridge excludes campaign seeding and save rewriting", TestBridgeExcludesCampaignIntervention);
 Run("generic executable preparation projects DLL and creates bridge", TestGenericExecutablePrepareAndRevert);
 Run("prepared profile normalizes dependency order", TestPreparedProfileNormalizesDependencyOrder);
@@ -711,6 +743,120 @@ string DescribeTypeReference(MetadataReader metadata, TypeReference reference) =
 string DescribeTypeDefinition(MetadataReader metadata, TypeDefinition definition) =>
     metadata.GetString(definition.Namespace) + "." + metadata.GetString(definition.Name);
 
+void VerifyEmbeddedBridgeEconomySaveSchema()
+{
+    foreach (var resourceName in new[]
+             {
+                 "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Server.dll",
+                 "BCSTool.Assets.CoopBridge.BCS.CoopBridge.Client.dll"
+             })
+    {
+        using var resource = typeof(CoopBridgePackageBuilder).Assembly
+            .GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException(
+                "Embedded bridge runtime is missing: " + resourceName);
+        using var bytes = new MemoryStream();
+        resource.CopyTo(bytes);
+        VerifyBridgeEconomySaveSchema(bytes.ToArray(), resourceName);
+    }
+}
+
+void VerifyBridgeEconomySaveSchema(byte[] assembly, string runtimeName)
+{
+    using var stream = new MemoryStream(assembly, writable: false);
+    using var pe = new PEReader(stream);
+    var metadata = pe.GetMetadataReader();
+    var references = metadata.AssemblyReferences
+        .Select(handle => metadata.GetString(metadata.GetAssemblyReference(handle).Name))
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    Assert(references.Contains("TaleWorlds.SaveSystem"),
+        runtimeName + " does not reference Bannerlord's save-definition API.");
+
+    var definerHandles = metadata.TypeDefinitions.Where(handle =>
+        DescribeTypeDefinition(metadata, metadata.GetTypeDefinition(handle)) ==
+        "BCS.CoopBridge.BridgeEconomySaveableTypeDefiner").ToArray();
+    Assert(definerHandles.Length == 1,
+        runtimeName + " does not contain exactly one economy save-type definer.");
+    var definer = metadata.GetTypeDefinition(definerHandles[0]);
+    Assert(definer.Attributes.HasFlag(TypeAttributes.Public) &&
+           !definer.Attributes.HasFlag(TypeAttributes.Abstract) &&
+           definer.GetGenericParameters().Count == 0 &&
+           DescribeMetadataToken(metadata, MetadataTokens.GetToken(definer.BaseType)) ==
+           "TaleWorlds.SaveSystem.SaveableTypeDefiner",
+        runtimeName + " economy save-type definer is not public or has the wrong base type.");
+
+    var constructorHandles = definer.GetMethods().Where(handle =>
+    {
+        var method = metadata.GetMethodDefinition(handle);
+        return metadata.GetString(method.Name) == ".ctor" &&
+               method.Attributes.HasFlag(MethodAttributes.Public);
+    }).ToArray();
+    Assert(constructorHandles.Length == 1 &&
+           Convert.ToHexString(metadata.GetBlobBytes(
+               metadata.GetMethodDefinition(constructorHandles[0]).Signature)) == "200001",
+        runtimeName + " economy save-type definer does not expose one public constructor.");
+    var constructor = metadata.GetMethodDefinition(constructorHandles[0]);
+    var constructorBody = pe.GetMethodBody(constructor.RelativeVirtualAddress);
+    var constructorIl = constructorBody.GetILBytes() ?? throw new InvalidDataException(
+        runtimeName + " economy save-type definer constructor has no IL body.");
+    Assert(constructorIl.AsSpan().IndexOf(BitConverter.GetBytes(62814000)) >= 0 &&
+           ReadInlineMethodTokens(constructorIl, metadata).Count(token =>
+               DescribeMetadataToken(metadata, token).EndsWith(
+                   "SaveableTypeDefiner::.ctor",
+                   StringComparison.Ordinal)) == 1,
+        runtimeName + " economy save-type definer lost its stable save-base ID.");
+
+    var defineHandles = definer.GetMethods().Where(handle =>
+    {
+        var method = metadata.GetMethodDefinition(handle);
+        return metadata.GetString(method.Name) == "DefineContainerDefinitions" &&
+               method.Attributes.HasFlag(MethodAttributes.Family) &&
+               method.Attributes.HasFlag(MethodAttributes.Virtual) &&
+               !method.Attributes.HasFlag(MethodAttributes.NewSlot);
+    }).ToArray();
+    Assert(defineHandles.Length == 1,
+        runtimeName + " economy save-type definer does not override container registration.");
+    var defineMethod = metadata.GetMethodDefinition(defineHandles[0]);
+    var body = pe.GetMethodBody(defineMethod.RelativeVirtualAddress);
+    var il = body.GetILBytes() ?? throw new InvalidDataException(
+        runtimeName + " economy save-type definer has no IL body.");
+    var typeTokens = ReadInlineTokens(il, metadata, OperandType.InlineTok)
+        .Select(MetadataTokens.Handle)
+        .ToArray();
+    Assert(typeTokens.Length == 4 &&
+           typeTokens.All(handle => handle.Kind == HandleKind.TypeSpecification) &&
+           typeTokens.Distinct().Count() == 4,
+        runtimeName + " does not register four distinct economy dictionary containers.");
+    var typeProvider = new CanonicalMetadataTypeProvider();
+    var registeredContainers = typeTokens
+        .Select(handle => metadata.GetTypeSpecification(
+                (TypeSpecificationHandle)handle)
+            .DecodeSignature(typeProvider, genericContext: null))
+        .ToHashSet(StringComparer.Ordinal);
+    var expectedContainers = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "System.Collections.Generic.Dictionary`2<" +
+        "TaleWorlds.CampaignSystem.Settlements.Village,System.Int32>",
+        "System.Collections.Generic.Dictionary`2<" +
+        "TaleWorlds.CampaignSystem.Settlements.Village," +
+        "TaleWorlds.CampaignSystem.Settlements.Settlement>",
+        "System.Collections.Generic.Dictionary`2<" +
+        "TaleWorlds.CampaignSystem.Settlements.Village," +
+        "System.Collections.Generic.List`1<TaleWorlds.Core.EquipmentElement>>",
+        "System.Collections.Generic.Dictionary`2<" +
+        "TaleWorlds.CampaignSystem.Settlements.Village," +
+        "System.Collections.Generic.List`1<System.Int32>>"
+    };
+    Assert(registeredContainers.SetEquals(expectedContainers),
+        runtimeName + " economy container definitions do not match the persisted fields.");
+    var calls = ReadInlineMethodTokens(il, metadata);
+    Assert(calls.Count(token =>
+            DescribeMetadataToken(metadata, token).EndsWith(
+                "::ConstructContainerDefinition",
+                StringComparison.Ordinal)) == 4,
+        runtimeName + " does not construct all four economy container definitions.");
+}
+
 void VerifyServerXmlOverlayAbi(string objectSystemPath, byte[] serverBridgeAssembly)
 {
     var objectSystemBytes = File.ReadAllBytes(objectSystemPath);
@@ -866,6 +1012,12 @@ void VerifyRuntimeResolverSimpleNameValidation(byte[] bridgeAssembly)
 }
 
 IReadOnlyList<int> ReadInlineMethodTokens(byte[] bytes, MetadataReader metadata)
+    => ReadInlineTokens(bytes, metadata, OperandType.InlineMethod);
+
+IReadOnlyList<int> ReadInlineTokens(
+    byte[] bytes,
+    MetadataReader metadata,
+    OperandType requestedOperandType)
 {
     var opCodes = typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static)
         .Where(field => field.FieldType == typeof(OpCode))
@@ -881,7 +1033,7 @@ IReadOnlyList<int> ReadInlineMethodTokens(byte[] bytes, MetadataReader metadata)
         var opCode = opCodes[value];
         var operandOffset = offset;
         _ = ReadIlOperand(opCode.OperandType, bytes, ref offset, metadata);
-        if (opCode.OperandType == OperandType.InlineMethod)
+        if (opCode.OperandType == requestedOperandType)
             result.Add(BitConverter.ToInt32(bytes, operandOffset));
     }
     return result;
@@ -2964,9 +3116,10 @@ void TestGenericBridgePackage()
             "Server bridge runtime lost its map terrain size prefix.");
                 Assert(!clientTypes.Contains("BCS.CoopBridge.ServerMapTerrainSizePrefix"),
                     "Client bridge runtime contains the server-only map terrain size prefix.");
-                Assert(!clientReferences.Contains("SandBox") &&
-                       !clientReferences.Contains("TaleWorlds.Library"),
+                Assert(!clientReferences.Contains("SandBox"),
                     "Client bridge runtime gained a direct map-terrain patch dependency.");
+                Assert(clientReferences.Contains("TaleWorlds.Library"),
+                    "Client bridge runtime lost its deterministic RNG/main-thread dependency.");
                 Assert(clientCompatibilityMethods.Contains("BeforeGetLeaderParty") &&
                        clientCompatibilityMethods.Contains("BeforeGetNumberOfInvolvedMen"),
                     "Client bridge runtime lost an EOE invalid-map-event-side guard.");
@@ -3032,19 +3185,97 @@ void TestGenericBridgePackage()
                 Assert(serverTypes.Contains("BCS.CoopBridge.ServerPopulationControl") &&
                        serverPopulationMethods.Contains("BeforeSpawnCaravan") &&
                        serverPopulationMethods.Contains("ResolveCaravanTown") &&
+                       serverPopulationMethods.Contains("AfterGetInventoryCapacity") &&
+                       serverPopulationMethods.Contains("BeforeInitializePartyTrade") &&
+                       serverPopulationMethods.Contains("AfterGetTradeScoreForTown") &&
                        serverPopulationMethods.Contains("BeforeCreateVillagerParty") &&
                        serverPopulationMethods.Contains(
                            "AfterGetMaximumBanditPartiesAroundEachHideout"),
-                    "Server bridge runtime lost a population-control seam.");
+                    "Server bridge runtime lost a population or economy-control seam.");
                 Assert(!clientTypes.Contains("BCS.CoopBridge.ServerPopulationControl"),
                     "Client bridge runtime contains server-only population controls.");
+                var regionalPopulationMethods = serverMetadata.TypeDefinitions
+                    .Select(handle => serverMetadata.GetTypeDefinition(handle))
+                    .Where(type => serverMetadata.GetString(type.Name)
+                        .Equals("RegionalPopulationControl", StringComparison.Ordinal))
+                    .SelectMany(type => type.GetMethods())
+                    .Select(handle => serverMetadata.GetString(
+                        serverMetadata.GetMethodDefinition(handle).Name))
+                    .ToHashSet(StringComparer.Ordinal);
+                Assert(serverTypes.Contains("BCS.CoopBridge.RegionalPopulationControl") &&
+                       !clientTypes.Contains("BCS.CoopBridge.RegionalPopulationControl") &&
+                       regionalPopulationMethods.Contains("TryResolvePlayerPositions") &&
+                       regionalPopulationMethods.Contains("TranspileSelectBanditHideout") &&
+                       regionalPopulationMethods.Contains("AfterSelectBanditOrigin") &&
+                       regionalPopulationMethods.Contains("TranspileVillagerDeparture") &&
+                       regionalPopulationMethods.Contains("LatchCreatedVillagerParty") &&
+                       regionalPopulationMethods.Contains("BeforeLoadAndSendVillagerParty") &&
+                       regionalPopulationMethods.Contains("AfterLoadAndSendVillagerParty") &&
+                       regionalPopulationMethods.Contains("FinishLoadAndSendVillagerParty") &&
+                       regionalPopulationMethods.Contains("TryRecoverVillagerDepartureLatch") &&
+                       regionalPopulationMethods.Contains("SweepVillagerDepartureLatches") &&
+                       regionalPopulationMethods.Contains("BeforePatrolDailyTick") &&
+                       regionalPopulationMethods.Contains("BeforeUpdatePatrolQueue") &&
+                       regionalPopulationMethods.Contains("AfterUpdatePatrolQueue") &&
+                       regionalPopulationMethods.Contains("BeforeSpawnPatrolParty") &&
+                       regionalPopulationMethods.Contains("SweepPatrolRegionTransitions") &&
+                       regionalPopulationMethods.Contains("FilterDeserterCandidates") &&
+                       regionalPopulationMethods.Contains("TranspileTrySpawnDeserters") &&
+                       regionalPopulationMethods.Contains("WriteDailySummary"),
+                    "Packaged server bridge lost a regional family, authority, or telemetry seam.");
+                var serverEconomyBehaviorMethods = serverMetadata.TypeDefinitions
+                    .Select(handle => serverMetadata.GetTypeDefinition(handle))
+                    .Where(type => serverMetadata.GetString(type.Name)
+                        .Equals("BridgeEconomyCampaignBehavior", StringComparison.Ordinal))
+                    .SelectMany(type => type.GetMethods())
+                    .Select(handle => serverMetadata.GetString(
+                        serverMetadata.GetMethodDefinition(handle).Name))
+                    .ToHashSet(StringComparer.Ordinal);
+                var clientEconomyBehaviorMethods = clientMetadata.TypeDefinitions
+                    .Select(handle => clientMetadata.GetTypeDefinition(handle))
+                    .Where(type => clientMetadata.GetString(type.Name)
+                        .Equals("BridgeEconomyCampaignBehavior", StringComparison.Ordinal))
+                    .SelectMany(type => type.GetMethods())
+                    .Select(handle => clientMetadata.GetString(
+                        clientMetadata.GetMethodDefinition(handle).Name))
+                    .ToHashSet(StringComparer.Ordinal);
+                Assert(serverTypes.Contains("BCS.CoopBridge.BridgeEconomyCampaignBehavior") &&
+                       clientTypes.Contains("BCS.CoopBridge.BridgeEconomyCampaignBehavior") &&
+                       serverEconomyBehaviorMethods.Contains("RegisterEvents") &&
+                       serverEconomyBehaviorMethods.Contains("SyncData") &&
+                       serverEconomyBehaviorMethods.Contains("TryScheduleVirtualShipment") &&
+                       serverEconomyBehaviorMethods.Contains("HasPendingVirtualShipment") &&
+                       serverEconomyBehaviorMethods.Contains("OnRegionalPopulationQuarterHour") &&
+                       serverEconomyBehaviorMethods.Contains("AdjustCaravanDestinationScore") &&
+                       serverEconomyBehaviorMethods.Contains("TransferGoods") &&
+                       serverEconomyBehaviorMethods.Contains("ProcessReturn") &&
+                       clientEconomyBehaviorMethods.Contains("RegisterEvents") &&
+                       clientEconomyBehaviorMethods.Contains("SyncData") &&
+                       !clientEconomyBehaviorMethods.Contains("TryScheduleVirtualShipment") &&
+                       !clientEconomyBehaviorMethods.Contains("TransferGoods"),
+                    "Packaged bridge runtimes lost server-authoritative economy behavior or client save parity.");
                 Assert(first.Assembly.AsSpan().IndexOf(
                            System.Text.Encoding.Unicode.GetBytes(
-                               "AUTOMATIC_NPC_CARAVANS_PER_TOWN")) >= 0 &&
+                                "AUTOMATIC_NPC_CARAVANS_PER_TOWN")) >= 0 &&
                        first.Assembly.AsSpan().IndexOf(
                            System.Text.Encoding.Unicode.GetBytes(
-                               "BCS-BRIDGE-POPULATION|2")) >= 0,
-                    "Packaged server bridge lost population schema v2 or its per-town caravan setting.");
+                                "BCS-BRIDGE-POPULATION|3")) >= 0 &&
+                       first.Assembly.AsSpan().IndexOf(
+                           System.Text.Encoding.Unicode.GetBytes(
+                               "BCS-BRIDGE-ECONOMY|1")) >= 0 &&
+                       first.Assembly.AsSpan().IndexOf(
+                           System.Text.Encoding.Unicode.GetBytes(
+                               "VIRTUAL_VILLAGER_SHIPMENTS_ENABLED")) >= 0 &&
+                       first.Assembly.AsSpan().IndexOf(
+                           System.Text.Encoding.Unicode.GetBytes(
+                               "REGIONAL_AMBIENT_OUTLAW_SPAWNS_ENABLED")) >= 0 &&
+                       first.Assembly.AsSpan().IndexOf(
+                           System.Text.Encoding.Unicode.GetBytes(
+                               "REGIONAL_BATTLE_DESERTER_SPAWNS_ENABLED")) >= 0 &&
+                       first.ClientAssembly.AsSpan().IndexOf(
+                           System.Text.Encoding.Unicode.GetBytes(
+                               "BCS-BRIDGE-ECONOMY|1")) < 0,
+                    "Packaged bridge lost strict population v3, economy v1, regional settings, or role isolation.");
             }
             VerifyRuntimeModuleAssemblyValidation(first.Assembly);
             VerifyRuntimeModuleAssemblyValidation(first.ClientAssembly);
@@ -3080,8 +3311,11 @@ void TestGenericBridgePackage()
             Assert(archive.Entries.All(entry =>
                     !entry.FullName.EndsWith(
                         BridgePopulationSettingsService.SettingsFileName,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    !entry.FullName.EndsWith(
+                        BridgePopulationSettingsService.EconomySettingsFileName,
                         StringComparison.OrdinalIgnoreCase)),
-                "Client bridge package included mutable server population settings.");
+                "Client bridge package included mutable server population or economy settings.");
             var manifestEntry = archive.GetEntry($"Modules/{first.ModuleId}/SubModule.xml");
             Assert(manifestEntry is not null,
                 "Client package omitted the bridge manifest.");
@@ -3992,8 +4226,9 @@ void TestBridgeRuntimeFeatureConfiguration()
         (serverRoot, modulesDirectory) =>
         {
             CreateModule(modulesDirectory, "Coop", "v0.1.2", ["Native"]);
+            CreateModule(modulesDirectory, "Europe1700", "v1.4.7.1", ["Native"]);
             var modules = new ModuleScanner().Scan(modulesDirectory)
-                .Where(module => module.Id == "Coop")
+                .Where(module => module.Id is "Coop" or "Europe1700")
                 .ToArray();
             var builder = new CoopBridgePackageBuilder();
 
@@ -4007,7 +4242,11 @@ void TestBridgeRuntimeFeatureConfiguration()
                 "Generic bridge package inherited target-specific runtime features.");
 
             var eoeFeatures = BridgeRuntimeFeatureSets.Europe1700;
-            var eoe = builder.Build(modules, runtimeFeatures: eoeFeatures);
+            var eoe = builder.Build(
+                modules,
+                runtimeFeatures: eoeFeatures,
+                battleSceneCatalogContract:
+                    BattleSceneCatalogContractRegistry.CreateEurope1700());
             var featureNames = System.Text.Encoding.UTF8.GetString(eoe.Configuration)
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Where(line => line.StartsWith("RUNTIME_FEATURE|", StringComparison.Ordinal))
@@ -4352,6 +4591,18 @@ void TestCompatibilityApplyRollsBackBeforeManifestPublication()
         (serverRoot, modulesDirectory) =>
         {
             var nativePath = CreateModule(modulesDirectory, "Native", "v1.4.7");
+            var nativeBin = Path.Combine(nativePath, "bin", "Win64_Shipping_Server");
+            Directory.CreateDirectory(nativeBin);
+            var blockedAssembly = Path.Combine(nativeBin, "RollbackBlocked.dll");
+            WriteManagedAssembly(blockedAssembly, "RollbackBlocked");
+            var zoneIdentifier = blockedAssembly + ":Zone.Identifier";
+            var zoneIdentifierBytes = new byte[]
+            {
+                0x5B, 0x5A, 0x6F, 0x6E, 0x65, 0x54, 0x72, 0x61, 0x6E, 0x73, 0x66, 0x65,
+                0x72, 0x5D, 0x0D, 0x0A, 0x5A, 0x6F, 0x6E, 0x65, 0x49, 0x64, 0x3D, 0x33,
+                0x0D, 0x0A
+            };
+            File.WriteAllBytes(zoneIdentifier, zoneIdentifierBytes);
             CreateModule(modulesDirectory, "Coop", "v0.1.1", ["Native"]);
             var modulePath = CreateModule(
                 modulesDirectory,
@@ -4363,25 +4614,35 @@ void TestCompatibilityApplyRollsBackBeforeManifestPublication()
             var originalManifest = File.ReadAllBytes(moduleManifestPath);
             var modules = new ModuleScanner().Scan(modulesDirectory);
             var selected = modules.Single(module => module.Id == "RollbackContentPack");
-            var patcher = new CoopCompatibilityPatcher();
+            var finalizationHookRan = false;
+            var patcher = new CoopCompatibilityPatcher(_ =>
+            {
+                finalizationHookRan = true;
+                Assert(!File.Exists(zoneIdentifier),
+                    "Manifest finalization hook ran before the blocked-file marker was removed.");
+                throw new IOException("Injected manifest publication failure.");
+            });
             var plan = patcher.CreatePlan(selected, modules, serverRoot);
             Assert(plan.CanApply, plan.Summary);
-
-            // The plan does not modify Native, so deleting it after analysis passes
-            // stale-target validation but makes post-file assembly unblocking fail.
-            Directory.Delete(nativePath, recursive: true);
 
             try
             {
                 patcher.Apply(plan);
                 throw new InvalidOperationException("Post-file compatibility failure was not surfaced.");
             }
-            catch (DirectoryNotFoundException exception)
+            catch (IOException exception)
             {
-                Assert(exception.Message.Contains("Native", StringComparison.Ordinal),
-                    "Finalization failure did not identify the missing enabled module.");
+                Assert(exception.Message.Contains(
+                        "Injected manifest publication failure",
+                        StringComparison.Ordinal),
+                    "Finalization failure did not preserve the injected publication error.");
             }
 
+            Assert(finalizationHookRan,
+                "Compatibility Apply did not reach manifest finalization after unblocking DLLs.");
+            Assert(File.Exists(zoneIdentifier) &&
+                   File.ReadAllBytes(zoneIdentifier).SequenceEqual(zoneIdentifierBytes),
+                "Finalization failure did not restore exact blocked-file marker bytes.");
             Assert(File.ReadAllBytes(moduleManifestPath).SequenceEqual(originalManifest),
                 "Finalization failure did not restore the changed module manifest.");
             Assert(plan.Changes
@@ -4806,4 +5067,63 @@ void AssertThrowsInvalidData(Action action, string message)
 
 sealed class RegressionCampaignBehavior
 {
+}
+
+sealed class CanonicalMetadataTypeProvider : ISignatureTypeProvider<string, object?>
+{
+    public string GetArrayType(string elementType, ArrayShape shape) =>
+        elementType + "[" + new string(',', shape.Rank - 1) + "]";
+
+    public string GetByReferenceType(string elementType) => elementType + "&";
+
+    public string GetFunctionPointerType(MethodSignature<string> signature) => "methodptr";
+
+    public string GetGenericInstantiation(
+        string genericType,
+        ImmutableArray<string> typeArguments) =>
+        genericType + "<" + string.Join(",", typeArguments) + ">";
+
+    public string GetGenericMethodParameter(object? genericContext, int index) => "!!" + index;
+
+    public string GetGenericTypeParameter(object? genericContext, int index) => "!" + index;
+
+    public string GetModifiedType(string modifier, string unmodifiedType, bool isRequired) =>
+        unmodifiedType;
+
+    public string GetPinnedType(string elementType) => elementType;
+
+    public string GetPointerType(string elementType) => elementType + "*";
+
+    public string GetPrimitiveType(PrimitiveTypeCode typeCode) => typeCode switch
+    {
+        PrimitiveTypeCode.Int32 => "System.Int32",
+        _ => "System." + typeCode
+    };
+
+    public string GetSZArrayType(string elementType) => elementType + "[]";
+
+    public string GetTypeFromDefinition(
+        MetadataReader reader,
+        TypeDefinitionHandle handle,
+        byte rawTypeKind)
+    {
+        var type = reader.GetTypeDefinition(handle);
+        return reader.GetString(type.Namespace) + "." + reader.GetString(type.Name);
+    }
+
+    public string GetTypeFromReference(
+        MetadataReader reader,
+        TypeReferenceHandle handle,
+        byte rawTypeKind)
+    {
+        var type = reader.GetTypeReference(handle);
+        return reader.GetString(type.Namespace) + "." + reader.GetString(type.Name);
+    }
+
+    public string GetTypeFromSpecification(
+        MetadataReader reader,
+        object? genericContext,
+        TypeSpecificationHandle handle,
+        byte rawTypeKind) =>
+        reader.GetTypeSpecification(handle).DecodeSignature(this, genericContext);
 }

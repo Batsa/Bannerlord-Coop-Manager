@@ -151,10 +151,10 @@
                                 Command="{Binding InstallOrUpdateBridgeCommand}"
                                 MinWidth="165" FontWeight="SemiBold" Margin="0,0,0,8"
                                 ToolTip="Validate and install the selected known bridge recipe, enable its modules, set load order, repair server files, and create the client ZIP"/>
-                        <Button Content="Bridge Population Settings"
+                        <Button Content="Population &amp; Trade Settings"
                                 Command="{Binding OpenBridgePopulationSettingsCommand}"
                                 MinWidth="165"
-                                ToolTip="Select the enabled current generated BCS Coop Bridge row to edit server-only population limits"/>
+                                ToolTip="Edit server-only population and trade settings for the selected bridge-managed overhaul"/>
                     </StackPanel>
                 </Border>
                 <Expander Header="Advanced (optional)" Foreground="Gray">
@@ -173,10 +173,11 @@
                                 ToolTip="Restore exact files from the latest bridge installation backup"/>
                         <Button Content="Delete Module" Command="{Binding DeleteCommand}"
                                 MinWidth="135" Foreground="#B71C1C"
-                                ToolTip="Send the selected non-core module folder to the Windows Recycle Bin"/>
+                                ToolTip="{Binding DeleteModuleHelpText}"
+                                ToolTipService.ShowOnDisabled="True"/>
                         <TextBlock Margin="2,10,2,0" MaxWidth="150"
                                    Foreground="Gray" FontSize="11" TextWrapping="Wrap"
-                                   Text="Not required for a supported overhaul recipe."/>
+                                   Text="{Binding DeleteModuleHelpText}"/>
                     </StackPanel>
                 </Expander>
             </StackPanel>
